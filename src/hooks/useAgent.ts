@@ -234,6 +234,41 @@ export function useAgent() {
     }
   };
 
+  const deleteSession = async (sessionId: string) => {
+    try {
+      await invoke('delete_session', { sessionId });
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (currentSessionId === sessionId) {
+        newSession();
+      }
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  };
+
+  const clearCurrentSession = () => {
+    setMessages([]);
+    setArtifacts([]);
+    setActiveArtifactId(null);
+  };
+
+  const fetchProviderModels = async (baseUrl: string, apiKey: string): Promise<string[]> => {
+    try {
+      return await invoke<string[]>('fetch_provider_models', { baseUrl, apiKey });
+    } catch (err: any) {
+      throw new Error(err.message || String(err));
+    }
+  };
+
+  const switchActiveProvider = async (providerId: string) => {
+    if (!settings) return;
+    const updated: AgentSettings = {
+      ...settings,
+      activeProviderId: providerId,
+    };
+    await updateSettings(updated);
+  };
+
   const activeArtifact = artifacts.find((a) => a.id === activeArtifactId) || null;
 
   return {
@@ -252,6 +287,10 @@ export function useAgent() {
     stopAgent,
     newSession,
     switchSession,
+    deleteSession,
+    clearCurrentSession,
+    fetchProviderModels,
+    switchActiveProvider,
     updateSettings,
     selectWorkspace
   };

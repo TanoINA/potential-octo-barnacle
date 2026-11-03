@@ -62,6 +62,16 @@ async fn save_session(session_id: String, title: String, messages: Vec<ChatMessa
 }
 
 #[tauri::command]
+async fn delete_session(session_id: String) -> Result<(), String> {
+    storage::delete_session(&session_id).await
+}
+
+#[tauri::command]
+async fn fetch_provider_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    agent::provider::fetch_models(&base_url, &api_key).await
+}
+
+#[tauri::command]
 fn get_workspace_cwd(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.workspace_cwd.lock().unwrap().clone())
 }
@@ -94,6 +104,8 @@ pub fn run() {
             list_sessions,
             load_session,
             save_session,
+            delete_session,
+            fetch_provider_models,
             get_workspace_cwd,
             set_workspace_cwd
         ])

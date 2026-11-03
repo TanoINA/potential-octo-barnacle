@@ -131,3 +131,11 @@ pub async fn save_session(session_id: &str, title: &str, msgs: &[ChatMessage], a
     fs::write(path, content).await.map_err(|e| e.to_string())?;
     Ok(())
 }
+
+pub async fn delete_session(session_id: &str) -> Result<(), String> {
+    let path = get_sessions_dir().join(format!("{}.json", session_id));
+    if path.exists() {
+        fs::remove_file(path).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

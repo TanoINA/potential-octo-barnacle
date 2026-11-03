@@ -14,12 +14,15 @@ export function App() {
     isStreaming,
     sessions,
     currentSessionId,
+    sessionTitle,
     settings,
     workspaceCwd,
     sendMessage,
     stopAgent,
     newSession,
     switchSession,
+    deleteSession,
+    clearCurrentSession,
     updateSettings,
   } = useAgent();
 
@@ -39,6 +42,7 @@ export function App() {
         currentSessionId={currentSessionId}
         onNewSession={newSession}
         onSelectSession={switchSession}
+        onDeleteSession={deleteSession}
         onOpenSettings={() => setIsSettingsOpen(true)}
         workspaceCwd={workspaceCwd}
         settings={settings}
@@ -52,6 +56,10 @@ export function App() {
           onSendMessage={sendMessage}
           onStop={stopAgent}
           onSelectArtifact={handleSelectArtifact}
+          onClearSession={clearCurrentSession}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          settings={settings}
+          sessionTitle={sessionTitle}
         />
       </main>
 

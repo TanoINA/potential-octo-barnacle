@@ -27,6 +27,69 @@ pub struct StreamResult {
     pub tool_calls: Vec<ChatCompletionToolCall>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelItem {
+    pub id: String,
+    pub object: Option<String>,
+    pub created: Option<i64>,
+    pub owned_by: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelsListResponse {
+    pub data: Vec<ModelItem>,
+}
+
+pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let clean_base = base_url.trim_end_matches('/');
+    let url = format!("{}/models", clean_base);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    let mut req = client.get(&url);
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req.send().await.map_err(|e| format!("Failed to reach {}: {}", url, e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        return Err(format!("Server returned HTTP {}: {}", status, err_text));
+    }
+
+    let body_text = response.text().await.map_err(|e| e.to_string())?;
+
+    // Standard OpenAI format {"data": [{"id": "..."}, ...]}
+    if let Ok(parsed) = serde_json::from_str::<ModelsListResponse>(&body_text) {
+        let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+        ids.sort();
+        return Ok(ids);
+    }
+
+    // Fallback array format [{"id": "..."}, ...]
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&body_text) {
+        let mut ids = Vec::new();
+        for item in arr {
+            if let Some(id_str) = item.get("id").and_then(|v| v.as_str()) {
+                ids.push(id_str.to_string());
+            } else if let Some(str_val) = item.as_str() {
+                ids.push(str_val.to_string());
+            }
+        }
+        if !ids.is_empty() {
+            ids.sort();
+            return Ok(ids);
+        }
+    }
+
+    Err("Could not parse models from provider response".to_string())
+}
+
 pub async fn stream_chat_completion<F1, F2, F3>(
     provider: &ProviderConfig,
     messages: &serde_json::Value,
