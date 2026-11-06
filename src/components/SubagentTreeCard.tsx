@@ -47,7 +47,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
       </header>
 
       {expanded && (
-        <div className="p-3 space-y-2.5">
+        <div className="max-h-[min(380px,45vh)] overflow-y-auto overscroll-contain p-3 space-y-2.5 select-text">
           {subagents.map((sub) => {
             const isRunning = sub.status === 'running';
             const isCompleted = sub.status === 'completed';
@@ -78,7 +78,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
                   <p className="mt-1 text-[11px] leading-relaxed text-[#8b949e]">{sub.task}</p>
 
                   {sub.summary && (
-                    <div className="mt-1.5 rounded bg-[#161b22] px-2 py-1 text-[10px] text-[#c9d1d9] border border-[#30363d]/40">
+                    <div className="mt-1.5 max-h-40 overflow-y-auto rounded bg-[#161b22] px-2.5 py-1.5 font-mono text-[10px] leading-relaxed text-[#c9d1d9] border border-[#30363d]/40 whitespace-pre-wrap select-text">
                       {sub.summary}
                     </div>
                   )}
