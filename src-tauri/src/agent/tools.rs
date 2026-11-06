@@ -241,6 +241,10 @@ pub fn get_agent_tools() -> serde_json::Value {
                         "instructions": {
                             "type": "string",
                             "description": "Markdown instructions, steps, scripts, and best practices explaining how to execute the skill."
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Set to true if you explicitly intend to overwrite an existing skill with the same name. Defaults to false."
                         }
                     },
                     "required": ["name", "description", "instructions"]
@@ -1096,8 +1100,13 @@ async fn learn_skill(
     let name = required_string(args, "name")?;
     let description = required_string(args, "description")?;
     let instructions = required_string(args, "instructions")?;
+    let overwrite = args
+        .get("overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    let skill = super::skills::save_skill_markdown(name, description, instructions).await?;
+    let skill =
+        super::skills::save_skill_markdown(name, description, instructions, overwrite).await?;
     let artifact = Some(new_artifact(
         format!("Learned Skill: {}", skill.name),
         "markdown",

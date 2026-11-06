@@ -114,8 +114,20 @@ struct SkillActivation {
 /// The parent run and subagents must behave identically, so both dispatch
 /// through here. The SKILL.md body is always read through the validated
 /// catalog path, never through a model-supplied filesystem path.
-async fn activate_skill(skills: &[SkillInfo], name: &str) -> SkillActivation {
-    let Some(skill) = find_skill(skills, name) else {
+async fn activate_skill(
+    skills: &mut Vec<SkillInfo>,
+    name: &str,
+    skill_paths: &[String],
+) -> SkillActivation {
+    let skill = if let Some(s) = find_skill(skills, name) {
+        Some(s.clone())
+    } else {
+        // Dynamic hot-reload: re-scan the catalog in case a skill was learned or created mid-session
+        *skills = load_skills(skill_paths).await;
+        find_skill(skills, name).cloned()
+    };
+
+    let Some(skill) = skill else {
         return SkillActivation {
             result: ToolExecutionResult::failure(format!(
                 "Skill '{name}' was not found in the catalog."
@@ -123,7 +135,7 @@ async fn activate_skill(skills: &[SkillInfo], name: &str) -> SkillActivation {
             skill: None,
         };
     };
-    let result = match read_skill_content(skill).await {
+    let result = match read_skill_content(&skill).await {
         Ok(instructions) => ToolExecutionResult::success(
             format!(
                 "Skill '{}' activated.\n\nInstructions:\n{}",
@@ -135,7 +147,7 @@ async fn activate_skill(skills: &[SkillInfo], name: &str) -> SkillActivation {
     };
     SkillActivation {
         result,
-        skill: Some(skill.clone()),
+        skill: Some(skill),
     }
 }
 
@@ -148,41 +160,64 @@ async fn dispatch_subagent_tool(
     name: &str,
     args: &serde_json::Value,
     context: &ToolContext,
-    skills: &[SkillInfo],
+    skills: &mut Vec<SkillInfo>,
+    skill_paths: &[String],
 ) -> SubagentToolOutcome {
     if name == "use_skill" {
         let skill_name = args
             .get("name")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let activation = activate_skill(skills, skill_name).await;
+        let activation = activate_skill(skills, skill_name, skill_paths).await;
         SubagentToolOutcome {
             result: activation.result,
             activated_skill: activation.skill,
         }
     } else {
+        let result = execute_tool(name, args, context).await;
+        if name == "learn_skill" && result.success {
+            *skills = load_skills(skill_paths).await;
+        }
         SubagentToolOutcome {
-            result: execute_tool(name, args, context).await,
+            result,
             activated_skill: None,
         }
     }
+}
+
+struct SubagentParams<'a> {
+    role: &'a str,
+    task: &'a str,
+    subpath: Option<&'a str>,
+    skill_paths: &'a [String],
 }
 
 async fn run_subagent(
     emitter: &EmitterContext,
     provider: &ProviderConfig,
     workspace_cwd: &str,
-    role: &str,
-    task: &str,
-    subpath: Option<&str>,
+    params: SubagentParams<'_>,
     parent_cancel: CancellationToken,
 ) -> ToolExecutionResult {
     let subagent_id = format!("sub-{}", &Uuid::new_v4().to_string()[..8]);
-    let mut target_dir = match super::tools::resolve_workspace_path(workspace_cwd, ".") {
-        Ok(path) => path,
-        Err(error) => return ToolExecutionResult::failure(error),
+    let role = params.role;
+    let task = params.task;
+    let subpath = params.subpath;
+    let configured_skill_paths = params.skill_paths;
+    let mut target_dir = if workspace_cwd.trim().is_empty() {
+        std::env::temp_dir()
+    } else {
+        match super::tools::resolve_workspace_path(workspace_cwd, ".") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::failure(error),
+        }
     };
     if let Some(sub) = subpath {
+        if workspace_cwd.trim().is_empty() {
+            return ToolExecutionResult::failure(
+                "Subagent subpath requires an active workspace".into(),
+            );
+        }
         match super::tools::resolve_workspace_path(workspace_cwd, sub) {
             Ok(candidate) if candidate.is_dir() => target_dir = candidate,
             Ok(_) => {
@@ -210,7 +245,9 @@ async fn run_subagent(
     let mut subagent_system = format!(
         "You are an autonomous subagent specialized as '{role}'.\nWorking directory: {cwd_str}\nTask: {task}\n\nInvestigate and solve the assigned task using the available tools. Keep steps focused and conclude with a concise, actionable summary of findings."
     );
-    let skills = load_skills(&super::skills::workspace_skill_paths(workspace_cwd, &[])).await;
+    let all_skill_paths =
+        super::skills::workspace_skill_paths(workspace_cwd, configured_skill_paths);
+    let mut skills = load_skills(&all_skill_paths).await;
     subagent_system.push_str(&render_skill_catalog(&skills));
 
     let mut conversation = Vec::new();
@@ -246,9 +283,6 @@ async fn run_subagent(
         cancel: parent_cancel.clone(),
         sink: None,
     };
-
-    let skills = load_skills(&super::skills::workspace_skill_paths(workspace_cwd, &[])).await;
-    subagent_system.push_str(&render_skill_catalog(&skills));
 
     let mut turns = 0;
     let mut final_text = String::new();
@@ -348,8 +382,14 @@ async fn run_subagent(
         for call in &result.tool_calls {
             let args: serde_json::Value = serde_json::from_str(&call.function.arguments)
                 .unwrap_or_else(|_| serde_json::json!({}));
-            let outcome =
-                dispatch_subagent_tool(&call.function.name, &args, &sub_context, &skills).await;
+            let outcome = dispatch_subagent_tool(
+                &call.function.name,
+                &args,
+                &sub_context,
+                &mut skills,
+                &all_skill_paths,
+            )
+            .await;
             if let Some(skill) = outcome.activated_skill {
                 emitter.skill(skill);
             }
@@ -539,8 +579,8 @@ impl AgentRunner {
             });
         }
 
-        let skills =
-            load_skills(&workspace_skill_paths(&workspace_cwd, &request.skill_paths)).await;
+        let all_skill_paths = workspace_skill_paths(&workspace_cwd, &request.skill_paths);
+        let mut skills = load_skills(&all_skill_paths).await;
         let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.";
         let mut system = match request
             .system_prompt
@@ -785,7 +825,8 @@ impl AgentRunner {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
-                    let activation = activate_skill(&skills, skill_name).await;
+                    let activation =
+                        activate_skill(&mut skills, skill_name, &all_skill_paths).await;
                     if let Some(skill) = activation.skill {
                         emitter.skill(skill);
                     }
@@ -797,18 +838,25 @@ impl AgentRunner {
                         .unwrap_or("Specialist");
                     let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
                     let subpath = args.get("subpath").and_then(|v| v.as_str());
+                    let params = SubagentParams {
+                        role,
+                        task,
+                        subpath,
+                        skill_paths: &request.skill_paths,
+                    };
                     run_subagent(
                         &emitter,
                         &request.provider,
                         &workspace_cwd,
-                        role,
-                        task,
-                        subpath,
+                        params,
                         cancel.clone(),
                     )
                     .await
                 } else {
                     let exec = execute_tool(&call.function.name, &args, &context).await;
+                    if call.function.name == "learn_skill" && exec.success {
+                        skills = load_skills(&all_skill_paths).await;
+                    }
                     if call.function.name == "read_file" {
                         if let Some(file_path) = args
                             .get("filePath")
@@ -1502,7 +1550,8 @@ mod tests {
     #[tokio::test]
     async fn subagent_use_skill_tool_call_activates_the_catalogued_skill() {
         let (cwd, root) = workspace_with_skill("subagent-skill-fixture", "Step one. Step two.");
-        let skills = load_skills(&workspace_skill_paths(&cwd, &[])).await;
+        let skill_paths = workspace_skill_paths(&cwd, &[]);
+        let mut skills = load_skills(&skill_paths).await;
         assert!(
             skills
                 .iter()
@@ -1519,7 +1568,8 @@ mod tests {
             "use_skill",
             &serde_json::json!({"name": "subagent-skill-fixture"}),
             &context,
-            &skills,
+            &mut skills,
+            &skill_paths,
         )
         .await;
 
@@ -1549,7 +1599,8 @@ mod tests {
             "use_skill",
             &serde_json::json!({"name": "no-such-skill"}),
             &context,
-            &skills,
+            &mut skills,
+            &skill_paths,
         )
         .await;
         assert!(!missing.result.success);
@@ -1564,11 +1615,40 @@ mod tests {
             "list_directory",
             &serde_json::json!({"path": "."}),
             &context,
-            &skills,
+            &mut skills,
+            &skill_paths,
         )
         .await;
         assert!(native.result.success, "{}", native.result.output);
         assert!(native.activated_skill.is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn use_skill_hot_reloads_dynamically_when_skill_added_to_disk() {
+        let root = std::env::temp_dir().join(format!("aether-hotreload-{}", Uuid::new_v4()));
+        let skill_paths = vec![root.to_string_lossy().to_string()];
+        let mut skills = Vec::new(); // Starts completely empty
+
+        // 1. Initial attempt fails because skill does not exist on disk
+        let res1 = activate_skill(&mut skills, "dynamic-skill", &skill_paths).await;
+        assert!(!res1.result.success);
+
+        // 2. Skill is added to disk while session is ongoing
+        let skill_dir = root.join("dynamic-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: dynamic-skill\ndescription: Added live mid-session\n---\n# Live Skill\nUse `run_command` and `read_file`.\n",
+        )
+        .unwrap();
+
+        // 3. Next use_skill call immediately hot-reloads and succeeds without restart
+        let res2 = activate_skill(&mut skills, "dynamic-skill", &skill_paths).await;
+        assert!(res2.result.success, "{}", res2.result.output);
+        assert!(res2.result.output.contains("Live Skill"));
+        assert!(skills.iter().any(|s| s.name == "dynamic-skill"));
 
         let _ = std::fs::remove_dir_all(root);
     }

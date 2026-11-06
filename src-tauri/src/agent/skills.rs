@@ -25,31 +25,37 @@ pub fn default_skill_paths() -> Vec<String> {
 }
 
 pub fn ensure_starter_skills(dir: &Path) {
-    if dir.exists() {
-        return;
-    }
     let _ = std::fs::create_dir_all(dir);
 
     let debug_dir = dir.join("systematic-debugging");
     let _ = std::fs::create_dir_all(&debug_dir);
-    let _ = std::fs::write(
-        debug_dir.join("SKILL.md"),
-        "---\nname: systematic-debugging\ndescription: 4-phase root cause debugging: understand bugs before fixing them.\n---\n# Systematic Debugging\n1. **Reproduce**: Identify reproduction steps and expected vs actual behavior.\n2. **Isolate**: Inspect logs, recent changes, and isolate the exact failing module.\n3. **Hypothesize & Test**: Form a testable hypothesis before editing code.\n4. **Fix & Verify**: Apply minimal fix, run tests, and verify no regressions.\n",
-    );
+    let debug_file = debug_dir.join("SKILL.md");
+    if !debug_file.exists() {
+        let _ = std::fs::write(
+            debug_file,
+            "---\nname: systematic-debugging\ndescription: 4-phase root cause debugging: understand bugs thoroughly before fixing them.\n---\n# Systematic Debugging\n\n## Phase 1: Reproduce & Isolate\n- Observe exact symptoms, stack traces, and failure messages.\n- Use `run_command` to execute tests or reproduce issues.\n- Use `search_files` and `read_file` to locate the failure origin.\n\n## Phase 2: Root Cause Investigation\n- Formulate a testable hypothesis before editing code.\n- Verify variables, control flow, and data contracts.\n\n## Phase 3: Minimal Fix\n- Apply the most focused, targeted correction using `edit_file`.\n- Preserve existing coding conventions and contracts.\n\n## Phase 4: Verify & Regression Test\n- Run test suites using `run_command` to verify the fix works.\n- Verify that unrelated tests still pass.\n",
+        );
+    }
 
     let inspect_dir = dir.join("codebase-inspection");
     let _ = std::fs::create_dir_all(&inspect_dir);
-    let _ = std::fs::write(
-        inspect_dir.join("SKILL.md"),
-        "---\nname: codebase-inspection\ndescription: Inspect project codebases, language distribution, and directory layout.\n---\n# Codebase Inspection\nUse `list_directory` and `search_files` to understand the workspace structure before making modifications.\n",
-    );
+    let inspect_file = inspect_dir.join("SKILL.md");
+    if !inspect_file.exists() {
+        let _ = std::fs::write(
+            inspect_file,
+            "---\nname: codebase-inspection\ndescription: Inspect project codebases, language distribution, architecture, and directory layout.\n---\n# Codebase Inspection\n\n- Use `list_directory` to explore directory hierarchy and layout.\n- Use `search_files` to locate configurations, entry points, or specific functions.\n- Use `read_file` to inspect dependency manifests (`package.json`, `Cargo.toml`, etc.).\n- Use `run_command` to run non-destructive inspection tools (e.g. `git status`, test runners).\n",
+        );
+    }
 
     let tdd_dir = dir.join("test-driven-development");
     let _ = std::fs::create_dir_all(&tdd_dir);
-    let _ = std::fs::write(
-        tdd_dir.join("SKILL.md"),
-        "---\nname: test-driven-development\ndescription: Enforce test-driven development: verify tests before and after code changes.\n---\n# Test Driven Development\n1. Run existing test suites via `run_command` to ensure clean baseline.\n2. Formulate tests for new features or bug fixes.\n3. Implement minimal change and verify test pass.\n",
-    );
+    let tdd_file = tdd_dir.join("SKILL.md");
+    if !tdd_file.exists() {
+        let _ = std::fs::write(
+            tdd_file,
+            "---\nname: test-driven-development\ndescription: Enforce test-driven development: verify tests before and after code changes.\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
+        );
+    }
 }
 
 pub fn init_skills_environment() {
@@ -221,16 +227,26 @@ pub fn find_skill<'a>(skills: &'a [SkillInfo], name: &str) -> Option<&'a SkillIn
     skills.iter().find(|s| s.name.to_lowercase() == target)
 }
 
+pub fn normalize_skill_instructions(content: &str) -> String {
+    content
+        .replace("`terminal`", "`run_command`")
+        .replace("`delegate_task`", "`spawn_subagent`")
+        .replace("`web_search`", "`fetch_web_page`")
+        .replace("`web_extract`", "`fetch_web_page`")
+}
+
 pub async fn read_skill_content(skill: &SkillInfo) -> Result<String, String> {
-    tokio::fs::read_to_string(&skill.path)
+    let raw = tokio::fs::read_to_string(&skill.path)
         .await
-        .map_err(|e| format!("Failed to read skill at {}: {}", skill.path, e))
+        .map_err(|e| format!("Failed to read skill at {}: {}", skill.path, e))?;
+    Ok(normalize_skill_instructions(&raw))
 }
 
 pub async fn save_skill_markdown(
     name: &str,
     description: &str,
     instructions: &str,
+    overwrite: bool,
 ) -> Result<SkillInfo, String> {
     let clean_name: String = name
         .trim()
@@ -275,6 +291,13 @@ pub async fn save_skill_markdown(
 
     let home = dirs::home_dir().ok_or("Cannot resolve user home directory")?;
     let target_dir = home.join(".aether-agent").join("skills").join(&clean_name);
+    let file_path = target_dir.join("SKILL.md");
+    if file_path.exists() && !overwrite {
+        return Err(format!(
+            "Skill '{clean_name}' already exists at {}. To overwrite it, call learn_skill with overwrite: true.",
+            file_path.display()
+        ));
+    }
     tokio::fs::create_dir_all(&target_dir)
         .await
         .map_err(|e| format!("Failed to create skill directory: {e}"))?;
@@ -343,7 +366,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let res = save_skill_markdown(&unique, "Test description", "Test instructions").await;
+        let res =
+            save_skill_markdown(&unique, "Test description", "Test instructions", false).await;
         assert!(res.is_ok());
         let skill = res.unwrap();
         assert_eq!(skill.name, unique);
@@ -355,6 +379,37 @@ mod tests {
         // clean up
         let _ =
             tokio::fs::remove_dir_all(std::path::Path::new(&skill.path).parent().unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn save_skill_markdown_guards_against_accidental_overwrite() {
+        let unique = format!(
+            "guard-skill-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let res = save_skill_markdown(&unique, "Initial", "Initial instructions", false).await;
+        assert!(res.is_ok());
+
+        // Attempting to overwrite without overwrite: true must fail
+        let duplicate = save_skill_markdown(&unique, "Second", "Second instructions", false).await;
+        assert!(duplicate.is_err());
+        assert!(duplicate.unwrap_err().contains("already exists"));
+
+        // Overwrite with overwrite: true must succeed
+        let overwritten =
+            save_skill_markdown(&unique, "Second", "Updated instructions", true).await;
+        assert!(overwritten.is_ok());
+        let content = tokio::fs::read_to_string(&overwritten.unwrap().path)
+            .await
+            .unwrap();
+        assert!(content.contains("Updated instructions"));
+
+        let home = dirs::home_dir().expect("home dir");
+        let _ = tokio::fs::remove_dir_all(home.join(".aether-agent").join("skills").join(&unique))
+            .await;
     }
 
     #[test]
@@ -396,31 +451,35 @@ mod tests {
     async fn save_skill_markdown_rejects_unsafe_or_oversized_names() {
         // Windows-reserved device names must be refused before touching disk.
         for reserved in ["nul", "con", "prn", "aux", "com1", "lpt9"] {
-            let error = save_skill_markdown(reserved, "d", "instructions")
+            let error = save_skill_markdown(reserved, "d", "instructions", false)
                 .await
                 .expect_err("reserved device name must be rejected");
             assert!(error.contains("reserved"), "{error}");
         }
         // Empty or oversized slugs are rejected as well.
-        assert!(save_skill_markdown("", "d", "instructions").await.is_err());
-        assert!(save_skill_markdown("   ", "d", "instructions")
+        assert!(save_skill_markdown("", "d", "instructions", false)
+            .await
+            .is_err());
+        assert!(save_skill_markdown("   ", "d", "instructions", false)
             .await
             .is_err());
         let long = "a".repeat(65);
-        assert!(save_skill_markdown(&long, "d", "instructions")
+        assert!(save_skill_markdown(&long, "d", "instructions", false)
             .await
             .is_err());
         // Oversized description / instruction bodies are rejected.
         assert!(
-            save_skill_markdown("ok-name", &"d".repeat(1025), "instructions")
+            save_skill_markdown("ok-name", &"d".repeat(1025), "instructions", false)
                 .await
                 .is_err()
         );
-        assert!(save_skill_markdown("ok-name", "d", &"i".repeat(32769))
-            .await
-            .is_err());
+        assert!(
+            save_skill_markdown("ok-name", "d", &"i".repeat(32769), false)
+                .await
+                .is_err()
+        );
         // A normal, normalized name still works.
-        let info = save_skill_markdown("Test Skill!", "desc", "do the thing")
+        let info = save_skill_markdown("Test Skill!", "desc", "do the thing", false)
             .await
             .expect("valid skill name must be accepted");
         assert_eq!(info.name, "test-skill");

@@ -404,7 +404,7 @@ async fn save_skill(
     description: String,
     instructions: String,
 ) -> Result<SkillInfo, String> {
-    agent::skills::save_skill_markdown(&name, &description, &instructions).await
+    agent::skills::save_skill_markdown(&name, &description, &instructions, true).await
 }
 
 #[tauri::command]
