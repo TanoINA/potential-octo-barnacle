@@ -62,7 +62,9 @@ function restoreSession(loaded: SessionData, reviews: Map<string, SelfImprovemen
       const restored = message.role === 'assistant' && (message.isStreaming || (message.runId !== undefined && !message.runStatus))
         ? cancelledMessage(message) : { ...message, isStreaming: false };
       const review = reviews.get(JSON.stringify([loaded.session.id, message.runId ?? message.id]));
-      return review ? { ...restored, selfImprovement: review } : restored;
+      const safeContent = restored.content || '';
+      const withSafeContent = { ...restored, content: safeContent };
+      return review ? { ...withSafeContent, selfImprovement: review } : withSafeContent;
     }),
   };
 }
@@ -387,7 +389,7 @@ export function useAgent() {
           if (elapsedMs > 2500) {
             if (currentSettings?.notificationsEnabled !== false && typeof document !== 'undefined' && document.hidden) {
               // Preview the assistant reply only — never echo the user's own prompt.
-              const previewText = [...dataRef.current.messages].reverse().find((m) => m.role === 'assistant' && m.content.trim())?.content.slice(0, 100);
+              const previewText = [...dataRef.current.messages].reverse().find((m) => m.role === 'assistant' && (m.content || '').trim())?.content.slice(0, 100);
               void showDesktopNotification('AetherAgent: Task Complete', previewText || 'Agent has completed execution.');
             }
             if (currentSettings?.soundChimeEnabled === true) {
@@ -400,7 +402,7 @@ export function useAgent() {
               ...current.session,
               updatedAt: Date.now(),
               messageCount: current.messages.length,
-              preview: [...current.messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+              preview: [...current.messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
             },
             messages: current.messages.map((message) => message.id === streamingMessageIdRef.current ? {
               ...message, isStreaming: false,
@@ -1106,7 +1108,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
       },
       messages,
       artifacts,
@@ -1162,7 +1164,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
       },
       messages,
       artifacts,
@@ -1225,7 +1227,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
       },
       messages,
       artifacts,
@@ -1280,7 +1282,7 @@ export function useAgent() {
       return false;
     }
 
-    return editAndResendMessage(userMsg.id, userMsg.content);
+    return editAndResendMessage(userMsg.id, userMsg.content || '');
   }, [editAndResendMessage]);
 
   const initAgentsMd = useCallback(async () => {

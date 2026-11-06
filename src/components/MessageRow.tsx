@@ -56,7 +56,7 @@ export const MessageRow = memo(function MessageRow({
   }, [message.content]);
 
   const handleSaveEdit = useCallback(() => {
-    const trimmed = editText.trim();
+    const trimmed = (editText || '').trim();
     if (!trimmed || isStreaming || !onEditAndResend) return;
     setIsEditing(false);
     onEditAndResend(trimmed);
@@ -182,7 +182,7 @@ export const MessageRow = memo(function MessageRow({
               </button>
               <button
                 type="button"
-                disabled={!editText.trim() || isStreaming}
+                disabled={!(editText || '').trim() || isStreaming}
                 onClick={handleSaveEdit}
                 className="rounded bg-[#238636] px-3 py-1 text-xs font-medium text-white hover:bg-[#2ea043] disabled:opacity-40 transition-colors"
               >
