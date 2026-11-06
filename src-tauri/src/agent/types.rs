@@ -283,6 +283,8 @@ pub struct ChatMessage {
         skip_serializing_if = "Option::is_none"
     )]
     pub self_improvement: Option<SelfImprovementEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preamble: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

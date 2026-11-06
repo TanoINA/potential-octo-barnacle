@@ -183,7 +183,10 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   if (!toolCalls || toolCalls.length === 0) return null;
 
   return (
-    <div className="my-2.5 w-full rounded-lg border border-[#30363d]/70 bg-[#0d1117]/60 overflow-hidden text-xs">
+    <div
+      className="my-2.5 w-full rounded-lg border border-[#30363d]/70 bg-[#0d1117]/60 overflow-hidden text-xs"
+      data-testid="execution-trace"
+    >
       {/* Summary Accordion Bar */}
       <button
         type="button"

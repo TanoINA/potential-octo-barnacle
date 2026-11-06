@@ -133,4 +133,38 @@ describe('MessageRow Action Buttons', () => {
     fireEvent.click(rollbackBtn);
     expect(onRollback).toHaveBeenCalledTimes(1);
   });
+
+  it('renders preamble above execution trace and final content below execution trace', () => {
+    const interleavedMessage: ChatMessage = {
+      id: 'msg-interleaved-1',
+      role: 'assistant',
+      preamble: 'Siap, saya akan tes subagent dan task.',
+      content: 'Semua pengujian berhasil diselesaikan.',
+      timestamp: 1700000010000,
+      toolCalls: [
+        {
+          id: 'call-1',
+          name: 'run_command',
+          args: { command: 'Get-ChildItem' },
+          status: 'done',
+        },
+      ],
+    };
+
+    render(
+      <MessageRow
+        message={interleavedMessage}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    const preambleEl = screen.getByTestId('message-preamble');
+    expect(preambleEl).toBeTruthy();
+    expect(preambleEl.textContent).toContain('Siap, saya akan tes subagent dan task.');
+
+    const traceEl = screen.getByTestId('execution-trace');
+    expect(traceEl).toBeTruthy();
+
+    expect(screen.getByText('Semua pengujian berhasil diselesaikan.')).toBeTruthy();
+  });
 });

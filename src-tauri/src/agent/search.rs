@@ -95,6 +95,9 @@ fn index_session_into(conn: &mut Connection, data: &SessionData) -> Result<(), S
     // Index messages
     for msg in &data.messages {
         let mut full_body = msg.content.clone();
+        if let Some(preamble) = &msg.preamble {
+            full_body = format!("{}\n\n{}", preamble, full_body);
+        }
         if let Some(tool_calls) = &msg.tool_calls {
             for call in tool_calls {
                 full_body.push(' ');
@@ -278,6 +281,7 @@ mod tests {
                 run_id: None,
                 run_status: None,
                 self_improvement: None,
+                preamble: None,
             }],
             artifacts: vec![Artifact {
                 id: format!("art_{id}"),
@@ -418,6 +422,7 @@ mod tests {
                 run_id: None,
                 run_status: None,
                 self_improvement: None,
+                preamble: None,
             })
             .collect();
         index_session_into(&mut conn, &busy).unwrap();

@@ -55,6 +55,33 @@ function cancelledMessage(message: ChatMessage): ChatMessage {
   };
 }
 
+function splitLegacyPreamble(content: string): { preamble: string; content: string } | null {
+  if (!content || typeof content !== 'string') return null;
+  const transitionRegex = /(Dua subagent selesai|Subagent selesai|Hasil tes|Semua pengujian selesai|Deliverables|All tasks completed|Investigation complete|Test results)/i;
+  const match = content.match(transitionRegex);
+  if (match && match.index && match.index > 30) {
+    let splitPos = match.index;
+    const before = content.slice(0, splitPos);
+    const dotIdx = before.lastIndexOf('.');
+    if (dotIdx > 30 && splitPos - dotIdx <= 2) {
+      splitPos = dotIdx + 1;
+    }
+    const preamble = content.slice(0, splitPos).trim();
+    const rest = content.slice(splitPos).trim();
+    if (preamble.length > 20 && rest.length > 20) {
+      return { preamble, content: rest };
+    }
+  }
+  return null;
+}
+
+function extractPreview(messages: ChatMessage[]): string | undefined {
+  if (!messages || !Array.isArray(messages)) return undefined;
+  const target = [...messages].reverse().find((m) => (m.content || m.preamble || '').trim().length > 0);
+  if (!target) return undefined;
+  return (target.content || target.preamble || '').slice(0, 240);
+}
+
 function restoreSession(loaded: SessionData, reviews: Map<string, SelfImprovementEvent>): SessionData {
   return {
     ...loaded,
@@ -63,8 +90,14 @@ function restoreSession(loaded: SessionData, reviews: Map<string, SelfImprovemen
         ? cancelledMessage(message) : { ...message, isStreaming: false };
       const review = reviews.get(JSON.stringify([loaded.session.id, message.runId ?? message.id]));
       const safeContent = restored.content || '';
-      const withSafeContent = { ...restored, content: safeContent };
-      return review ? { ...withSafeContent, selfImprovement: review } : withSafeContent;
+      let withPreamble = { ...restored, content: safeContent };
+      if (!withPreamble.preamble && withPreamble.toolCalls && withPreamble.toolCalls.length > 0 && withPreamble.content) {
+        const split = splitLegacyPreamble(withPreamble.content);
+        if (split) {
+          withPreamble = { ...withPreamble, preamble: split.preamble, content: split.content };
+        }
+      }
+      return review ? { ...withPreamble, selfImprovement: review } : withPreamble;
     }),
   };
 }
@@ -174,7 +207,7 @@ export function useAgent() {
         messages = messages.map((message) => message.id === messageId
           ? {
               ...message,
-              content: message.content + text.content,
+              content: (message.content || '') + text.content,
               reasoning: (message.reasoning || '') + text.reasoning,
             }
           : message);
@@ -278,15 +311,23 @@ export function useAgent() {
           scheduleFlush();
           break;
         case 'tool_update':
+          flushPending();
           mutateData((current) => ({
             ...current,
             messages: current.messages.map((message) => {
               if (message.id !== streamingMessageIdRef.current) return message;
+              let preamble = message.preamble;
+              let content = message.content;
+              // If this message doesn't have a preamble yet, any text streamed before tools is the preamble
+              if (preamble === undefined && (content || '').trim().length > 0) {
+                preamble = content;
+                content = '';
+              }
               const tools = [...(message.toolCalls || [])];
               const index = tools.findIndex((tool) => tool.id === payload.data.tool.id);
               if (index >= 0) tools[index] = payload.data.tool;
               else tools.push(payload.data.tool);
-              return { ...message, toolCalls: tools };
+              return { ...message, preamble, content, toolCalls: tools };
             }),
           }));
           break;
@@ -389,7 +430,8 @@ export function useAgent() {
           if (elapsedMs > 2500) {
             if (currentSettings?.notificationsEnabled !== false && typeof document !== 'undefined' && document.hidden) {
               // Preview the assistant reply only — never echo the user's own prompt.
-              const previewText = [...dataRef.current.messages].reverse().find((m) => m.role === 'assistant' && (m.content || '').trim())?.content.slice(0, 100);
+              const assistantMsg = [...dataRef.current.messages].reverse().find((m) => m.role === 'assistant' && (m.content || m.preamble || '').trim());
+              const previewText = (assistantMsg?.content || assistantMsg?.preamble || '').slice(0, 100);
               void showDesktopNotification('AetherAgent: Task Complete', previewText || 'Agent has completed execution.');
             }
             if (currentSettings?.soundChimeEnabled === true) {
@@ -402,7 +444,7 @@ export function useAgent() {
               ...current.session,
               updatedAt: Date.now(),
               messageCount: current.messages.length,
-              preview: [...current.messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
+              preview: extractPreview(current.messages),
             },
             messages: current.messages.map((message) => message.id === streamingMessageIdRef.current ? {
               ...message, isStreaming: false,
@@ -1108,7 +1150,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
+        preview: extractPreview(messages),
       },
       messages,
       artifacts,
@@ -1164,7 +1206,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
+        preview: extractPreview(messages),
       },
       messages,
       artifacts,
@@ -1227,7 +1269,7 @@ export function useAgent() {
         ...previous.session,
         updatedAt: Date.now(),
         messageCount: messages.length,
-        preview: [...messages].reverse().find((message) => (message.content || '').trim())?.content.slice(0, 240),
+        preview: extractPreview(messages),
       },
       messages,
       artifacts,

@@ -1776,13 +1776,21 @@ mod tests {
         // Short procedural boilerplate is rejected
         assert!(!is_substantive_finding(""));
         assert!(!is_substantive_finding("   "));
-        assert!(!is_substantive_finding("Let me run grep to search for logs."));
+        assert!(!is_substantive_finding(
+            "Let me run grep to search for logs."
+        ));
         assert!(!is_substantive_finding("I will check the directory."));
         assert!(!is_substantive_finding("Running Get-ChildItem..."));
 
         // Substantive findings (steps, tables, conclusions, or long text) are accepted
-        assert!(is_substantive_finding("Step 1: tested use_skill with 3 skills. All passed."));
-        assert!(is_substantive_finding("| File | Bytes |\n| --- | --- |\n| a.log | 120 |"));
-        assert!(is_substantive_finding("Found 10 failure lines in red.log with code 500 across 3 sessions."));
+        assert!(is_substantive_finding(
+            "Step 1: tested use_skill with 3 skills. All passed."
+        ));
+        assert!(is_substantive_finding(
+            "| File | Bytes |\n| --- | --- |\n| a.log | 120 |"
+        ));
+        assert!(is_substantive_finding(
+            "Found 10 failure lines in red.log with code 500 across 3 sessions."
+        ));
     }
 }

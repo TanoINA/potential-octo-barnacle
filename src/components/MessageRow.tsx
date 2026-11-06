@@ -48,12 +48,13 @@ export const MessageRow = memo(function MessageRow({
   const isSystem = message.role === 'system';
 
   const handleCopy = useCallback(() => {
-    if (!message.content) return;
-    void navigator.clipboard.writeText(message.content).then(() => {
+    const fullText = [message.preamble, message.content].filter(Boolean).join('\n\n');
+    if (!fullText) return;
+    void navigator.clipboard.writeText(fullText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-  }, [message.content]);
+  }, [message.content, message.preamble]);
 
   const handleSaveEdit = useCallback(() => {
     const trimmed = (editText || '').trim();
@@ -135,6 +136,16 @@ export const MessageRow = memo(function MessageRow({
         </div>
       )}
 
+      {/* Opening Preamble (rendered above ExecutionTrace) */}
+      {!isUser && message.preamble && (
+        <div
+          className="mb-2 max-w-full select-text break-words rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-3 text-[13px] leading-6 text-[#e6edf3]"
+          data-testid="message-preamble"
+        >
+          <MarkdownRenderer content={message.preamble} />
+        </div>
+      )}
+
       {/* Execution Trace (Hermes style progress / status accordion) */}
       {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
         <ExecutionTrace
@@ -205,7 +216,7 @@ export const MessageRow = memo(function MessageRow({
         )
       )}
 
-      {!message.content && message.isStreaming && !message.reasoning && (!message.toolCalls || message.toolCalls.length === 0) && (
+      {!message.content && !message.preamble && message.isStreaming && !message.reasoning && (!message.toolCalls || message.toolCalls.length === 0) && (
         <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-xs text-[#8b949e]">Working…</div>
       )}
 
@@ -217,7 +228,7 @@ export const MessageRow = memo(function MessageRow({
           }`}
         >
           {/* Copy Message */}
-          {message.content && (
+          {(message.content || message.preamble) && (
             <button
               type="button"
               onClick={handleCopy}

@@ -71,6 +71,7 @@ export interface ChatMessage {
   runId?: string;
   runStatus?: 'completed' | 'cancelled' | 'failed';
   selfImprovement?: SelfImprovementEvent;
+  preamble?: string;
 }
 
 export interface Artifact {

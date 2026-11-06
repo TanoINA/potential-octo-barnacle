@@ -644,6 +644,7 @@ fn compact_data(mut data: SessionData) -> Result<SessionData, String> {
         run_id: None,
         run_status: None,
         self_improvement: None,
+        preamble: None,
     };
 
     data.messages = std::iter::once(checkpoint_message)
@@ -1052,6 +1053,7 @@ mod tests {
             run_id: None,
             run_status: None,
             self_improvement: None,
+            preamble: None,
         }];
         assert_eq!(session_preview(&data).as_deref(), Some("hello world"));
     }
