@@ -18,6 +18,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
   isRunning = false,
   className = '',
 }) => {
+  const safeOutput = output || '';
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const jumpedRef = useRef(false);
@@ -42,7 +43,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const textToCopy = command ? `$ ${command}\n\n${output}` : output;
+      const textToCopy = command ? `$ ${command}\n\n${safeOutput}` : safeOutput;
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(textToCopy);
       } else {
@@ -60,7 +61,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
     }
   };
 
-  const displayText = output.trim() ? output : isRunning ? 'Executing command in PowerShell...' : '(no output / silent exit)';
+  const displayText = safeOutput.trim() ? safeOutput : isRunning ? 'Executing command in PowerShell...' : '(no output / silent exit)';
 
   return (
     <div className={`my-2 rounded-lg border border-[#30363d] bg-[#0a0d12] overflow-hidden shadow-md ${className}`}>

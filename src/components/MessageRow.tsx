@@ -64,7 +64,7 @@ export const MessageRow = memo(function MessageRow({
 
   const handleCancelEdit = useCallback(() => {
     setIsEditing(false);
-    setEditText(message.content);
+    setEditText(message.content || '');
   }, [message.content]);
 
   if (isSystem) {
@@ -159,7 +159,7 @@ export const MessageRow = memo(function MessageRow({
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
             className="w-full resize-none rounded-lg border border-[#30363d] bg-[#161b22] p-2.5 text-xs text-[#e6edf3] placeholder:text-[#6e7681] focus:border-[#58a6ff] focus:outline-none"
-            rows={Math.max(2, Math.min(8, editText.split('\n').length + 1))}
+            rows={Math.max(2, Math.min(8, (editText || '').split('\n').length + 1))}
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -237,7 +237,7 @@ export const MessageRow = memo(function MessageRow({
             <button
               type="button"
               onClick={() => {
-                setEditText(message.content);
+                setEditText(message.content || '');
                 setIsEditing(true);
               }}
               title="Edit message & resend from here"

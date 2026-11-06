@@ -81,13 +81,13 @@ export const ToolsInspectorModal: React.FC<ToolsInspectorModalProps> = ({ open, 
   }, [open, settings]);
 
   const filteredNative = useMemo(() => {
-    const query = filter.trim().toLowerCase();
+    const query = (filter || '').trim().toLowerCase();
     if (!query) return nativeTools;
     return nativeTools.filter((tool) => `${tool.name} ${tool.description}`.toLowerCase().includes(query));
   }, [filter, nativeTools]);
 
   const filteredMcp = useMemo(() => {
-    const query = filter.trim().toLowerCase();
+    const query = (filter || '').trim().toLowerCase();
     if (!query) return mcpGroups;
     return mcpGroups.map((group) => ({
       ...group,

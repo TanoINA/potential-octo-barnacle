@@ -37,7 +37,7 @@ export const InteractiveTerminal: React.FC = () => {
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cmd = input.trim();
+    const cmd = (input || '').trim();
     if (!cmd || isRunning) return;
 
     if (cmd.toLowerCase() === 'clear' || cmd.toLowerCase() === 'cls') {
@@ -212,7 +212,7 @@ export const InteractiveTerminal: React.FC = () => {
         />
         <button
           type="submit"
-          disabled={!input.trim() || isRunning}
+          disabled={!(input || '').trim() || isRunning}
           className="flex items-center gap-1 rounded bg-[#238636] px-2.5 py-1 text-[11px] font-medium text-white hover:bg-[#2ea043] disabled:opacity-40 transition-colors"
         >
           {isRunning ? <Loader2 size={11} className="animate-spin" /> : <CornerDownLeft size={11} />}

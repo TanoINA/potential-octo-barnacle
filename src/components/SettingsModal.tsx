@@ -148,9 +148,9 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
 
   const applyCustomModel = () => {
 
-    if (!selectedProvider || !customModelDraft.trim()) return;
+    if (!selectedProvider || !(customModelDraft || '').trim()) return;
 
-    const model = customModelDraft.trim();
+    const model = (customModelDraft || '').trim();
 
     updateProvider(selectedProvider.id, {
 
@@ -173,7 +173,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
     // Skill roots change on every keystroke; ignore responses from requests
     // that have been superseded so a slow reply cannot overwrite newer results.
     let active = true;
-    const paths = form.skillPaths.map((path) => path.trim()).filter(Boolean);
+    const paths = form.skillPaths.map((path) => (path || '').trim()).filter(Boolean);
     invoke<SkillInfo[]>('list_skills', { paths })
       .then((skills) => { if (active) setDetectedSkills(skills); })
       .catch((error) => { if (active) console.error(error); });
@@ -259,7 +259,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
 
         autoCompactionThresholdTokens: Number(form.autoCompactionThresholdTokens) || 65536,
 
-        skillPaths: form.skillPaths.map((path) => path.trim()).filter(Boolean),
+        skillPaths: form.skillPaths.map((path) => (path || '').trim()).filter(Boolean),
 
         mcpServers: form.mcpServers.map((server) => ({
 
@@ -477,7 +477,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
 
                               className="primary-button text-xs shrink-0"
 
-                              disabled={!customModelDraft.trim()}
+                              disabled={!(customModelDraft || '').trim()}
 
                               onClick={applyCustomModel}
 

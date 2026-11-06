@@ -104,7 +104,7 @@ export const ArtifactsLibraryModal = memo(function ArtifactsLibraryModal({
 
   // Filtered artifacts
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = (search || '').trim().toLowerCase();
     return items.filter((item) => {
       if (category !== 'all' && item.artifact.type !== category) {
         return false;

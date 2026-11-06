@@ -91,10 +91,10 @@ export const Sidebar = memo(function Sidebar({
   const [isCommitting, setIsCommitting] = useState(false);
 
   const handleCommit = async () => {
-    if (!commitMsg.trim() || !onCommitWorkspace || isCommitting) return;
+    if (!(commitMsg || '').trim() || !onCommitWorkspace || isCommitting) return;
     setIsCommitting(true);
     try {
-      await onCommitWorkspace(commitMsg.trim());
+      await onCommitWorkspace((commitMsg || '').trim());
       setCommitMsg('');
       setGitDrawerOpen(false);
     } catch {
@@ -134,7 +134,7 @@ export const Sidebar = memo(function Sidebar({
 
   // Deep Full-Text Search effect
   useEffect(() => {
-    const q = search.trim();
+    const q = (search || '').trim();
     if (q.length < 2 || !onDeepSearch) {
       setDeepResults({});
       setIsDeepSearching(false);
@@ -165,7 +165,7 @@ export const Sidebar = memo(function Sidebar({
   }, [search, onDeepSearch]);
 
   const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = (search || '').trim().toLowerCase();
     if (!query) return sessions;
     return sessions.filter((session) => {
       const titleMatch = `${session.title} ${session.preview || ''}`.toLowerCase().includes(query);
@@ -178,7 +178,7 @@ export const Sidebar = memo(function Sidebar({
   const recentSessions = useMemo(() => filtered.filter((s) => !s.pinned), [filtered]);
 
   const commitRename = (id: string) => {
-    if (renameValue.trim()) onRenameSession(id, renameValue.trim());
+    if ((renameValue || '').trim()) onRenameSession(id, (renameValue || '').trim());
     setRenamingId(null);
   };
 
@@ -469,14 +469,14 @@ export const Sidebar = memo(function Sidebar({
                           placeholder="Commit message…"
                           className="w-full rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[11px] text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-[#58a6ff]"
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && commitMsg.trim() && !isCommitting) {
+                            if (e.key === 'Enter' && (commitMsg || '').trim() && !isCommitting) {
                               void handleCommit();
                             }
                           }}
                         />
                         <button
                           type="button"
-                          disabled={!commitMsg.trim() || isCommitting}
+                          disabled={!(commitMsg || '').trim() || isCommitting}
                           onClick={() => void handleCommit()}
                           className="w-full flex items-center justify-center gap-1.5 rounded bg-[#238636] py-1 text-[10px] font-medium text-white hover:bg-[#2ea043] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                         >

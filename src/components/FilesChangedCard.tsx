@@ -82,11 +82,11 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   }, []);
 
   const handleCommit = async (push: boolean) => {
-    if (!commitMessage.trim()) return;
+    if (!(commitMessage || '').trim()) return;
     setIsCommitting(true);
     setCommitResult(null);
     try {
-      const commitOut = await invoke<string>('git_commit', { message: commitMessage.trim() });
+      const commitOut = await invoke<string>('git_commit', { message: (commitMessage || '').trim() });
       if (push) {
         const pushOut = await invoke<string>('git_push');
         setCommitResult({ success: true, message: `Committed & Pushed: ${pushOut || commitOut}` });
@@ -213,7 +213,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
             <button
               type="button"
               onClick={() => handleCommit(false)}
-              disabled={isCommitting || !commitMessage.trim()}
+              disabled={isCommitting || !(commitMessage || '').trim()}
               className="flex items-center gap-1.5 rounded bg-[#238636] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#2ea043] disabled:opacity-50 transition-colors shrink-0"
               title="Stage all changes and commit"
             >
@@ -223,7 +223,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
             <button
               type="button"
               onClick={() => handleCommit(true)}
-              disabled={isCommitting || !commitMessage.trim()}
+              disabled={isCommitting || !(commitMessage || '').trim()}
               className="flex items-center gap-1.5 rounded bg-[#1f6feb] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#388bfd] disabled:opacity-50 transition-colors shrink-0"
               title="Commit and push to remote origin"
             >

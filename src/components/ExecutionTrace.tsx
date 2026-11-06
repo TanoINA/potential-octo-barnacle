@@ -53,7 +53,7 @@ function getToolDisplayInfo(tool: ToolCallItem): {
       label: `Ran "${displayCmd}"`,
       isTerminal: true,
       command,
-      output: tool.terminalOutput || tool.result,
+      output: tool.terminalOutput || tool.result || '',
     };
   }
 

@@ -566,8 +566,8 @@ export function ChatCanvas({
   const handleAddBrowser = () => {
     setAddContextOpen(false);
     const url = window.prompt('Enter public URL to inspect / fetch:');
-    if (url && url.trim()) {
-      setInput((prev) => `${prev ? `${prev}\n` : ''}Fetch and analyze web page: ${url.trim()}`);
+    if (url && (url || '').trim()) {
+      setInput((prev) => `${prev ? `${prev}\n` : ''}Fetch and analyze web page: ${(url || '').trim()}`);
       textareaRef.current?.focus();
     }
   };
@@ -656,7 +656,7 @@ export function ChatCanvas({
         if (onUndoTurn) {
           void onUndoTurn().then(async (undone) => {
             if (undone) {
-              await onSendMessage(undone.content, undone.attachments);
+              await onSendMessage(undone.content || '', undone.attachments);
             }
           });
         }
@@ -665,7 +665,7 @@ export function ChatCanvas({
         if (onUndoTurn) {
           void onUndoTurn().then((undone) => {
             if (undone) {
-              setInput(undone.content);
+              setInput(undone.content || '');
               setAttachedContexts(undone.attachments || []);
               setCursor(undone.content.length);
               requestAnimationFrame(() => {
@@ -694,7 +694,7 @@ export function ChatCanvas({
   const send = async () => {
     const draft = input;
     const draftAttachments = attachedContexts;
-    const clean = draft.trim();
+    const clean = (draft || '').trim();
     const slashItem = clean.startsWith('/')
       ? allSlashItems.find((item) => item.command.toLowerCase() === clean.split(/\s+/)[0].toLowerCase())
       : undefined;
@@ -1467,7 +1467,7 @@ export function ChatCanvas({
                   <button
                     type="button"
                     onClick={send}
-                    disabled={isReviewing || (!input.trim() && attachedContexts.length === 0)}
+                    disabled={isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
                     className="rounded-lg bg-[#1f6feb] p-2 text-white transition-colors hover:bg-[#388bfd] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send message"
                   >

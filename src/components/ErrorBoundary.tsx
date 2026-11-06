@@ -41,8 +41,11 @@ export class ErrorBoundary extends Component<Props, State> {
               An unexpected interface error occurred. You can reload the app to restore state.
             </p>
             {this.state.error?.message && (
-              <div className="my-4 max-h-24 overflow-y-auto rounded border border-[#30363d] bg-[#0d1117] p-2 text-left font-mono text-[11px] text-[#f85149]">
-                {this.state.error.message}
+              <div className="my-3 max-h-40 overflow-y-auto rounded border border-[#30363d] bg-[#0d1117] p-2 text-left font-mono text-[11px] text-[#f85149]">
+                <div>{this.state.error.message}</div>
+                {this.state.error.stack && (
+                  <pre className="mt-2 text-[10px] text-[#8b949e] whitespace-pre-wrap">{this.state.error.stack}</pre>
+                )}
               </div>
             )}
             <button

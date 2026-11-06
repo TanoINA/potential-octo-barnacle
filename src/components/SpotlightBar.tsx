@@ -36,7 +36,7 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
   if (!isOpen) return null;
 
   const handleSubmit = async (customPrompt?: string) => {
-    const text = customPrompt || query.trim();
+    const text = customPrompt || (query || '').trim();
     if (!text) return;
     const accepted = await onSubmitPrompt(text);
     if (accepted) onClose();
@@ -45,7 +45,7 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (query.trim()) {
+      if ((query || '').trim()) {
         void handleSubmit(query);
       } else if (QUICK_ACTIONS[selectedIndex]) {
         void handleSubmit(QUICK_ACTIONS[selectedIndex].prompt);

@@ -93,7 +93,7 @@ export function ModelPicker({
   }, [open, effective.provider.id, effective.provider.model]);
 
   const rows = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = (search || '').trim().toLowerCase();
     const all: ModelRow[] = [];
     for (const provider of settings.providers) {
       if (providerFilter !== 'all' && provider.id !== providerFilter) continue;
@@ -124,7 +124,7 @@ export function ModelPicker({
   };
 
   const addCustom = async () => {
-    const model = search.trim();
+    const model = (search || '').trim();
     if (!model) {
       setStatus('Enter a model ID in the search field first.');
       return;
@@ -345,7 +345,7 @@ export function ModelPicker({
               {settings.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
             </select>
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-[#8b949e]">{search || 'Model ID from search field'}</span>
-            <button type="button" className="primary-button" onClick={() => void addCustom()} disabled={busy || !search.trim()}>Add & use</button>
+            <button type="button" className="primary-button" onClick={() => void addCustom()} disabled={busy || !(search || '').trim()}>Add & use</button>
           </div>
         )}
       </section>

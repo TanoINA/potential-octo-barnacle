@@ -498,7 +498,7 @@ export function useAgent() {
       candidateB?: { provider: ProviderConfig; thinking?: boolean; reasoningEffort?: ReasoningEffort };
     },
   ) => {
-    const prompt = rawPrompt.trim();
+    const prompt = (rawPrompt || '').trim();
     if (/^\/(review|reflect)$/i.test(prompt)) return reviewSession();
     const currentSettings = settingsRef.current;
     const effective = resolveEffective(currentSettings, dataRef.current.modelOverride);
@@ -821,7 +821,7 @@ export function useAgent() {
 
   const addCustomModel = useCallback(async (providerId: string, model: string) => {
     const current = settingsRef.current;
-    const clean = model.trim();
+    const clean = (model || '').trim();
     if (!current || !clean) return;
     const next: AgentSettings = {
       ...current,
@@ -911,7 +911,7 @@ export function useAgent() {
       const session = sessions.find((item) => item.id === sessionId) || dataRef.current.session;
       const extension = format === 'json' ? 'json' : format === 'html' ? 'html' : 'md';
       const filterLabel = format === 'json' ? 'JSON' : format === 'html' ? 'HTML Document' : 'Markdown';
-      let destination = requestedDestination?.trim() || null;
+      let destination = (requestedDestination || '').trim() || null;
       if (!destination) {
         destination = await save({
           defaultPath: `${session.title.replace(/[<>:"/\\|?*]/g, '_').slice(0, 80) || 'aether-session'}.${extension}`,
@@ -1197,7 +1197,7 @@ export function useAgent() {
       setLastError('Wait for session operations before editing.');
       return false;
     }
-    const clean = newContent.trim();
+    const clean = (newContent || '').trim();
     if (!clean) return false;
 
     const previous = dataRef.current;
