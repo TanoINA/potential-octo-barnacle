@@ -29,7 +29,7 @@ function renderWordDiff(oldText: string, newText: string, isNew: boolean): React
   const compareWords = isNew ? new Set(oldWords) : new Set(newWords);
 
   return targetWords.map((word, idx) => {
-    const isDifferent = word.trim().length > 0 && !compareWords.has(word);
+    const isDifferent = (word || '').trim().length > 0 && !compareWords.has(word);
     if (!isDifferent) {
       return <span key={idx}>{word}</span>;
     }

@@ -185,6 +185,31 @@ async fn dispatch_subagent_tool(
     }
 }
 
+fn safe_prefix(s: &str, char_count: usize) -> &str {
+    match s.char_indices().nth(char_count) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
+fn is_substantive_finding(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    if trimmed.len() < 80
+        && (lower.starts_with("let me ")
+            || lower.starts_with("i will ")
+            || lower.starts_with("running ")
+            || lower.starts_with("checking ")
+            || lower.starts_with("executing "))
+    {
+        return false;
+    }
+    true
+}
+
 struct SubagentParams<'a> {
     role: &'a str,
     task: &'a str,
@@ -243,7 +268,7 @@ async fn run_subagent(
     emitter.subagent(progress.clone());
 
     let mut subagent_system = format!(
-        "You are an autonomous subagent specialized as '{role}'.\nWorking directory: {cwd_str}\nTask: {task}\n\nInvestigate and solve the assigned task using the available tools. Keep steps focused and conclude with a concise, actionable summary of findings."
+        "You are an autonomous subagent specialized as '{role}'.\nWorking directory: {cwd_str}\nTask: {task}\n\nInstructions:\n- Investigate and execute the assigned task using the available tools.\n- Keep intermediate tool call explanations brief.\n- Once all tool steps are complete, conclude with a comprehensive, standalone final report summarizing all your steps, findings, and conclusions. Do not call any tools when providing your final report."
     );
     let all_skill_paths =
         super::skills::workspace_skill_paths(workspace_cwd, configured_skill_paths);
@@ -252,7 +277,7 @@ async fn run_subagent(
 
     let mut conversation = Vec::new();
     conversation.push(serde_json::json!({"role": "system", "content": subagent_system}));
-    conversation.push(serde_json::json!({"role": "user", "content": format!("Execute the task and report your findings:\n\n{task}")}));
+    conversation.push(serde_json::json!({"role": "user", "content": format!("Execute the task and report your findings in full:\n\n{task}")}));
 
     let tools_value = get_agent_tools();
     let sub_tools: Vec<serde_json::Value> = tools_value
@@ -274,7 +299,7 @@ async fn run_subagent(
         thinking: false,
         reasoning_effort: ReasoningEffort::Low,
         temperature: 0.5,
-        max_tokens: Some(4096),
+        max_tokens: Some(8192),
         stream: true,
     };
 
@@ -286,7 +311,9 @@ async fn run_subagent(
 
     let mut turns = 0;
     let mut final_text = String::new();
-    let max_turns = 8;
+    let mut intermediate_findings: Vec<String> = Vec::new();
+    let mut completed_cleanly = false;
+    let max_turns = 12;
 
     while turns < max_turns {
         if parent_cancel.is_cancelled() {
@@ -354,12 +381,14 @@ async fn run_subagent(
             }
         };
 
-        if !turn_text.is_empty() {
-            final_text = turn_text.clone();
+        if result.tool_calls.is_empty() {
+            final_text = turn_text;
+            completed_cleanly = true;
+            break;
         }
 
-        if result.tool_calls.is_empty() {
-            break;
+        if is_substantive_finding(&turn_text) {
+            intermediate_findings.push(turn_text.trim().to_string());
         }
 
         let mut assistant_calls = Vec::new();
@@ -401,8 +430,92 @@ async fn run_subagent(
         }
     }
 
+    if parent_cancel.is_cancelled() {
+        progress.status = "cancelled".into();
+        progress.completed_at = Some(chrono::Utc::now().timestamp_millis());
+        emitter.subagent(progress);
+        return ToolExecutionResult {
+            output: "Subagent cancelled by operator".into(),
+            artifact: None,
+            success: false,
+            cancelled: true,
+            ..Default::default()
+        };
+    }
+
+    let needs_synthesis = !completed_cleanly
+        || final_text.trim().is_empty()
+        || (final_text.trim().len() < 120 && (!intermediate_findings.is_empty() || turns > 1));
+
+    if needs_synthesis {
+        if completed_cleanly && !final_text.trim().is_empty() {
+            conversation.push(serde_json::json!({
+                "role": "assistant",
+                "content": final_text
+            }));
+        }
+
+        let synthesis_prompt = if !intermediate_findings.is_empty() {
+            format!(
+                "All tool executions and investigation steps are complete. Below are intermediate findings recorded during the run:\n\n{}\n\nProvide your final, comprehensive, and complete report now. Include all steps, findings, and conclusions in full without truncation.",
+                intermediate_findings.join("\n\n")
+            )
+        } else {
+            "All tool executions and investigation steps are complete. Provide your final comprehensive report of findings and conclusions now. Include all steps in full without truncation.".to_string()
+        };
+
+        conversation.push(serde_json::json!({
+            "role": "user",
+            "content": synthesis_prompt
+        }));
+
+        let mut synthesis_text = String::new();
+        let synth_options = CompletionOptions {
+            thinking: false,
+            reasoning_effort: ReasoningEffort::Low,
+            temperature: 0.3,
+            max_tokens: Some(8192),
+            stream: true,
+        };
+
+        let synth_res = stream_chat_completion(
+            provider,
+            &serde_json::Value::Array(conversation.clone()),
+            &serde_json::json!([]),
+            &synth_options,
+            |chunk| {
+                synthesis_text.push_str(&chunk);
+            },
+            |_reasoning| {},
+            |_delta| {},
+            parent_cancel.clone(),
+        )
+        .await;
+
+        if synth_res.is_ok() && !synthesis_text.trim().is_empty() {
+            final_text = synthesis_text;
+        }
+    }
+
     let report = if final_text.trim().is_empty() {
-        format!("Subagent completed exploration in {turns} turns.")
+        if !intermediate_findings.is_empty() {
+            intermediate_findings.join("\n\n")
+        } else {
+            format!("Subagent completed exploration in {turns} turns.")
+        }
+    } else if !intermediate_findings.is_empty() {
+        let mut missing: Vec<&str> = Vec::new();
+        for finding in &intermediate_findings {
+            let sample = safe_prefix(finding, 40);
+            if !final_text.contains(sample) {
+                missing.push(finding.as_str());
+            }
+        }
+        if !missing.is_empty() && final_text.len() < 1200 {
+            format!("{}\n\n{}", missing.join("\n\n"), final_text)
+        } else {
+            final_text
+        }
     } else {
         final_text
     };
@@ -1651,5 +1764,25 @@ mod tests {
         assert!(skills.iter().any(|s| s.name == "dynamic-skill"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subagent_finding_detection_and_safe_prefix_regression() {
+        // Safe prefix handles multibyte boundaries cleanly
+        let multibyte = "🚀 AetherAgent autonomous subagent findings with UTF-8: 日本語";
+        assert_eq!(safe_prefix(multibyte, 5), "🚀 Aet");
+        assert_eq!(safe_prefix("short", 10), "short");
+
+        // Short procedural boilerplate is rejected
+        assert!(!is_substantive_finding(""));
+        assert!(!is_substantive_finding("   "));
+        assert!(!is_substantive_finding("Let me run grep to search for logs."));
+        assert!(!is_substantive_finding("I will check the directory."));
+        assert!(!is_substantive_finding("Running Get-ChildItem..."));
+
+        // Substantive findings (steps, tables, conclusions, or long text) are accepted
+        assert!(is_substantive_finding("Step 1: tested use_skill with 3 skills. All passed."));
+        assert!(is_substantive_finding("| File | Bytes |\n| --- | --- |\n| a.log | 120 |"));
+        assert!(is_substantive_finding("Found 10 failure lines in red.log with code 500 across 3 sessions."));
     }
 }
