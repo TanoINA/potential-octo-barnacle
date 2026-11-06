@@ -135,6 +135,9 @@ export function App() {
           isReviewing={agent.isReviewing}
           onCompactSession={agent.compactSession}
           onUndoTurn={agent.undoTurn}
+          onRetryTurn={agent.retryTurn}
+          onEditAndResendMessage={agent.editAndResendMessage}
+          onRollbackToMessage={agent.rollbackToMessage}
           onInitAgentsMd={agent.initAgentsMd}
           onExportSession={(format, destination) => { void agent.exportSession(agent.currentSessionId, format, destination); }}
           onSelectCouncilWinner={agent.selectCouncilWinner}

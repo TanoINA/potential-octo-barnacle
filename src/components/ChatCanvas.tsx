@@ -61,6 +61,9 @@ interface ChatCanvasProps {
   onReviewSession?: () => Promise<boolean>;
   isReviewing?: boolean;
   onUndoTurn?: () => Promise<UndoTurnResult | null>;
+  onRetryTurn?: (messageId: string) => Promise<boolean>;
+  onEditAndResendMessage?: (messageId: string, newContent: string) => Promise<boolean>;
+  onRollbackToMessage?: (messageId: string) => Promise<boolean>;
   onInitAgentsMd?: () => Promise<string>;
   onExportSession?: (format: 'html' | 'markdown' | 'json', destination?: string) => void;
   onSelectCouncilWinner?: (messageId: string, winner: 'A' | 'B') => void;
@@ -251,6 +254,9 @@ export function ChatCanvas({
   onReviewSession,
   isReviewing = false,
   onUndoTurn,
+  onRetryTurn,
+  onEditAndResendMessage,
+  onRollbackToMessage,
   onInitAgentsMd,
   onExportSession,
   onSelectCouncilWinner,
@@ -995,6 +1001,14 @@ export function ChatCanvas({
                     message={message}
                     onSelectArtifact={onSelectArtifact}
                     onSelectCouncilWinner={handleSelectCouncilWinner}
+                    onRetry={onRetryTurn ? () => void onRetryTurn(message.id) : undefined}
+                    onEditAndResend={
+                      onEditAndResendMessage
+                        ? (newContent) => void onEditAndResendMessage(message.id, newContent)
+                        : undefined
+                    }
+                    onRollback={onRollbackToMessage ? () => void onRollbackToMessage(message.id) : undefined}
+                    isStreaming={isStreaming}
                   />
                 </div>
               );

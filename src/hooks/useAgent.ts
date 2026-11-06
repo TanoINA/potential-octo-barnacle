@@ -1129,6 +1129,146 @@ export function useAgent() {
     }
   }, [mutateData, persistData]);
 
+
+  const rollbackToMessage = useCallback(async (targetMessageId: string): Promise<boolean> => {
+    if (currentRunRef.current || sessionOperationRef.current) {
+      setLastError('Stop the active run and wait for session operations before rolling back.');
+      return false;
+    }
+    const previous = dataRef.current;
+    const targetIdx = previous.messages.findIndex((m) => m.id === targetMessageId);
+    if (targetIdx < 0) return false;
+
+    const messages = previous.messages.slice(0, targetIdx + 1);
+    const removed = previous.messages.slice(targetIdx + 1);
+    if (removed.length === 0) return true;
+
+    const removedArtifacts = new Set(
+      removed.flatMap((message) => (message.toolCalls || []).flatMap((tool) => tool.artifactId || [])),
+    );
+    const remainingArtifacts = new Set(
+      messages.flatMap((message) => (message.toolCalls || []).flatMap((tool) => tool.artifactId || [])),
+    );
+    const targetTimestamp = previous.messages[targetIdx].timestamp;
+    const artifacts = previous.artifacts.filter((artifact) => {
+      if (remainingArtifacts.has(artifact.id)) return true;
+      if (removedArtifacts.has(artifact.id)) return false;
+      return artifact.timestamp <= targetTimestamp;
+    });
+
+    const next: SessionData = {
+      ...previous,
+      session: {
+        ...previous.session,
+        updatedAt: Date.now(),
+        messageCount: messages.length,
+        preview: [...messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+      },
+      messages,
+      artifacts,
+    };
+
+    sessionOperationRef.current = true;
+    setIsLoading(true);
+    mutateData(() => next);
+    try {
+      await persistData(next);
+      return true;
+    } catch (error) {
+      setLastError(`Could not rollback session: ${String(error)}`);
+      return false;
+    } finally {
+      sessionOperationRef.current = false;
+      setIsLoading(false);
+    }
+  }, [mutateData, persistData]);
+
+  const editAndResendMessage = useCallback(async (messageId: string, newContent: string): Promise<boolean> => {
+    if (currentRunRef.current || sessionOperationRef.current) {
+      setLastError('Stop the active run and wait for session operations before editing.');
+      return false;
+    }
+    const clean = newContent.trim();
+    if (!clean) return false;
+
+    const previous = dataRef.current;
+    const targetIdx = previous.messages.findIndex((m) => m.id === messageId);
+    if (targetIdx < 0) return false;
+
+    const targetMsg = previous.messages[targetIdx];
+    const attachments = targetMsg.attachments;
+
+    const messages = previous.messages.slice(0, targetIdx);
+    const removed = previous.messages.slice(targetIdx);
+    const removedArtifacts = new Set(
+      removed.flatMap((message) => (message.toolCalls || []).flatMap((tool) => tool.artifactId || [])),
+    );
+    const remainingArtifacts = new Set(
+      messages.flatMap((message) => (message.toolCalls || []).flatMap((tool) => tool.artifactId || [])),
+    );
+    const artifacts = previous.artifacts.filter((artifact) => {
+      if (remainingArtifacts.has(artifact.id)) return true;
+      if (removedArtifacts.has(artifact.id)) return false;
+      return artifact.timestamp < targetMsg.timestamp;
+    });
+
+    const next: SessionData = {
+      ...previous,
+      session: {
+        ...previous.session,
+        updatedAt: Date.now(),
+        messageCount: messages.length,
+        preview: [...messages].reverse().find((message) => message.content.trim())?.content.slice(0, 240),
+      },
+      messages,
+      artifacts,
+    };
+
+    sessionOperationRef.current = true;
+    mutateData(() => next);
+    try {
+      await persistData(next);
+    } catch (error) {
+      setLastError(`Could not prepare turn: ${String(error)}`);
+      sessionOperationRef.current = false;
+      return false;
+    }
+    sessionOperationRef.current = false;
+
+    return sendMessage(clean, attachments);
+  }, [mutateData, persistData, sendMessage]);
+
+  const retryTurn = useCallback(async (messageId: string): Promise<boolean> => {
+    if (currentRunRef.current || sessionOperationRef.current) {
+      setLastError('Stop the active run and wait for session operations before retrying.');
+      return false;
+    }
+    const previous = dataRef.current;
+    const targetIdx = previous.messages.findIndex((m) => m.id === messageId);
+    if (targetIdx < 0) return false;
+
+    const targetMsg = previous.messages[targetIdx];
+    let userMsg: ChatMessage | null = null;
+
+    if (targetMsg.role === 'user') {
+      userMsg = targetMsg;
+    } else {
+      for (let i = targetIdx - 1; i >= 0; i--) {
+        if (previous.messages[i].role === 'user') {
+          userMsg = previous.messages[i];
+          break;
+        }
+      }
+    }
+
+    if (!userMsg) {
+      setLastError('No user message found to retry.');
+      return false;
+    }
+
+    return editAndResendMessage(userMsg.id, userMsg.content);
+  }, [editAndResendMessage]);
+
   const initAgentsMd = useCallback(async () => {
     try {
       const result = await invoke<string>('init_workspace_agents_md');
@@ -1177,6 +1317,9 @@ export function useAgent() {
     stopAgent,
     compactSession,
     undoTurn,
+    rollbackToMessage,
+    editAndResendMessage,
+    retryTurn,
     initAgentsMd,
     readAgentsMd,
     saveAgentsMd,
