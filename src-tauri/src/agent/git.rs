@@ -2,7 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::process::Command;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitFileChange {
+    pub path: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitRepoStatus {
     #[serde(rename = "isRepo")]
     pub is_repo: bool,
@@ -10,6 +16,25 @@ pub struct GitRepoStatus {
     #[serde(rename = "hasChanges")]
     pub has_changes: bool,
     pub summary: String,
+    pub files: Vec<GitFileChange>,
+}
+
+/// Parses standard `git status --porcelain` text output into structured file change items.
+pub fn parse_porcelain_output(raw: &str) -> Vec<GitFileChange> {
+    let mut files = Vec::new();
+    for line in raw.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let status = line[..2].trim().to_string();
+        let raw_path = line[2..].trim();
+        // Handle potential git quote encapsulation
+        let path = raw_path.trim_matches('"').to_string();
+        if !path.is_empty() {
+            files.push(GitFileChange { path, status });
+        }
+    }
+    files
 }
 
 /// Checks whether the workspace directory is a valid git repository and gets status.
@@ -20,6 +45,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
             branch: String::new(),
             has_changes: false,
             summary: "No workspace selected".to_string(),
+            files: Vec::new(),
         });
     }
 
@@ -38,6 +64,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
                 branch: String::new(),
                 has_changes: false,
                 summary: "Not a git repository".to_string(),
+                files: Vec::new(),
             });
         }
     }
@@ -63,7 +90,8 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
         .map_err(|e| format!("Failed to check git status: {e}"))?;
 
     let status_str = String::from_utf8_lossy(&status_out.stdout);
-    let has_changes = !status_str.trim().is_empty();
+    let files = parse_porcelain_output(&status_str);
+    let has_changes = !files.is_empty();
 
     Ok(GitRepoStatus {
         is_repo: true,
@@ -74,10 +102,11 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
         },
         has_changes,
         summary: if has_changes {
-            format!("{} modified entries", status_str.lines().count())
+            format!("{} modified entries", files.len())
         } else {
             "Working tree clean".to_string()
         },
+        files,
     })
 }
 
@@ -151,4 +180,53 @@ pub async fn git_push(cwd: &str) -> Result<String, String> {
     } else {
         combined
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_porcelain_lines_correctly() {
+        let raw = "\
+ M src/main.rs
+M  Cargo.toml
+?? new_file.txt
+ D deleted.txt
+";
+        let changes = parse_porcelain_output(raw);
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[0].path, "src/main.rs");
+        assert_eq!(changes[0].status, "M");
+        assert_eq!(changes[1].path, "Cargo.toml");
+        assert_eq!(changes[1].status, "M");
+        assert_eq!(changes[2].path, "new_file.txt");
+        assert_eq!(changes[2].status, "??");
+        assert_eq!(changes[3].path, "deleted.txt");
+        assert_eq!(changes[3].status, "D");
+    }
+
+    #[test]
+    fn parses_quoted_porcelain_paths() {
+        let raw = "?? \"path with spaces/file.txt\"\n";
+        let changes = parse_porcelain_output(raw);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "path with spaces/file.txt");
+    }
+
+    #[tokio::test]
+    async fn non_existent_directory_returns_not_a_repo() {
+        let status = check_git_status("D:\\non_existent_folder_xyz_123")
+            .await
+            .unwrap();
+        assert!(!status.is_repo);
+        assert!(!status.has_changes);
+        assert!(status.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_commit_message_is_rejected() {
+        let err = git_commit("D:\\AetherAgent", "   ").await.unwrap_err();
+        assert_eq!(err, "Commit message cannot be empty");
+    }
 }

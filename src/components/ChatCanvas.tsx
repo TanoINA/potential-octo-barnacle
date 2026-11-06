@@ -9,11 +9,9 @@ import {
   File,
   Folder,
   Globe,
-  LoaderCircle,
   Mic,
   MicOff,
   MoreHorizontal,
-  Network,
   PanelLeft,
   PanelRight,
   Paperclip,
@@ -32,6 +30,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import type { AttachedContext, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult } from '../types/agent';
 import { MessageRow } from './MessageRow';
 import { AetherLogo } from './AetherLogo';
+import { SubagentTreeCard } from './SubagentTreeCard';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 
 interface ChatCanvasProps {
@@ -1068,7 +1067,11 @@ export function ChatCanvas({
           </div>
         )}
 
-        {(activeSkills.length > 0 || subagents.length > 0) && (
+        {subagents && subagents.length > 0 && (
+          <SubagentTreeCard subagents={subagents} onSelectArtifact={onSelectArtifact} />
+        )}
+
+        {activeSkills.length > 0 && (
           <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
             {activeSkills.map((sk) => (
               <div
@@ -1078,27 +1081,6 @@ export function ChatCanvas({
               >
                 <BookOpen size={11} />
                 <span>Active Skill: {sk.name}</span>
-              </div>
-            ))}
-            {subagents.map((sub) => (
-              <div
-                key={sub.id}
-                onClick={() => sub.artifactId && onSelectArtifact(sub.artifactId)}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                  sub.status === 'running'
-                    ? 'border-[#a371f7]/40 bg-[#a371f7]/15 text-[#d2a8ff]'
-                    : sub.status === 'completed'
-                    ? 'border-[#3fb950]/30 bg-[#3fb950]/10 text-[#3fb950] hover:bg-[#3fb950]/20 cursor-pointer'
-                    : 'border-[#f85149]/30 bg-[#f85149]/10 text-[#f85149]'
-                }`}
-              >
-                {sub.status === 'running' ? (
-                  <LoaderCircle size={11} className="spin text-[#a371f7]" />
-                ) : (
-                  <Network size={11} />
-                )}
-                <span>Subagent [{sub.role}]: {sub.status}</span>
-                {sub.artifactId && <span className="ml-1 underline">View</span>}
               </div>
             ))}
           </div>

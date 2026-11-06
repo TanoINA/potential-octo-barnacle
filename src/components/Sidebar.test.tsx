@@ -202,3 +202,62 @@ describe('Sidebar deep-search snippet safety', () => {
     expect(container.querySelector('mark')?.textContent).toBe('database');
   });
 });
+
+describe('Sidebar Git status & actions', () => {
+  it('renders git branch and changed files count, toggles drawer, and submits commit', async () => {
+    const onCommitWorkspace = vi.fn().mockResolvedValue('abc1234');
+    const onRefreshGitStatus = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <Sidebar
+        sessions={[]}
+        currentSessionId=""
+        onNewSession={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onExportSession={vi.fn()}
+        onOpenSettings={vi.fn()}
+        workspaceCwd="D:/my-project"
+        onSelectWorkspace={vi.fn()}
+        effectiveConfig={null}
+        gitStatus={{
+          isRepo: true,
+          branch: 'main',
+          hasChanges: true,
+          summary: '3 modified entries',
+          files: [
+            { path: 'src/App.tsx', status: 'M' },
+            { path: 'README.md', status: 'M' },
+            { path: 'newfile.ts', status: '??' },
+          ],
+        }}
+        onRefreshGitStatus={onRefreshGitStatus}
+        onCommitWorkspace={onCommitWorkspace}
+      />,
+    );
+
+    expect(screen.getByText('main')).toBeTruthy();
+    expect(screen.getByText('3 changes')).toBeTruthy();
+
+    // Click the git toggle button to open changes drawer
+    const gitToggleBtn = screen.getByLabelText('Toggle git details');
+    fireEvent.click(gitToggleBtn);
+
+    // Should display files in drawer
+    expect(screen.getByText('src/App.tsx')).toBeTruthy();
+    expect(screen.getByText('newfile.ts')).toBeTruthy();
+
+    // Type commit message and click commit button
+    const commitInput = screen.getByPlaceholderText(/Commit message/i);
+    fireEvent.change(commitInput, { target: { value: 'feat: add git drawer' } });
+
+    const commitBtn = screen.getByRole('button', { name: /commit/i });
+    fireEvent.click(commitBtn);
+
+    await waitFor(() => {
+      expect(onCommitWorkspace).toHaveBeenCalledWith('feat: add git drawer');
+    });
+  });
+});
+

@@ -9,6 +9,7 @@ import type {
   AgentSettings,
   ChatMessage,
   EffectiveRunConfig,
+  GitRepoStatus,
   ProviderConfig,
   ReasoningEffort,
   Session,
@@ -93,6 +94,7 @@ export function useAgent() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitRepoStatus | null>(null);
   const [subagents, setSubagents] = useState<import('../types/agent').SubagentProgress[]>([]);
   const [activeSkills, setActiveSkills] = useState<import('../types/agent').SkillInfo[]>([]);
 
@@ -410,6 +412,7 @@ export function useAgent() {
           currentRunRef.current = null;
           streamingMessageIdRef.current = null;
           void persistData(dataRef.current).catch(() => undefined);
+          void refreshGitStatus();
           break;
         }
       }
@@ -981,6 +984,37 @@ export function useAgent() {
     }
   }, []);
 
+  const refreshGitStatus = useCallback(async (): Promise<GitRepoStatus | null> => {
+    try {
+      const status = await invoke<GitRepoStatus>('git_status');
+      setGitStatus(status);
+      return status;
+    } catch {
+      setGitStatus(null);
+      return null;
+    }
+  }, []);
+
+  const commitWorkspaceChanges = useCallback(async (message: string): Promise<string> => {
+    try {
+      const res = await invoke<string>('git_commit', { message });
+      await refreshGitStatus();
+      return res;
+    } catch (error) {
+      const err = String(error);
+      setLastError(`Git commit failed: ${err}`);
+      throw new Error(err);
+    }
+  }, [refreshGitStatus]);
+
+  useEffect(() => {
+    if (workspaceCwd) {
+      void refreshGitStatus();
+    } else {
+      setGitStatus(null);
+    }
+  }, [workspaceCwd, refreshGitStatus]);
+
   const activeArtifact = useMemo(
     () => data.artifacts.find((artifact) => artifact.id === activeArtifactId) || null,
     [data.artifacts, activeArtifactId],
@@ -1163,5 +1197,8 @@ export function useAgent() {
     selectWorkspace,
     clearWorkspace,
     listWorkspaceFiles,
+    gitStatus,
+    refreshGitStatus,
+    commitWorkspaceChanges,
   };
 }

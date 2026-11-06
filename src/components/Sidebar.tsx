@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Download, Folder, FolderPlus, Layers, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, Search, Settings, Trash2, X } from 'lucide-react';
+import { Check, Download, Folder, FolderPlus, GitBranch, GitCommit, Layers, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
 import type { DeepSearchResult, EffectiveRunConfig, Session } from '../types/agent';
 import { AetherLogo } from './AetherLogo';
 
@@ -21,6 +21,9 @@ interface SidebarProps {
   onClearWorkspace?: () => void;
   effectiveConfig: EffectiveRunConfig | null;
   overlay?: boolean;
+  gitStatus?: import('../types/agent').GitRepoStatus | null;
+  onRefreshGitStatus?: () => Promise<import('../types/agent').GitRepoStatus | null>;
+  onCommitWorkspace?: (message: string) => Promise<string>;
 }
 
 const SNIPPET_HIGHLIGHT_CLASS = 'bg-[#d29922]/30 text-[#f0883e] font-semibold px-0.5 rounded';
@@ -79,7 +82,27 @@ export const Sidebar = memo(function Sidebar({
   onClearWorkspace,
   effectiveConfig,
   overlay = false,
+  gitStatus,
+  onRefreshGitStatus,
+  onCommitWorkspace,
 }: SidebarProps) {
+  const [gitDrawerOpen, setGitDrawerOpen] = useState(false);
+  const [commitMsg, setCommitMsg] = useState('');
+  const [isCommitting, setIsCommitting] = useState(false);
+
+  const handleCommit = async () => {
+    if (!commitMsg.trim() || !onCommitWorkspace || isCommitting) return;
+    setIsCommitting(true);
+    try {
+      await onCommitWorkspace(commitMsg.trim());
+      setCommitMsg('');
+      setGitDrawerOpen(false);
+    } catch {
+      // error handled in useAgent
+    } finally {
+      setIsCommitting(false);
+    }
+  };
   const [search, setSearch] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -345,34 +368,126 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="border-t border-[#30363d] p-3">
         {workspaceCwd ? (
-          <div className="mb-2 flex w-full items-center gap-1.5 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-left group">
-            <button
-              type="button"
-              onClick={onSelectWorkspace}
-              className="flex items-center gap-2 min-w-0 flex-1 hover:text-white transition-colors"
-              title={workspaceCwd}
-            >
-              <Folder size={14} className="shrink-0 text-[#d29922]" />
-              <span className="min-w-0 flex-1 text-left">
-                <span className="block truncate text-[11px] font-medium text-[#e6edf3]">
-                  {workspaceCwd.split(/[\\/]/).filter(Boolean).pop()}
-                </span>
-                <span className="block text-[9px] text-[#6e7681]">Active workspace</span>
-              </span>
-            </button>
-            {onClearWorkspace && (
+          <div className="mb-2 flex w-full flex-col gap-1 rounded-md border border-[#30363d] bg-[#161b22] p-2 text-left group">
+            <div className="flex items-center gap-1.5 w-full">
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClearWorkspace();
-                }}
-                className="p-1 text-[#6e7681] hover:text-[#f85149] rounded transition-colors"
-                title="Detach workspace from this chat"
-                aria-label="Detach workspace"
+                onClick={onSelectWorkspace}
+                className="flex items-center gap-2 min-w-0 flex-1 hover:text-white transition-colors"
+                title={workspaceCwd}
               >
-                <X size={12} />
+                <Folder size={14} className="shrink-0 text-[#d29922]" />
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-[11px] font-medium text-[#e6edf3]">
+                    {workspaceCwd.split(/[\\/]/).filter(Boolean).pop()}
+                  </span>
+                  <span className="block text-[9px] text-[#6e7681]">Active workspace</span>
+                </span>
               </button>
+              {onClearWorkspace && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClearWorkspace();
+                  }}
+                  className="p-1 text-[#6e7681] hover:text-[#f85149] rounded transition-colors"
+                  title="Detach workspace from this chat"
+                  aria-label="Detach workspace"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            {gitStatus?.isRepo && (
+              <div className="mt-1 border-t border-[#30363d]/50 pt-1.5" data-testid="sidebar-git-section">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="flex items-center gap-1 font-mono text-[#8b949e]">
+                    <GitBranch size={11} className="text-[#8b949e]" />
+                    <span className="truncate max-w-[100px] text-[#c9d1d9]" title={`Branch: ${gitStatus.branch}`}>{gitStatus.branch}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setGitDrawerOpen((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium transition-colors ${
+                      gitStatus.hasChanges
+                        ? 'bg-[#d29922]/15 text-[#d29922] hover:bg-[#d29922]/25'
+                        : 'bg-[#3fb950]/15 text-[#3fb950] hover:bg-[#3fb950]/25'
+                    }`}
+                    title={gitStatus.summary}
+                    aria-label="Toggle git details"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${gitStatus.hasChanges ? 'bg-[#d29922]' : 'bg-[#3fb950]'}`} />
+                    <span>{gitStatus.hasChanges ? `${gitStatus.files.length} changes` : 'Clean'}</span>
+                  </button>
+                </div>
+
+                {gitDrawerOpen && (
+                  <div className="mt-2 rounded border border-[#30363d] bg-[#0d1117] p-2 text-xs" data-testid="git-drawer">
+                    <div className="mb-1.5 flex items-center justify-between text-[10px] text-[#8b949e]">
+                      <span className="font-semibold uppercase tracking-wider">Changes ({gitStatus.files.length})</span>
+                      {onRefreshGitStatus && (
+                        <button
+                          type="button"
+                          onClick={() => void onRefreshGitStatus()}
+                          className="hover:text-[#58a6ff] transition-colors"
+                          title="Refresh git status"
+                          aria-label="Refresh git status"
+                        >
+                          <RefreshCw size={10} />
+                        </button>
+                      )}
+                    </div>
+                    {gitStatus.files.length > 0 ? (
+                      <div className="max-h-28 overflow-y-auto space-y-1 mb-2 scrollbar-thin">
+                        {gitStatus.files.map((file) => (
+                          <div key={file.path} className="flex items-center gap-1.5 text-[10px]">
+                            <span className={`font-mono text-[9px] font-bold px-1 rounded ${
+                              file.status === 'M' ? 'bg-[#d29922]/20 text-[#d29922]' :
+                              file.status === 'D' ? 'bg-[#f85149]/20 text-[#f85149]' :
+                              'bg-[#3fb950]/20 text-[#3fb950]'
+                            }`}>
+                              {file.status}
+                            </span>
+                            <span className="truncate text-[#c9d1d9]" title={file.path}>
+                              {file.path}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-1 text-[10px] text-[#8b949e]">Working tree clean</div>
+                    )}
+
+                    {onCommitWorkspace && gitStatus.hasChanges && (
+                      <div className="mt-1 space-y-1.5">
+                        <input
+                          type="text"
+                          value={commitMsg}
+                          onChange={(e) => setCommitMsg(e.target.value)}
+                          placeholder="Commit message…"
+                          className="w-full rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[11px] text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-[#58a6ff]"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && commitMsg.trim() && !isCommitting) {
+                              void handleCommit();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!commitMsg.trim() || isCommitting}
+                          onClick={() => void handleCommit()}
+                          className="w-full flex items-center justify-center gap-1.5 rounded bg-[#238636] py-1 text-[10px] font-medium text-white hover:bg-[#2ea043] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {isCommitting ? <Loader2 size={10} className="animate-spin" /> : <GitCommit size={10} />}
+                          <span>{isCommitting ? 'Committing…' : 'Commit all changes'}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         ) : (

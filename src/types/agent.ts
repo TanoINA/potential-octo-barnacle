@@ -240,3 +240,16 @@ export interface EffectiveRunConfig {
   reasoningEffort: ReasoningEffort;
   usesSettingsDefault: boolean;
 }
+
+export interface GitFileChange {
+  path: string;
+  status: string;
+}
+
+export interface GitRepoStatus {
+  isRepo: boolean;
+  branch: string;
+  hasChanges: boolean;
+  summary: string;
+  files: GitFileChange[];
+}
