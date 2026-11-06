@@ -660,13 +660,19 @@ export function useAgent() {
         },
       } : undefined,
     };
-    let formattedPrompt = prompt;
+    let activePrompt = prompt;
+    if (/^\/plan(\s+.*)?$/i.test(prompt)) {
+      const task = prompt.replace(/^\/plan\s*/i, '').trim();
+      activePrompt = `Please formulate a structured step-by-step execution plan for: ${task || 'the current task'}.\n\nFormat your plan inside a \`\`\`plan code block with checkable steps:\n\`\`\`plan\n- [ ] Step 1: <Description>\n- [ ] Step 2: <Description>\n- [ ] Step 3: <Description>\n\`\`\`\n\nThen proceed to carry out the steps sequentially, updating and reporting progress as each step completes.`;
+    }
+
+    let formattedPrompt = activePrompt;
     if (attachments && attachments.length > 0) {
       const list = attachments
         .map((a) => `- ${a.isDir ? '[Directory]' : '[File]'} \`${a.path}\``)
         .join('\n');
-      formattedPrompt = prompt
-        ? `${prompt}\n\n## Attached context:\n${list}`
+      formattedPrompt = activePrompt
+        ? `${activePrompt}\n\n## Attached context:\n${list}`
         : `Please examine and help with the following attached context:\n${list}`;
     }
     const apiUserMessage: ChatMessage = {

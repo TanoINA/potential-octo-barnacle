@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Download,
   File,
+  FileCode2,
   Folder,
   Globe,
   Mic,
@@ -98,6 +99,8 @@ export interface SlashItem {
 }
 
 const COMMAND_ITEMS: SlashItem[] = [
+  { id: 'cmd_plan', category: 'COMMANDS', command: '/plan', description: 'Formulate an interactive step-by-step execution plan', usage: 'Formulate execution plan\n/plan <task goal>', iconType: 'terminal', needsPrompt: true },
+  { id: 'cmd_export', category: 'COMMANDS', command: '/export', description: 'Export this conversation transcript to Markdown (.md)', usage: 'Export conversation\n/export', iconType: 'terminal' },
   { id: 'cmd_review', category: 'COMMANDS', command: '/review', description: 'Review the latest completed turn for reusable lessons', iconType: 'terminal' },
   { id: 'cmd_reflect', category: 'COMMANDS', command: '/reflect', description: 'Review the latest completed turn (alias of /review)', iconType: 'terminal' },
   {
@@ -339,6 +342,42 @@ export function ChatCanvas({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const [showJumpBottom, setShowJumpBottom] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!isDraggingOver) setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingOver(false);
+    const droppedFiles = Array.from(e.dataTransfer?.files || []);
+    if (droppedFiles.length === 0) return;
+
+    const newContexts: AttachedContext[] = droppedFiles.map((f) => {
+      const fullPath = (f as any).path || f.name;
+      const isDir = !f.name.includes('.') && f.size === 0;
+      return {
+        id: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: f.name,
+        path: fullPath,
+        isDir,
+      };
+    });
+
+    setAttachedContexts((prev) => {
+      const existing = new Set(prev.map((c) => c.path));
+      const unique = newContexts.filter((c) => !existing.has(c.path));
+      return [...prev, ...unique];
+    });
+  };
 
   // Preload skills automatically on mount and whenever streaming finishes
   useEffect(() => {
@@ -708,6 +747,11 @@ export function ChatCanvas({
           onExportSession('json', arg || undefined);
         }
         break;
+      case '/export':
+        if (onExportSession) {
+          onExportSession('markdown', arg || undefined);
+        }
+        break;
       default:
         break;
     }
@@ -817,7 +861,22 @@ export function ChatCanvas({
   };
 
   return (
-    <div className="relative flex h-full min-w-0 flex-1 flex-col bg-[#0d1117]">
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative flex h-full min-w-0 flex-1 flex-col bg-[#0d1117]"
+    >
+      {/* Drag & Drop Visual Overlay */}
+      {isDraggingOver && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0d1117]/90 backdrop-blur-sm border-2 border-dashed border-[#58a6ff] m-2 rounded-2xl pointer-events-none animate-fadeIn select-none">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#161b22] border border-[#30363d] shadow-2xl mb-3">
+            <FileCode2 size={28} className="text-[#58a6ff] animate-bounce" />
+          </div>
+          <p className="text-sm font-semibold text-[#f0f6fc]">Drop files or folders here</p>
+          <p className="text-xs text-[#8b949e] mt-1">Automatically attach as context to your prompt</p>
+        </div>
+      )}
       <header className="z-20 flex h-11 shrink-0 items-center justify-between border-b border-[#30363d] bg-[#0d1117] px-2 sm:px-3">
         <div className="flex items-center gap-1.5 min-w-0 mr-1.5">
           {onToggleSidebar && (

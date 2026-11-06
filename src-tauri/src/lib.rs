@@ -471,6 +471,26 @@ async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn revert_file_changes(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    agent::git::git_revert_file(&cwd, &path).await
+}
+
+#[tauri::command]
+async fn stage_file_changes(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    agent::git::git_stage_file(&cwd, &path).await
+}
+
+#[tauri::command]
 async fn run_shell_command(
     state: State<'_, AppState>,
     command: String,
@@ -544,6 +564,8 @@ pub fn run() {
             git_status,
             git_commit,
             git_push,
+            revert_file_changes,
+            stage_file_changes,
             run_shell_command,
             compact_session,
             init_workspace_agents_md,

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check } from 'lucide-react';
+import { InteractivePlanCard } from './InteractivePlanCard';
 
 interface MarkdownRendererProps {
   content: string;
@@ -120,6 +121,10 @@ function CodeBlock({ codeText, className }: { codeText: string; className?: stri
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
   const lang = className ? className.replace('language-', '') : '';
+
+  if (lang === 'plan') {
+    return <InteractivePlanCard rawPlan={codeText} />;
+  }
 
   useEffect(() => () => {
     if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);

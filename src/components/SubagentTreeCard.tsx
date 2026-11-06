@@ -8,7 +8,7 @@ interface SubagentTreeCardProps {
 }
 
 export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCardProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   if (!subagents || subagents.length === 0) return null;
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, ChevronDown, ChevronUp, ExternalLink, FileCode2, GitBranch, GitCommit, GitCompare, GitPullRequest, Loader2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, ExternalLink, FileCode2, GitBranch, GitCommit, GitCompare, GitPullRequest, Loader2, Undo2 } from 'lucide-react';
 import type { FileDiffStat, ToolCallItem } from '../types/agent';
 
 interface FilesChangedCardProps {
@@ -54,6 +54,39 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   const [commitMessage, setCommitMessage] = useState('');
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitResult, setCommitResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [fileActions, setFileActions] = useState<Record<string, 'reverted' | 'accepted' | 'loading'>>({});
+
+  const handleRevertFile = async (filePath: string) => {
+    setFileActions((prev) => ({ ...prev, [filePath]: 'loading' }));
+    try {
+      await invoke('revert_file_changes', { path: filePath });
+      setFileActions((prev) => ({ ...prev, [filePath]: 'reverted' }));
+      invoke<GitStatusResult>('git_status').then(setGitStatus).catch(() => {});
+    } catch (err) {
+      console.error('Failed to revert file', err);
+      setFileActions((prev) => {
+        const next = { ...prev };
+        delete next[filePath];
+        return next;
+      });
+    }
+  };
+
+  const handleStageFile = async (filePath: string) => {
+    setFileActions((prev) => ({ ...prev, [filePath]: 'loading' }));
+    try {
+      await invoke('stage_file_changes', { path: filePath });
+      setFileActions((prev) => ({ ...prev, [filePath]: 'accepted' }));
+      invoke<GitStatusResult>('git_status').then(setGitStatus).catch(() => {});
+    } catch (err) {
+      console.error('Failed to stage file', err);
+      setFileActions((prev) => {
+        const next = { ...prev };
+        delete next[filePath];
+        return next;
+      });
+    }
+  };
 
   // Auto-generate a suggested conventional commit message
   useEffect(() => {
@@ -191,6 +224,38 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                     <span>Review</span>
                     <ExternalLink size={10} />
                   </button>
+                )}
+
+                {/* Accept & Revert buttons */}
+                {fileActions[stat.path] === 'reverted' ? (
+                  <span className="text-[10px] text-[#8b949e] font-mono italic">Reverted</span>
+                ) : fileActions[stat.path] === 'accepted' ? (
+                  <span className="flex items-center gap-1 text-[10px] text-[#3fb950] font-mono">
+                    <Check size={11} /> Staged
+                  </span>
+                ) : (
+                  <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                    <button
+                      type="button"
+                      disabled={fileActions[stat.path] === 'loading'}
+                      onClick={() => handleStageFile(stat.path)}
+                      className="flex items-center gap-0.5 rounded border border-[#238636]/40 bg-[#238636]/10 px-1.5 py-0.5 text-[10px] text-[#3fb950] hover:bg-[#238636]/20 transition-colors"
+                      title="Accept / stage this file change"
+                    >
+                      <Check size={10} />
+                      <span>Accept</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={fileActions[stat.path] === 'loading'}
+                      onClick={() => handleRevertFile(stat.path)}
+                      className="flex items-center gap-0.5 rounded border border-[#da3633]/40 bg-[#da3633]/10 px-1.5 py-0.5 text-[10px] text-[#f85149] hover:bg-[#da3633]/20 transition-colors"
+                      title="Revert / discard changes to this file"
+                    >
+                      <Undo2 size={10} />
+                      <span>Revert</span>
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

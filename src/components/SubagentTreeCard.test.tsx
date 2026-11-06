@@ -29,11 +29,16 @@ describe('SubagentTreeCard', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders subagent tree card with task counts and details', () => {
+  it('renders subagent tree card with task counts and collapsed by default', () => {
     render(<SubagentTreeCard subagents={sampleSubagents} />);
     expect(screen.getByText('Subagent Tasks')).toBeTruthy();
     expect(screen.getByText('1/2 done')).toBeTruthy();
     expect(screen.getByText('1 active')).toBeTruthy();
+    // Collapsed by default
+    expect(screen.queryByText('Researcher')).toBeNull();
+
+    // Expand to see details
+    fireEvent.click(screen.getByText('Subagent Tasks'));
     expect(screen.getByText('Researcher')).toBeTruthy();
     expect(screen.getByText('Code Generator')).toBeTruthy();
     expect(screen.getByText('Found 3 key design patterns')).toBeTruthy();
@@ -42,18 +47,20 @@ describe('SubagentTreeCard', () => {
   it('toggles expansion when header is clicked', () => {
     render(<SubagentTreeCard subagents={sampleSubagents} />);
     const header = screen.getByText('Subagent Tasks');
-    expect(screen.getByText('Investigate architecture specifications')).toBeTruthy();
-
-    fireEvent.click(header);
     expect(screen.queryByText('Investigate architecture specifications')).toBeNull();
 
     fireEvent.click(header);
     expect(screen.getByText('Investigate architecture specifications')).toBeTruthy();
+
+    fireEvent.click(header);
+    expect(screen.queryByText('Investigate architecture specifications')).toBeNull();
   });
 
   it('calls onSelectArtifact when view artifact button is clicked', () => {
     const select = vi.fn();
     render(<SubagentTreeCard subagents={sampleSubagents} onSelectArtifact={select} />);
+    // Expand first
+    fireEvent.click(screen.getByText('Subagent Tasks'));
     const button = screen.getByText('View Generated Artifact');
     fireEvent.click(button);
     expect(select).toHaveBeenCalledWith('art-1');
@@ -71,7 +78,9 @@ describe('SubagentTreeCard', () => {
       },
     ];
     render(<SubagentTreeCard subagents={cancelledSubagents} />);
-    expect(screen.getByText('0/1 done · 1 cancelled')).toBeTruthy();
+    expect(screen.getByText(/0\/1 done · 1 cancelled/)).toBeTruthy();
+    // Expand to verify body item
+    fireEvent.click(screen.getByText('Subagent Tasks'));
     expect(screen.getByText('cancelled')).toBeTruthy();
   });
 });

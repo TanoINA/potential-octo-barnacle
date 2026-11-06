@@ -101,7 +101,7 @@ pub async fn load_skills(configured_paths: &[String]) -> Vec<SkillInfo> {
         let files = if root.is_file() {
             vec![root.clone()]
         } else {
-            WalkBuilder::new(&root)
+            let mut list: Vec<PathBuf> = WalkBuilder::new(&root)
                 .hidden(false)
                 .git_ignore(false)
                 .max_depth(Some(6))
@@ -115,7 +115,9 @@ pub async fn load_skills(configured_paths: &[String]) -> Vec<SkillInfo> {
                         .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
                 })
                 .take(1_000)
-                .collect()
+                .collect();
+            list.sort();
+            list
         };
 
         for path in files {

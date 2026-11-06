@@ -181,6 +181,79 @@ pub async fn git_push(cwd: &str) -> Result<String, String> {
     })
 }
 
+/// Reverts changes made to a specific file (git checkout/restore, or removes untracked file).
+pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, String> {
+    if cwd.trim().is_empty() || !Path::new(cwd).is_dir() {
+        return Err("Invalid or missing workspace directory".to_string());
+    }
+    let full_path = Path::new(cwd).join(file_path);
+
+    // Check status of this file
+    let status_out = super::create_hidden_command("git")
+        .args(["status", "--porcelain", file_path])
+        .current_dir(cwd)
+        .output()
+        .await;
+
+    if let Ok(out) = status_out {
+        let text = String::from_utf8_lossy(&out.stdout);
+        if text.trim().starts_with("??") {
+            // Untracked file: safely remove it if it exists
+            if full_path.is_file() {
+                std::fs::remove_file(&full_path)
+                    .map_err(|e| format!("Failed to remove untracked file: {e}"))?;
+                return Ok(format!("Removed untracked file {}", file_path));
+            }
+        }
+    }
+
+    // Attempt git checkout
+    let checkout_out = super::create_hidden_command("git")
+        .args(["checkout", "--", file_path])
+        .current_dir(cwd)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to revert file changes: {e}"))?;
+
+    if !checkout_out.status.success() {
+        // Fallback to git restore
+        let restore_out = super::create_hidden_command("git")
+            .args(["restore", file_path])
+            .current_dir(cwd)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to restore file: {e}"))?;
+
+        if !restore_out.status.success() {
+            let err = String::from_utf8_lossy(&restore_out.stderr);
+            return Err(format!("Could not revert {}: {}", file_path, err.trim()));
+        }
+    }
+
+    Ok(format!("Reverted changes in {}", file_path))
+}
+
+/// Stages a specific file (git add).
+pub async fn git_stage_file(cwd: &str, file_path: &str) -> Result<String, String> {
+    if cwd.trim().is_empty() || !Path::new(cwd).is_dir() {
+        return Err("Invalid or missing workspace directory".to_string());
+    }
+
+    let add_out = super::create_hidden_command("git")
+        .args(["add", "--", file_path])
+        .current_dir(cwd)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to stage file: {e}"))?;
+
+    if !add_out.status.success() {
+        let err = String::from_utf8_lossy(&add_out.stderr);
+        return Err(format!("Could not stage {}: {}", file_path, err.trim()));
+    }
+
+    Ok(format!("Staged {}", file_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

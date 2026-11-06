@@ -138,8 +138,8 @@ async fn activate_skill(
     let result = match read_skill_content(&skill).await {
         Ok(instructions) => ToolExecutionResult::success(
             format!(
-                "Skill '{}' activated.\n\nInstructions:\n{}",
-                skill.name, instructions
+                "Skill '{}' activated from `{}`.\n\nInstructions:\n{}",
+                skill.name, skill.path, instructions
             ),
             None,
         ),
