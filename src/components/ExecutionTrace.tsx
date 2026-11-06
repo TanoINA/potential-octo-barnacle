@@ -110,6 +110,15 @@ function getToolDisplayInfo(tool: ToolCallItem): {
     };
   }
 
+  if (name === 'spawn_subagent') {
+    const role = typeof args.role === 'string' ? args.role : typeof args.task === 'string' ? args.task.slice(0, 30) : 'Subagent';
+    return {
+      icon: <Bot size={13} className="text-[#58a6ff] shrink-0" />,
+      label: `spawn_subagent: ${role}`,
+      isTerminal: false,
+    };
+  }
+
   if (name === 'learn_skill') {
     const skillName = typeof args.name === 'string' ? args.name : 'skill';
     return {
@@ -139,6 +148,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
     let skills = 0;
     let files = 0;
     let commands = 0;
+    let subagents = 0;
     const skillNames: string[] = [];
 
     toolCalls.forEach((tool) => {
@@ -151,6 +161,8 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
         files += 1;
       } else if (name === 'run_command') {
         commands += 1;
+      } else if (name === 'spawn_subagent') {
+        subagents += 1;
       }
     });
 
@@ -163,6 +175,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
     if (files > 0) parts.push(`explored ${files} file${files > 1 ? 's' : ''}`);
     if (commands > 0) parts.push(`ran ${commands} command${commands > 1 ? 's' : ''}`);
+    if (subagents > 0) parts.push(`spawned ${subagents} subagent${subagents > 1 ? 's' : ''}`);
 
     return parts.length > 0 ? parts.join(', ') : `${toolCalls.length} step${toolCalls.length > 1 ? 's' : ''} executed`;
   }, [toolCalls]);

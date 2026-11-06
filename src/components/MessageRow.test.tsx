@@ -167,4 +167,60 @@ describe('MessageRow Action Buttons', () => {
 
     expect(screen.getByText('Semua pengujian berhasil diselesaikan.')).toBeTruthy();
   });
+
+  it('renders multi-segment Hermes style interleaved flow in chronological order', () => {
+    const hermesMessage: ChatMessage = {
+      id: 'msg-hermes-1',
+      role: 'assistant',
+      content: 'Langkah pertama... File ketemu... Semua selesai.',
+      timestamp: 1700000020000,
+      segments: [
+        {
+          id: 'seg-1',
+          text: 'Langkah pertama: cek file dan siapkan reverse engineering.',
+          toolCalls: [
+            {
+              id: 'call-1',
+              name: 'run_command',
+              args: { command: 'Get-ChildItem' },
+              status: 'done',
+              durationMs: 45,
+            },
+          ],
+        },
+        {
+          id: 'seg-2',
+          text: 'File ketemu: PE32 executable. Sekarang muat skema tool.',
+          toolCalls: [
+            {
+              id: 'call-2',
+              name: 'spawn_subagent',
+              args: { role: 'Binary Analyzer', task: 'Analyze header' },
+              status: 'done',
+              durationMs: 120,
+            },
+          ],
+        },
+        {
+          id: 'seg-3',
+          text: 'Semua analisis selesai. Berikut kesimpulannya.',
+          toolCalls: [],
+        },
+      ],
+    };
+
+    render(
+      <MessageRow
+        message={hermesMessage}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Langkah pertama: cek file dan siapkan reverse engineering.')).toBeTruthy();
+    expect(screen.getByText('File ketemu: PE32 executable. Sekarang muat skema tool.')).toBeTruthy();
+    expect(screen.getByText('Semua analisis selesai. Berikut kesimpulannya.')).toBeTruthy();
+
+    const traces = screen.getAllByTestId('execution-trace');
+    expect(traces.length).toBe(2);
+  });
 });

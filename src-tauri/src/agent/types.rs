@@ -285,6 +285,17 @@ pub struct ChatMessage {
     pub self_improvement: Option<SelfImprovementEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preamble: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segments: Option<Vec<MessageSegment>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageSegment {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "toolCalls", default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallItem>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

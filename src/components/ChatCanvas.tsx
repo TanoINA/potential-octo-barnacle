@@ -855,31 +855,50 @@ export function ChatCanvas({
             {effectiveConfig?.thinking && <Brain size={12} className="shrink-0 text-[#8b949e]" />}
           </button>
 
-          {/* Artifacts Sidecar Toggle */}
-          <button
-            type="button"
-            onClick={onToggleArtifacts}
-            disabled={artifactCount === 0}
-            className={`flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors shrink-0 ${
-              isArtifactOpen
-                ? 'border-[#58a6ff] bg-[#58a6ff]/15 text-[#58a6ff] font-medium'
-                : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
-            } disabled:cursor-not-allowed disabled:opacity-40 hover:disabled:text-[#8b949e]`}
-            title={
-              artifactCount === 0
-                ? 'No artifacts generated in this chat yet'
-                : isArtifactOpen
-                ? 'Hide artifacts panel'
-                : 'Show artifacts panel'
-            }
-          >
-            <PanelRight size={13} />
-            {artifactCount > 0 && (
-              <span className="rounded bg-[#1f6feb] px-1 font-mono text-[9px] font-bold text-white">
-                {artifactCount}
-              </span>
-            )}
-          </button>
+          {/* Task / Artifacts Bubble Button */}
+          {(() => {
+            const runningTasks = subagents?.filter((s) => s.status === 'running').length || 0;
+            return (
+              <button
+                type="button"
+                onClick={onToggleArtifacts}
+                disabled={artifactCount === 0 && runningTasks === 0}
+                className={`flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-all shrink-0 ${
+                  isArtifactOpen
+                    ? 'border-[#58a6ff] bg-[#58a6ff]/20 text-[#58a6ff] font-medium shadow-sm'
+                    : runningTasks > 0
+                    ? 'border-[#f0883e]/60 bg-[#f0883e]/15 text-[#f0883e] font-medium animate-pulse hover:bg-[#f0883e]/25'
+                    : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
+                } disabled:cursor-not-allowed disabled:opacity-40 hover:disabled:text-[#8b949e]`}
+                title={
+                  isArtifactOpen
+                    ? 'Close task inspector / artifacts panel'
+                    : runningTasks > 0
+                    ? `${runningTasks} task(s) active - click to inspect`
+                    : 'Show task inspector / artifacts panel'
+                }
+              >
+                {runningTasks > 0 ? (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#f0883e] opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-[#f0883e]" />
+                    </span>
+                    <span className="text-[11px] font-mono font-semibold text-[#f0883e]">{runningTasks} Active</span>
+                  </>
+                ) : (
+                  <>
+                    <PanelRight size={13} />
+                    {artifactCount > 0 && (
+                      <span className="rounded bg-[#1f6feb] px-1 font-mono text-[9px] font-bold text-white">
+                        {artifactCount}
+                      </span>
+                    )}
+                  </>
+                )}
+              </button>
+            );
+          })()}
 
           {/* More Actions Dropdown Menu (...) */}
           <div className="relative shrink-0" data-more-menu>
@@ -1086,8 +1105,8 @@ export function ChatCanvas({
           <SubagentTreeCard subagents={subagents} onSelectArtifact={onSelectArtifact} />
         )}
 
-        {activeSkills.length > 0 && (
-          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
+        {activeSkills.length > 0 && isStreaming && (
+          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5 animate-fadeIn">
             {activeSkills.map((sk) => (
               <div
                 key={sk.name}

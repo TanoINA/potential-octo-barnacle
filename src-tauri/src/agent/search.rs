@@ -282,6 +282,7 @@ mod tests {
                 run_status: None,
                 self_improvement: None,
                 preamble: None,
+                segments: None,
             }],
             artifacts: vec![Artifact {
                 id: format!("art_{id}"),
@@ -423,6 +424,7 @@ mod tests {
                 run_status: None,
                 self_improvement: None,
                 preamble: None,
+                segments: None,
             })
             .collect();
         index_session_into(&mut conn, &busy).unwrap();

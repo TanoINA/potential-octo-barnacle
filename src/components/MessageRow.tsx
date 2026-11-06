@@ -48,13 +48,19 @@ export const MessageRow = memo(function MessageRow({
   const isSystem = message.role === 'system';
 
   const handleCopy = useCallback(() => {
-    const fullText = [message.preamble, message.content].filter(Boolean).join('\n\n');
+    let fullText = '';
+    if (message.segments && message.segments.length > 0) {
+      fullText = message.segments.map((s) => s.text).filter(Boolean).join('\n\n');
+    }
+    if (!fullText) {
+      fullText = [message.preamble, message.content].filter(Boolean).join('\n\n');
+    }
     if (!fullText) return;
     void navigator.clipboard.writeText(fullText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-  }, [message.content, message.preamble]);
+  }, [message.content, message.preamble, message.segments]);
 
   const handleSaveEdit = useCallback(() => {
     const trimmed = (editText || '').trim();
@@ -136,23 +142,57 @@ export const MessageRow = memo(function MessageRow({
         </div>
       )}
 
-      {/* Opening Preamble (rendered above ExecutionTrace) */}
-      {!isUser && message.preamble && (
-        <div
-          className="mb-2 max-w-full select-text break-words rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-3 text-[13px] leading-6 text-[#e6edf3]"
-          data-testid="message-preamble"
-        >
-          <MarkdownRenderer content={message.preamble} />
-        </div>
-      )}
+      {/* Interleaved Segments (Hermes style per-turn flow: text -> tools -> text -> tools) */}
+      {!isUser && message.segments && message.segments.length > 0 ? (
+        <div className="w-full space-y-3">
+          {message.segments.map((seg, idx) => {
+            const hasText = Boolean(seg.text && seg.text.trim().length > 0);
+            const hasTools = Boolean(seg.toolCalls && seg.toolCalls.length > 0);
+            if (!hasText && !hasTools) return null;
 
-      {/* Execution Trace (Hermes style progress / status accordion) */}
-      {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
-        <ExecutionTrace
-          toolCalls={message.toolCalls}
-          isStreaming={message.isStreaming}
-          onSelectArtifact={onSelectArtifact}
-        />
+            return (
+              <div key={seg.id || idx} className="w-full space-y-2">
+                {hasText && (
+                  <div
+                    className="max-w-full select-text break-words rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-3 text-[13px] leading-6 text-[#e6edf3]"
+                    data-testid={idx === 0 ? "message-preamble" : undefined}
+                  >
+                    <MarkdownRenderer content={seg.text!} />
+                  </div>
+                )}
+
+                {hasTools && (
+                  <ExecutionTrace
+                    toolCalls={seg.toolCalls!}
+                    isStreaming={message.isStreaming && idx === message.segments!.length - 1}
+                    onSelectArtifact={onSelectArtifact}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <>
+          {/* Opening Preamble (rendered above ExecutionTrace) */}
+          {!isUser && message.preamble && (
+            <div
+              className="mb-2 max-w-full select-text break-words rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-3 text-[13px] leading-6 text-[#e6edf3]"
+              data-testid="message-preamble"
+            >
+              <MarkdownRenderer content={message.preamble} />
+            </div>
+          )}
+
+          {/* Execution Trace (Hermes style progress / status accordion) */}
+          {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+            <ExecutionTrace
+              toolCalls={message.toolCalls}
+              isStreaming={message.isStreaming}
+              onSelectArtifact={onSelectArtifact}
+            />
+          )}
+        </>
       )}
 
       {/* Council Multi-Model Comparison if available */}
@@ -203,17 +243,19 @@ export const MessageRow = memo(function MessageRow({
           </div>
         </div>
       ) : (
-        message.content && (
-          <div
-            className={`max-w-full select-text break-words rounded-xl px-4 py-3 text-[13px] leading-6 ${
-              isUser
-                ? 'bg-[#1f6feb] text-white whitespace-pre-wrap'
-                : 'border border-[#30363d] bg-[#161b22] text-[#e6edf3]'
-            }`}
-          >
-            {isUser ? message.content : <MarkdownRenderer content={message.content} />}
-          </div>
-        )
+        isUser ? (
+          message.content && (
+            <div className="max-w-full select-text break-words rounded-xl px-4 py-3 text-[13px] leading-6 bg-[#1f6feb] text-white whitespace-pre-wrap">
+              {message.content}
+            </div>
+          )
+        ) : (!message.segments || message.segments.length === 0) ? (
+          message.content && (
+            <div className="max-w-full select-text break-words rounded-xl px-4 py-3 text-[13px] leading-6 border border-[#30363d] bg-[#161b22] text-[#e6edf3]">
+              <MarkdownRenderer content={message.content} />
+            </div>
+          )
+        ) : null
       )}
 
       {!message.content && !message.preamble && message.isStreaming && !message.reasoning && (!message.toolCalls || message.toolCalls.length === 0) && (

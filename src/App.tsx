@@ -38,9 +38,8 @@ export function App() {
   const openLiveShell = useCallback(() => setLiveShellOpen(true), []);
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), []);
 
-  useEffect(() => {
-    if (agent.activeArtifactId) setArtifactOpen(true);
-  }, [agent.activeArtifactId]);
+  // Background tasks / artifacts do not auto-force the pane open.
+  // The top-right task bubble alerts the user, and clicking it opens the overlay drawer.
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -164,6 +163,7 @@ export function App() {
           activeArtifactId={agent.activeArtifactId}
           onSelectArtifact={agent.setActiveArtifactId}
           onClose={() => setArtifactOpen(false)}
+          overlay={true}
         />
       )}
 

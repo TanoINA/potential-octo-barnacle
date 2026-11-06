@@ -58,6 +58,12 @@ export interface SelfImprovementEvent {
   workspace_cwd?: string;
 }
 
+export interface MessageSegment {
+  id: string;
+  text?: string;
+  toolCalls?: ToolCallItem[];
+}
+
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -72,6 +78,7 @@ export interface ChatMessage {
   runStatus?: 'completed' | 'cancelled' | 'failed';
   selfImprovement?: SelfImprovementEvent;
   preamble?: string;
+  segments?: MessageSegment[];
 }
 
 export interface Artifact {

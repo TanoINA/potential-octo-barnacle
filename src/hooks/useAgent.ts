@@ -5,6 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { playTaskCompleteChime, showDesktopNotification } from '../utils/audioChime';
 import type {
   AgentEvent,
+  MessageSegment,
   AgentRunRequest,
   AgentSettings,
   ChatMessage,
@@ -95,6 +96,23 @@ function restoreSession(loaded: SessionData, reviews: Map<string, SelfImprovemen
         const split = splitLegacyPreamble(withPreamble.content);
         if (split) {
           withPreamble = { ...withPreamble, preamble: split.preamble, content: split.content };
+        }
+      }
+      if (!withPreamble.segments && withPreamble.role === 'assistant') {
+        if (withPreamble.preamble && withPreamble.toolCalls && withPreamble.toolCalls.length > 0) {
+          withPreamble.segments = [
+            { id: 'seg_0', text: withPreamble.preamble, toolCalls: withPreamble.toolCalls },
+            { id: 'seg_1', text: withPreamble.content, toolCalls: [] },
+          ];
+        } else if (withPreamble.toolCalls && withPreamble.toolCalls.length > 0) {
+          withPreamble.segments = [
+            { id: 'seg_0', text: '', toolCalls: withPreamble.toolCalls },
+            { id: 'seg_1', text: withPreamble.content, toolCalls: [] },
+          ];
+        } else if (withPreamble.content) {
+          withPreamble.segments = [
+            { id: 'seg_0', text: withPreamble.content, toolCalls: [] },
+          ];
         }
       }
       return review ? { ...withPreamble, selfImprovement: review } : withPreamble;
@@ -204,13 +222,32 @@ export function useAgent() {
       let messages = current.messages;
       const messageId = streamingMessageIdRef.current;
       if (messageId && (text.content || text.reasoning)) {
-        messages = messages.map((message) => message.id === messageId
-          ? {
-              ...message,
-              content: (message.content || '') + text.content,
-              reasoning: (message.reasoning || '') + text.reasoning,
+        messages = messages.map((message) => {
+          if (message.id !== messageId) return message;
+          const segments: MessageSegment[] = message.segments ? [...message.segments] : [{ id: 'seg_0', text: '', toolCalls: [] }];
+          if (text.content) {
+            const lastIdx = segments.length - 1;
+            const last = segments[lastIdx];
+            if (last && last.toolCalls && last.toolCalls.length > 0) {
+              segments.push({
+                id: `seg_${segments.length}`,
+                text: text.content,
+                toolCalls: [],
+              });
+            } else if (last) {
+              segments[lastIdx] = {
+                ...last,
+                text: (last.text || '') + text.content,
+              };
             }
-          : message);
+          }
+          return {
+            ...message,
+            content: (message.content || '') + text.content,
+            reasoning: (message.reasoning || '') + text.reasoning,
+            segments,
+          };
+        });
       }
       if (messageId && (council.contentA || council.reasoningA || council.contentB || council.reasoningB)) {
         messages = messages.map((message) => {
@@ -327,7 +364,17 @@ export function useAgent() {
               const index = tools.findIndex((tool) => tool.id === payload.data.tool.id);
               if (index >= 0) tools[index] = payload.data.tool;
               else tools.push(payload.data.tool);
-              return { ...message, preamble, content, toolCalls: tools };
+
+              const segments: MessageSegment[] = message.segments ? [...message.segments] : [{ id: 'seg_0', text: '', toolCalls: [] }];
+              const lastIdx = Math.max(0, segments.length - 1);
+              const lastSeg = segments[lastIdx] || { id: `seg_${lastIdx}`, text: '', toolCalls: [] };
+              const segTools = [...(lastSeg.toolCalls || [])];
+              const segIdx = segTools.findIndex((tool) => tool.id === payload.data.tool.id);
+              if (segIdx >= 0) segTools[segIdx] = payload.data.tool;
+              else segTools.push(payload.data.tool);
+              segments[lastIdx] = { ...lastSeg, toolCalls: segTools };
+
+              return { ...message, preamble, content, toolCalls: tools, segments };
             }),
           }));
           break;
@@ -451,6 +498,7 @@ export function useAgent() {
               runStatus: payload.data.cancelled ? 'cancelled' : payload.data.successful === false || runFailedRef.current ? 'failed' : 'completed',
             } : message),
           }));
+          setActiveSkills([]);
           setIsStreaming(false);
           setStopRequested(false);
           currentRunRef.current = null;
@@ -565,6 +613,7 @@ export function useAgent() {
       content: '',
       timestamp: Date.now(),
       toolCalls: [],
+      segments: [{ id: 'seg_0', text: '', toolCalls: [] }],
       runId,
       isStreaming: true,
       councilTurn: options?.council && options.candidateA && options.candidateB ? {
