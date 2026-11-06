@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   BookOpen,
+  Bot,
   ChevronDown,
   ChevronRight,
   FileCode2,
