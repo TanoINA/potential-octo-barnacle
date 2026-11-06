@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -934,7 +934,7 @@ async fn run_command(
         resolve_workspace_path(&context.cwd, ".")?
     };
     let mut process = if cfg!(windows) {
-        let mut process = Command::new("powershell.exe");
+        let mut process = super::create_hidden_command("powershell.exe");
         process.args([
             "-NoLogo",
             "-NoProfile",
@@ -946,7 +946,7 @@ async fn run_command(
         ]);
         process
     } else {
-        let mut process = Command::new("sh");
+        let mut process = super::create_hidden_command("sh");
         process.args(["-c", command]);
         process
     };
@@ -1121,7 +1121,7 @@ async fn learn_skill(
 async fn terminate_child(child: &mut Child) {
     #[cfg(windows)]
     if let Some(id) = child.id() {
-        let _ = Command::new("taskkill")
+        let _ = super::create_hidden_command("taskkill")
             .arg("/PID")
             .arg(id.to_string())
             .arg("/T")

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
 
 struct Shared {
@@ -25,7 +25,7 @@ impl McpClient {
         if config.command.trim().is_empty() {
             return Err("MCP server command must not be empty".into());
         }
-        let mut command = Command::new(&config.command);
+        let mut command = super::create_hidden_command(&config.command);
         command
             .args(&config.args)
             .envs(&config.env)

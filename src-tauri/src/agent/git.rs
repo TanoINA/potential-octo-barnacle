@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitFileChange {
@@ -50,7 +49,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
     }
 
     // 1. Check if git repo
-    let check = Command::new("git")
+    let check = super::create_hidden_command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(cwd)
         .output()
@@ -70,7 +69,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
     }
 
     // 2. Get current branch
-    let branch_out = Command::new("git")
+    let branch_out = super::create_hidden_command("git")
         .args(["branch", "--show-current"])
         .current_dir(cwd)
         .output()
@@ -82,7 +81,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
         .to_string();
 
     // 3. Check status
-    let status_out = Command::new("git")
+    let status_out = super::create_hidden_command("git")
         .args(["status", "--porcelain"])
         .current_dir(cwd)
         .output()
@@ -121,7 +120,7 @@ pub async fn git_commit(cwd: &str, message: &str) -> Result<String, String> {
     }
 
     // git add -A
-    let add_out = Command::new("git")
+    let add_out = super::create_hidden_command("git")
         .args(["add", "-A"])
         .current_dir(cwd)
         .output()
@@ -136,7 +135,7 @@ pub async fn git_commit(cwd: &str, message: &str) -> Result<String, String> {
     }
 
     // git commit -m <message>
-    let commit_out = Command::new("git")
+    let commit_out = super::create_hidden_command("git")
         .args(["commit", "-m", msg])
         .current_dir(cwd)
         .output()
@@ -160,7 +159,7 @@ pub async fn git_push(cwd: &str) -> Result<String, String> {
         return Err("Invalid or missing workspace directory".to_string());
     }
 
-    let push_out = Command::new("git")
+    let push_out = super::create_hidden_command("git")
         .args(["push"])
         .current_dir(cwd)
         .output()
