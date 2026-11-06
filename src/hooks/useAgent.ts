@@ -1184,8 +1184,15 @@ export function useAgent() {
   }, [mutateData, persistData]);
 
   const editAndResendMessage = useCallback(async (messageId: string, newContent: string): Promise<boolean> => {
-    if (currentRunRef.current || sessionOperationRef.current) {
-      setLastError('Stop the active run and wait for session operations before editing.');
+    if (currentRunRef.current) {
+      const activeRun = currentRunRef.current;
+      currentRunRef.current = null;
+      setIsStreaming(false);
+      setStopRequested(false);
+      void invoke('abort_agent', { runId: activeRun }).catch(() => {});
+    }
+    if (sessionOperationRef.current) {
+      setLastError('Wait for session operations before editing.');
       return false;
     }
     const clean = newContent.trim();
@@ -1239,8 +1246,15 @@ export function useAgent() {
   }, [mutateData, persistData, sendMessage]);
 
   const retryTurn = useCallback(async (messageId: string): Promise<boolean> => {
-    if (currentRunRef.current || sessionOperationRef.current) {
-      setLastError('Stop the active run and wait for session operations before retrying.');
+    if (currentRunRef.current) {
+      const activeRun = currentRunRef.current;
+      currentRunRef.current = null;
+      setIsStreaming(false);
+      setStopRequested(false);
+      void invoke('abort_agent', { runId: activeRun }).catch(() => {});
+    }
+    if (sessionOperationRef.current) {
+      setLastError('Wait for session operations before retrying.');
       return false;
     }
     const previous = dataRef.current;

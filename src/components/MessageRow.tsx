@@ -39,8 +39,10 @@ export const MessageRow = memo(function MessageRow({
 }: MessageRowProps) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
-  const [editText, setEditText] = useState(message.content);
+  const [editText, setEditText] = useState(message?.content || '');
   const [copied, setCopied] = useState(false);
+
+  if (!message) return null;
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';

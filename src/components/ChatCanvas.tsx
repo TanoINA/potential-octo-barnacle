@@ -989,6 +989,7 @@ export function ChatCanvas({
           <div className="relative mx-auto w-full max-w-3xl" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const message = messages[virtualRow.index];
+              if (!message) return null;
               return (
                 <div
                   key={virtualRow.key}
