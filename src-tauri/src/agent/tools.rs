@@ -1,8 +1,77 @@
-use std::path::{Path, PathBuf};
-use tokio::fs;
-use tokio::process::Command;
+use super::types::{Artifact, FileDiffStat};
+use futures_util::StreamExt;
+use globset::Glob;
+use ignore::WalkBuilder;
+use regex::RegexBuilder;
+use similar::TextDiff;
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc::Sender;
+use tokio_util::sync::CancellationToken;
+use url::Url;
 use uuid::Uuid;
-use super::types::Artifact;
+
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_TOOL_CHARS: usize = 200_000;
+const MAX_COMMAND_BYTES: usize = 1024 * 1024;
+const MAX_WEB_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub enum ToolEvent {
+    Artifact(Artifact),
+    TerminalOutput {
+        artifact_id: String,
+        delta: String,
+        stream: String,
+    },
+}
+
+pub type ToolEventSink = Arc<dyn Fn(ToolEvent) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ToolContext {
+    pub cwd: String,
+    pub cancel: CancellationToken,
+    pub sink: Option<ToolEventSink>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolExecutionResult {
+    pub output: String,
+    pub artifact: Option<Artifact>,
+    pub success: bool,
+    pub cancelled: bool,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub terminal_output: Option<String>,
+    pub files_changed: Option<Vec<FileDiffStat>>,
+}
+
+impl ToolExecutionResult {
+    pub fn success(output: String, artifact: Option<Artifact>) -> Self {
+        Self {
+            output,
+            artifact,
+            success: true,
+            cancelled: false,
+            ..Default::default()
+        }
+    }
+    pub fn failure(output: String) -> Self {
+        Self {
+            output,
+            artifact: None,
+            success: false,
+            cancelled: false,
+            ..Default::default()
+        }
+    }
+}
 
 pub fn get_agent_tools() -> serde_json::Value {
     serde_json::json!([
@@ -10,13 +79,13 @@ pub fn get_agent_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read contents of a file. For large files, specify start_line and end_line.",
+                "description": "Read a UTF-8 text file in the active workspace. Long reads are opened in the artifact sidecar.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Absolute or relative file path" },
-                        "start_line": { "type": "number", "description": "Start line (1-indexed)" },
-                        "end_line": { "type": "number", "description": "End line (inclusive)" }
+                        "path": {"type": "string"},
+                        "startLine": {"type": "integer", "minimum": 1},
+                        "endLine": {"type": "integer", "minimum": 1}
                     },
                     "required": ["path"]
                 }
@@ -26,13 +95,10 @@ pub fn get_agent_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Create or overwrite a file with given content.",
+                "description": "Create or atomically overwrite a workspace text file, creating parent directories automatically.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Absolute or relative file path" },
-                        "content": { "type": "string", "description": "Full content to write" }
-                    },
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                     "required": ["path", "content"]
                 }
             }
@@ -40,12 +106,30 @@ pub fn get_agent_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
-                "name": "list_directory",
-                "description": "List files and folders in a directory.",
+                "name": "edit_file",
+                "description": "Replace an exact string and return a unified diff. A non-global edit must match exactly once.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Directory path (defaults to current workspace)" }
+                        "path": {"type": "string"}, "oldString": {"type": "string"},
+                        "newString": {"type": "string"}, "replaceAll": {"type": "boolean", "default": false}
+                    },
+                    "required": ["path", "oldString", "newString"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_directory",
+                "description": "List a directory or bounded recursive tree in the active workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": "."},
+                        "recursive": {"type": "boolean", "default": false},
+                        "maxDepth": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 500}
                     }
                 }
             }
@@ -53,206 +137,1705 @@ pub fn get_agent_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
-                "name": "run_command",
-                "description": "Execute a PowerShell command in the workspace.",
+                "name": "search_files",
+                "description": "Search workspace file contents with a regular expression and optional glob.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "The command line string to run" }
+                        "pattern": {"type": "string"}, "path": {"type": "string", "default": "."},
+                        "fileGlob": {"type": "string"}, "caseSensitive": {"type": "boolean", "default": false},
+                        "maxResults": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": "Execute PowerShell asynchronously with streaming terminal artifacts, timeout, and cancellation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120}
                     },
                     "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "fetch_web_page",
+                "description": "Fetch a public HTTP(S) URL and extract bounded Markdown/plain text. Private targets are rejected.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "format": "uri"},
+                        "maxChars": {"type": "integer", "minimum": 2000, "maximum": 500000, "default": 100000}
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "use_skill",
+                "description": "Load and activate a specific skill's instructions from the catalog by its name. Use this whenever the user request matches a known skill capability.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The exact name of the skill to activate (e.g. 'systematic-debugging', 'codebase-inspection', 'test-driven-development')"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "spawn_subagent",
+                "description": "Spawn an autonomous subagent in the background to handle an independent research, debugging, verification, or exploration sub-task. The subagent runs its own tool loop and returns a synthesized final report.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "role": {
+                            "type": "string",
+                            "description": "A 2-4 word specialized role description (e.g. 'Bug Researcher', 'Codebase Explorer', 'Test Auditor')"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Clear, actionable task description for the subagent to execute autonomously"
+                        },
+                        "subpath": {
+                            "type": "string",
+                            "description": "Optional subfolder in the workspace for the subagent to focus on"
+                        }
+                    },
+                    "required": ["role", "task"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "learn_skill",
+                "description": "Synthesize and persist a reusable skill (SKILL.md) to ~/.aether-agent/skills/<name>/SKILL.md. Use this when you discover or complete a repeatable solution, complex multi-step workflow, or when the user asks you to remember or learn how to do something.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Unique kebab-case name of the skill (e.g., 'data-cleaning-pipeline', 'pdf-table-extractor')"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "A concise one or two sentence description of what the skill does and when to trigger it."
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Markdown instructions, steps, scripts, and best practices explaining how to execute the skill."
+                        }
+                    },
+                    "required": ["name", "description", "instructions"]
                 }
             }
         }
     ])
 }
 
-pub struct ToolExecutionResult {
-    pub output: String,
-    pub artifact: Option<Artifact>,
-}
-
 pub async fn execute_tool(
     name: &str,
     args: &serde_json::Value,
-    cwd: &str,
+    context: &ToolContext,
 ) -> ToolExecutionResult {
-    match name {
-        "read_file" => {
-            let rel_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let target_path = resolve_path(cwd, rel_path);
-
-            match fs::read_to_string(&target_path).await {
-                Ok(content) => {
-                    let lines: Vec<&str> = content.lines().collect();
-                    let start = args.get("start_line").and_then(|v| v.as_u64()).map(|v| (v.saturating_sub(1)) as usize).unwrap_or(0);
-                    let end = args.get("end_line").and_then(|v| v.as_u64()).map(|v| (v as usize).min(lines.len())).unwrap_or(lines.len());
-
-                    let slice = if start < lines.len() {
-                        lines[start..end.min(lines.len())].join("\n")
-                    } else {
-                        content.clone()
-                    };
-
-                    if lines.len() > 25 {
-                        let art_id = format!("art-{}", Uuid::new_v4());
-                        let ext = target_path.extension().and_then(|e| e.to_str()).unwrap_or("txt").to_string();
-                        let filename = target_path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
-
-                        let artifact = Artifact {
-                            id: art_id.clone(),
-                            title: filename.clone(),
-                            artifact_type: "code".to_string(),
-                            language: Some(ext),
-                            content: slice.clone(),
-                            file_path: Some(target_path.to_string_lossy().to_string()),
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                        };
-
-                        let preview = lines.iter().take(12).copied().collect::<Vec<_>>().join("\n");
-                        ToolExecutionResult {
-                            output: format!("[Read {} lines from {} (Opened in Artifact Sidecar)]\nPreview:\n{}...", lines.len(), filename, preview),
-                            artifact: Some(artifact),
-                        }
-                    } else {
-                        ToolExecutionResult {
-                            output: slice,
-                            artifact: None,
-                        }
-                    }
-                }
-                Err(e) => ToolExecutionResult {
-                    output: format!("Failed to read file: {}", e),
-                    artifact: None,
-                },
-            }
-        }
-
-        "write_file" => {
-            let rel_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let target_path = resolve_path(cwd, rel_path);
-
-            if let Some(parent) = target_path.parent() {
-                let _ = fs::create_dir_all(parent).await;
-            }
-
-            match fs::write(&target_path, content).await {
-                Ok(_) => {
-                    let art_id = format!("art-{}", Uuid::new_v4());
-                    let ext = target_path.extension().and_then(|e| e.to_str()).unwrap_or("txt").to_string();
-                    let filename = target_path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
-
-                    let artifact = Artifact {
-                        id: art_id,
-                        title: format!("Saved: {}", filename),
-                        artifact_type: "code".to_string(),
-                        language: Some(ext),
-                        content: content.to_string(),
-                        file_path: Some(target_path.to_string_lossy().to_string()),
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    };
-
-                    ToolExecutionResult {
-                        output: format!("Successfully wrote {} bytes to {}", content.len(), target_path.to_string_lossy()),
-                        artifact: Some(artifact),
-                    }
-                }
-                Err(e) => ToolExecutionResult {
-                    output: format!("Failed to write file: {}", e),
-                    artifact: None,
-                },
-            }
-        }
-
-        "list_directory" => {
-            let rel_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let target_path = if rel_path.is_empty() {
-                PathBuf::from(cwd)
-            } else {
-                resolve_path(cwd, rel_path)
-            };
-
-            match fs::read_dir(&target_path).await {
-                Ok(mut entries) => {
-                    let mut items = Vec::new();
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-                        items.push(format!("{}{}", if is_dir { "[DIR] " } else { "      " }, name));
-                    }
-                    ToolExecutionResult {
-                        output: if items.is_empty() { "(empty directory)".to_string() } else { items.join("\n") },
-                        artifact: None,
-                    }
-                }
-                Err(e) => ToolExecutionResult {
-                    output: format!("Failed to list directory: {}", e),
-                    artifact: None,
-                },
-            }
-        }
-
-        "run_command" => {
-            let cmd_str = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let output = Command::new("powershell.exe")
-                .arg("-NoProfile")
-                .arg("-Command")
-                .arg(cmd_str)
-                .current_dir(cwd)
-                .output()
-                .await;
-
-            match output {
-                Ok(res) => {
-                    let stdout = String::from_utf8_lossy(&res.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&res.stderr).to_string();
-                    let combined = format!("{}{}", stdout, if !stderr.is_empty() { format!("\n[STDERR]\n{}", stderr) } else { "".to_string() });
-
-                    let lines: Vec<&str> = combined.lines().collect();
-                    if lines.len() > 20 {
-                        let art_id = format!("art-{}", Uuid::new_v4());
-                        let artifact = Artifact {
-                            id: art_id,
-                            title: format!("Terminal: {}...", &cmd_str[..cmd_str.len().min(25)]),
-                            artifact_type: "terminal".to_string(),
-                            language: Some("sh".to_string()),
-                            content: combined.clone(),
-                            file_path: None,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                        };
-
-                        let preview = lines.iter().take(10).copied().collect::<Vec<_>>().join("\n");
-                        ToolExecutionResult {
-                            output: format!("[Command finished ({} lines) -> Full output in Artifact Panel]\nPreview:\n{}...", lines.len(), preview),
-                            artifact: Some(artifact),
-                        }
-                    } else {
-                        ToolExecutionResult {
-                            output: if combined.is_empty() { "(command finished with no output)".to_string() } else { combined },
-                            artifact: None,
-                        }
-                    }
-                }
-                Err(e) => ToolExecutionResult {
-                    output: format!("Failed to execute command: {}", e),
-                    artifact: None,
-                },
-            }
-        }
-
-        _ => ToolExecutionResult {
-            output: format!("Unknown tool: {}", name),
+    if context.cancel.is_cancelled() {
+        return ToolExecutionResult {
+            output: "Cancelled before tool execution".into(),
             artifact: None,
-        },
+            success: false,
+            cancelled: true,
+            duration_ms: None,
+            exit_code: None,
+            terminal_output: None,
+            files_changed: None,
+        };
+    }
+    let result = match name {
+        "read_file" => read_file(args, &context.cwd).await,
+        "write_file" => write_file(args, &context.cwd).await,
+        "edit_file" => edit_file(args, &context.cwd).await,
+        "list_directory" => list_directory(args, &context.cwd, &context.cancel).await,
+        "search_files" => search_files(args, &context.cwd, &context.cancel).await,
+        "run_command" => run_command(args, context).await,
+        "fetch_web_page" => fetch_web_page(args, context).await,
+        "learn_skill" => learn_skill(args, context).await,
+        _ => Err(format!("Unknown tool: {name}")),
+    };
+    result.unwrap_or_else(ToolExecutionResult::failure)
+}
+
+fn required_string<'a>(args: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("Missing required string argument: {key}"))
+}
+
+fn optional_string<'a>(args: &'a serde_json::Value, camel: &str, snake: &str) -> Option<&'a str> {
+    args.get(camel)
+        .and_then(|value| value.as_str())
+        .or_else(|| args.get(snake).and_then(|value| value.as_str()))
+}
+
+fn new_artifact(
+    title: String,
+    artifact_type: &str,
+    language: Option<String>,
+    content: String,
+    file_path: Option<String>,
+) -> Artifact {
+    Artifact {
+        id: format!("art-{}", Uuid::new_v4()),
+        title,
+        artifact_type: artifact_type.into(),
+        language,
+        content,
+        file_path,
+        timestamp: chrono::Utc::now().timestamp_millis(),
     }
 }
 
-fn resolve_path(cwd: &str, p: &str) -> PathBuf {
-    let path = Path::new(p);
-    if path.is_absolute() {
-        path.to_path_buf()
+fn bounded_chars(content: &str, limit: usize) -> (String, bool) {
+    if content.len() <= limit {
+        return (content.to_string(), false);
+    }
+    let mut end = limit;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    (
+        format!("{}\n… [output truncated at {limit} bytes]", &content[..end]),
+        true,
+    )
+}
+
+async fn read_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionResult, String> {
+    let requested = required_string(args, "path")?;
+    let path = resolve_workspace_path(cwd, requested)?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|error| format!("Cannot stat {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("Not a regular file: {}", path.display()));
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err(format!(
+            "File exceeds the {} MiB read limit",
+            MAX_FILE_BYTES / 1024 / 1024
+        ));
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    if bytes.contains(&0) {
+        return Err("Binary files are not supported by read_file".into());
+    }
+    let content =
+        String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text".to_string())?;
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Ok(ToolExecutionResult::success(
+            format!("Read empty file {}", path.display()),
+            None,
+        ));
+    }
+    let start = optional_string(args, "startLine", "start_line")
+        .and_then(|value| value.parse::<usize>().ok())
+        .or_else(|| {
+            args.get("startLine")
+                .or_else(|| args.get("start_line"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+        })
+        .unwrap_or(1);
+    let end = optional_string(args, "endLine", "end_line")
+        .and_then(|value| value.parse::<usize>().ok())
+        .or_else(|| {
+            args.get("endLine")
+                .or_else(|| args.get("end_line"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+        })
+        .unwrap_or(lines.len());
+    if start == 0 || end < start {
+        return Err("startLine must be >= 1 and endLine must be >= startLine".into());
+    }
+    if start > lines.len() && !lines.is_empty() {
+        return Err(format!(
+            "startLine {start} exceeds the file's {} lines",
+            lines.len()
+        ));
+    }
+    let selected = if lines.is_empty() {
+        String::new()
     } else {
-        Path::new(cwd).join(path)
+        lines[start - 1..end.min(lines.len())].join("\n")
+    };
+    let (selected, truncated) = bounded_chars(&selected, MAX_TOOL_CHARS);
+    let selected_line_count = if selected.is_empty() {
+        0
+    } else {
+        selected.lines().count()
+    };
+    let artifact = if selected_line_count > 25 {
+        Some(new_artifact(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file")
+                .to_string(),
+            "code",
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_string),
+            selected.clone(),
+            Some(path.to_string_lossy().to_string()),
+        ))
+    } else {
+        None
+    };
+    let header = format!(
+        "Read lines {start}-{} of {} from {}{}",
+        end.min(lines.len()),
+        lines.len(),
+        path.display(),
+        if truncated { " (truncated)" } else { "" }
+    );
+    Ok(ToolExecutionResult::success(
+        format!("{header}\n\n{selected}"),
+        artifact,
+    ))
+}
+
+/// Read an existing file as text for snapshot comparison. A missing file is
+/// reported as `None`; a symlink, non-regular file, oversized file, or
+/// non-UTF-8 content is an error so a write never clobbers unverifiable data.
+async fn read_existing_text(path: &Path) -> Result<Option<String>, String> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "Refusing to write through the symbolic link {}",
+                    path.display()
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(format!("Not a regular file: {}", path.display()));
+            }
+            if metadata.len() > MAX_FILE_BYTES {
+                return Err("Existing file exceeds the 10 MiB limit".into());
+            }
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|_| "Existing file is not valid UTF-8 text".to_string())
+                .map(Some)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Cannot stat {}: {error}", path.display())),
+    }
+}
+
+fn diff_line_stats(previous: &str, updated: &str) -> (usize, usize) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    for change in TextDiff::from_lines(previous, updated).iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => additions += 1,
+            similar::ChangeTag::Delete => deletions += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (additions, deletions)
+}
+
+/// Atomically write `bytes` to `path` only when the on-disk state still matches
+/// the snapshot the tool read (`expected = None` means the file must not
+/// exist). This re-verification is what stops a stale tool write from silently
+/// destroying a change made by a concurrent user editor, linter, or formatter.
+async fn guarded_atomic_write(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let current = read_existing_text(path).await?;
+    match (expected, current.as_deref()) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(format!(
+                "{} appeared on disk after the workspace was read; refusing to overwrite it",
+                path.display()
+            ));
+        }
+        (Some(expected), Some(current)) if current == expected => {}
+        (Some(_), None) => {
+            return Err(format!(
+                "{} disappeared from disk after the workspace was read; refusing to recreate it",
+                path.display()
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "{} changed on disk after the workspace was read; re-read it and retry",
+                path.display()
+            ));
+        }
+    }
+    super::storage::atomic_write(path, bytes).await
+}
+
+async fn write_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionResult, String> {
+    let path = resolve_workspace_path(cwd, required_string(args, "path")?)?;
+    let content = required_string(args, "content")?;
+    if content.len() > MAX_FILE_BYTES as usize {
+        return Err("write_file content exceeds 10 MiB".into());
+    }
+    let previous = read_existing_text(&path).await?;
+    let (additions, deletions) = diff_line_stats(previous.as_deref().unwrap_or(""), content);
+    guarded_atomic_write(&path, content.as_bytes(), previous.as_deref()).await?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let artifact = Some(new_artifact(
+        format!("Saved: {}", filename),
+        "code",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_string),
+        content.to_string(),
+        Some(path.to_string_lossy().to_string()),
+    ));
+    let rel_path = path
+        .strip_prefix(cwd)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| filename.to_string());
+    let mut res = ToolExecutionResult::success(
+        format!("Wrote {} bytes to {}", content.len(), path.display()),
+        artifact,
+    );
+    res.files_changed = Some(vec![FileDiffStat {
+        path: rel_path,
+        additions,
+        deletions,
+    }]);
+    Ok(res)
+}
+
+async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionResult, String> {
+    let path = resolve_workspace_path(cwd, required_string(args, "path")?)?;
+    let old = optional_string(args, "oldString", "old_string").ok_or("Missing oldString")?;
+    let new = optional_string(args, "newString", "new_string").ok_or("Missing newString")?;
+    if old.is_empty() {
+        return Err("oldString must not be empty".into());
+    }
+    let replace_all = args
+        .get("replaceAll")
+        .or_else(|| args.get("replace_all"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let original = {
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| format!("Cannot stat {}: {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("Not a regular file: {}", path.display()));
+        }
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err("edit_file input exceeds the 10 MiB limit".into());
+        }
+        tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
+    };
+    let matches = original.matches(old).count();
+    if matches == 0 {
+        return Err("oldString was not found; no changes were written".into());
+    }
+    if matches > 1 && !replace_all {
+        return Err(format!(
+            "oldString matched {matches} locations; set replaceAll=true or provide a unique target"
+        ));
+    }
+    let updated = if replace_all {
+        original.replace(old, new)
+    } else {
+        original.replacen(old, new, 1)
+    };
+    if updated.len() > MAX_FILE_BYTES as usize {
+        return Err("edit_file result exceeds the 10 MiB limit".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let diff = TextDiff::from_lines(&original, &updated)
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{filename}"), &format!("b/{filename}"))
+        .to_string();
+    let mut additions = 0;
+    let mut deletions = 0;
+    let text_diff = TextDiff::from_lines(&original, &updated);
+    for change in text_diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => additions += 1,
+            similar::ChangeTag::Delete => deletions += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    let rel_path = path
+        .strip_prefix(cwd)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| filename.to_string());
+    guarded_atomic_write(&path, updated.as_bytes(), Some(&original)).await?;
+    let artifact = new_artifact(
+        format!("Diff: {filename}"),
+        "diff",
+        Some("diff".into()),
+        diff.clone(),
+        Some(path.to_string_lossy().to_string()),
+    );
+    let mut res = ToolExecutionResult::success(
+        format!(
+            "Updated {} at {} replacement(s)",
+            path.display(),
+            if replace_all { matches } else { 1 }
+        ),
+        Some(artifact),
+    );
+    res.files_changed = Some(vec![FileDiffStat {
+        path: rel_path,
+        additions,
+        deletions,
+    }]);
+    Ok(res)
+}
+
+async fn list_directory(
+    args: &serde_json::Value,
+    cwd: &str,
+    cancel: &CancellationToken,
+) -> Result<ToolExecutionResult, String> {
+    let path = resolve_workspace_path(
+        cwd,
+        args.get("path").and_then(|v| v.as_str()).unwrap_or("."),
+    )?;
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {}", path.display()));
+    }
+    let recursive = args
+        .get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let max_depth = args
+        .get("maxDepth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .clamp(1, 8) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(500)
+        .clamp(1, 1_000) as usize;
+    let root = path.clone();
+    let worker_cancel = cancel.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<(Vec<String>, bool), String> {
+        let mut rows = Vec::new();
+        let mut truncated = false;
+        for entry in WalkBuilder::new(&path)
+            .hidden(false)
+            .max_depth(Some(if recursive { max_depth } else { 1 }))
+            .build()
+            .filter_map(Result::ok)
+        {
+            if worker_cancel.is_cancelled() {
+                return Err("Directory listing cancelled".into());
+            }
+            if entry.path() == root {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            let depth = relative.split('/').count().saturating_sub(1);
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            rows.push(format!(
+                "{}{}{}",
+                "  ".repeat(depth),
+                if is_dir { "[dir] " } else { "      " },
+                relative.split('/').next_back().unwrap_or(&relative)
+            ));
+            if rows.len() >= limit {
+                truncated = true;
+                break;
+            }
+        }
+        Ok((rows, truncated))
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if cancel.is_cancelled() {
+        return Ok(ToolExecutionResult {
+            output: "Directory listing cancelled".into(),
+            success: false,
+            cancelled: true,
+            ..Default::default()
+        });
+    }
+    let (mut rows, truncated) = result?;
+    rows.sort();
+    if rows.is_empty() {
+        rows.push("(empty directory)".into());
+    }
+    if truncated {
+        rows.push(format!("… [tree truncated at {limit} entries]"));
+    }
+    let output = rows.join("\n");
+    let artifact = if rows.len() > 25 {
+        Some(new_artifact(
+            "Directory tree".into(),
+            "file",
+            Some("text".into()),
+            output.clone(),
+            None,
+        ))
+    } else {
+        None
+    };
+    Ok(ToolExecutionResult::success(output, artifact))
+}
+
+async fn search_files(
+    args: &serde_json::Value,
+    cwd: &str,
+    cancel: &CancellationToken,
+) -> Result<ToolExecutionResult, String> {
+    let pattern = required_string(args, "pattern")?.to_string();
+    let path = resolve_workspace_path(
+        cwd,
+        args.get("path").and_then(|v| v.as_str()).unwrap_or("."),
+    )?;
+    let case_sensitive = args
+        .get("caseSensitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let regex = RegexBuilder::new(&pattern)
+        .case_insensitive(!case_sensitive)
+        .build()
+        .map_err(|error| format!("Invalid regex: {error}"))?;
+    let glob = match args
+        .get("fileGlob")
+        .or_else(|| args.get("file_glob"))
+        .and_then(|v| v.as_str())
+    {
+        Some(value) if !value.is_empty() => Some(
+            Glob::new(value)
+                .map_err(|error| format!("Invalid fileGlob: {error}"))?
+                .compile_matcher(),
+        ),
+        _ => None,
+    };
+    let limit = args
+        .get("maxResults")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100)
+        .clamp(1, 500) as usize;
+    let root = path.clone();
+    let worker_cancel = cancel.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let mut matches = Vec::new();
+        for entry in WalkBuilder::new(&path)
+            .hidden(false)
+            .build()
+            .filter_map(Result::ok)
+        {
+            if worker_cancel.is_cancelled() {
+                return Err("File search cancelled".into());
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let file_path = entry.path();
+            let relative = file_path
+                .strip_prefix(&root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if glob
+                .as_ref()
+                .is_some_and(|matcher| !matcher.is_match(&relative))
+            {
+                continue;
+            }
+            if entry
+                .metadata()
+                .map(|meta| meta.len())
+                .unwrap_or(MAX_FILE_BYTES + 1)
+                > 2 * 1024 * 1024
+            {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(file_path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let Ok(content) = String::from_utf8(bytes) else {
+                continue;
+            };
+            for (index, line) in content.lines().enumerate() {
+                if regex.is_match(line) {
+                    let (line, _) = bounded_chars(line, 2_000);
+                    matches.push(format!("{relative}:{}:{line}", index + 1));
+                    if matches.len() >= limit {
+                        return Ok(matches);
+                    }
+                }
+            }
+        }
+        Ok(matches)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if cancel.is_cancelled() {
+        return Ok(ToolExecutionResult {
+            output: "File search cancelled".into(),
+            success: false,
+            cancelled: true,
+            ..Default::default()
+        });
+    }
+    let rows = result?;
+    let output = if rows.is_empty() {
+        "No matches found".into()
+    } else {
+        rows.join("\n")
+    };
+    let artifact = if rows.len() > 25 {
+        Some(new_artifact(
+            "Search results".into(),
+            "file",
+            Some("text".into()),
+            output.clone(),
+            None,
+        ))
+    } else {
+        None
+    };
+    Ok(ToolExecutionResult::success(output, artifact))
+}
+
+#[derive(Debug)]
+struct ProcessLine {
+    stream: String,
+    text: String,
+}
+
+fn take_utf8_output(buffer: &mut Vec<u8>, eof: bool) -> String {
+    if buffer.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(buffer) {
+        Ok(_) => String::from_utf8(std::mem::take(buffer)).unwrap_or_default(),
+        Err(error) if error.error_len().is_none() && !eof => {
+            let valid = error.valid_up_to();
+            let remainder = buffer.split_off(valid);
+            let text = String::from_utf8(std::mem::take(buffer)).unwrap_or_default();
+            *buffer = remainder;
+            text
+        }
+        Err(_) => String::from_utf8_lossy(&std::mem::take(buffer)).into_owned(),
+    }
+}
+
+fn spawn_process_reader<R>(
+    mut reader: R,
+    stream: &'static str,
+    sender: Sender<ProcessLine>,
+) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut pending_utf8 = Vec::new();
+        let mut chunk = [0u8; 8 * 1024];
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) | Err(_) => {
+                    let text = take_utf8_output(&mut pending_utf8, true);
+                    if !text.is_empty() {
+                        let _ = sender
+                            .send(ProcessLine {
+                                stream: stream.into(),
+                                text,
+                            })
+                            .await;
+                    }
+                    break;
+                }
+                Ok(count) => {
+                    pending_utf8.extend_from_slice(&chunk[..count]);
+                    let text = take_utf8_output(&mut pending_utf8, false);
+                    if !text.is_empty()
+                        && sender
+                            .send(ProcessLine {
+                                stream: stream.into(),
+                                text,
+                            })
+                            .await
+                            .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn run_command(
+    args: &serde_json::Value,
+    context: &ToolContext,
+) -> Result<ToolExecutionResult, String> {
+    let command = required_string(args, "command")?.trim();
+    if command.is_empty() {
+        return Err("Command must not be empty".into());
+    }
+    if command.len() > 32 * 1024 {
+        return Err("Command exceeds 32 KiB".into());
+    }
+    let timeout_seconds = args
+        .get("timeoutSeconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(120)
+        .clamp(1, 600);
+    let root = if context.cwd.trim().is_empty() {
+        std::env::temp_dir()
+    } else {
+        resolve_workspace_path(&context.cwd, ".")?
+    };
+    let mut process = if cfg!(windows) {
+        let mut process = Command::new("powershell.exe");
+        process.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ]);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-c", command]);
+        process
+    };
+    process
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
+    let stdout = child.stdout.take().ok_or("Could not capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Could not capture stderr")?;
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<ProcessLine>(256);
+    let stdout_task = spawn_process_reader(stdout, "stdout", sender.clone());
+    let stderr_task = spawn_process_reader(stderr, "stderr", sender.clone());
+    drop(sender);
+
+    let artifact_id = format!("art-{}", Uuid::new_v4());
+    let title = format!("Terminal: {}", command.chars().take(80).collect::<String>());
+    if let Some(sink) = &context.sink {
+        sink(ToolEvent::Artifact(Artifact {
+            id: artifact_id.clone(),
+            title: title.clone(),
+            artifact_type: "terminal".into(),
+            language: Some("powershell".into()),
+            content: String::new(),
+            file_path: None,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }));
+    }
+
+    let mut output = String::new();
+    let mut total_bytes = 0usize;
+    let mut output_truncated = false;
+    let started = Instant::now();
+    let mut exit_code: Option<i32> = None;
+    let mut cancelled = false;
+    let mut timed_out = false;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            exit_code = Some(status.code().unwrap_or(-1));
+            break;
+        }
+        if context.cancel.is_cancelled() {
+            cancelled = true;
+            terminate_child(&mut child).await;
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(timeout_seconds) {
+            timed_out = true;
+            terminate_child(&mut child).await;
+            break;
+        }
+        match tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await {
+            Ok(Some(line)) => append_process_line(
+                &mut output,
+                &mut total_bytes,
+                &mut output_truncated,
+                &line,
+                &artifact_id,
+                &context.sink,
+            ),
+            Ok(None) => {
+                if let Ok(Some(status)) = child.try_wait() {
+                    exit_code = Some(status.code().unwrap_or(-1));
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    if (cancelled || timed_out)
+        && tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .is_err()
+    {
+        let _ = child.kill().await;
+    }
+    let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, receiver.recv()).await {
+            Ok(Some(line)) => append_process_line(
+                &mut output,
+                &mut total_bytes,
+                &mut output_truncated,
+                &line,
+                &artifact_id,
+                &context.sink,
+            ),
+            _ => break,
+        }
+    }
+    stdout_task.abort();
+    stderr_task.abort();
+    if output_truncated {
+        output.push_str("\n… [terminal output truncated at 1 MiB]\n");
+    }
+    if timed_out {
+        output.push_str(&format!(
+            "\nCommand timed out after {timeout_seconds}s and was terminated.\n"
+        ));
+    }
+    if cancelled {
+        output.push_str("\nCommand cancelled by user.\n");
+    }
+    let artifact = Artifact {
+        id: artifact_id,
+        title,
+        artifact_type: "terminal".into(),
+        language: Some("powershell".into()),
+        content: output.clone(),
+        file_path: None,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    };
+    let summary = format!(
+        "Command finished. Exit code: {}. Output bytes: {}.\n{}",
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "terminated".into()),
+        total_bytes,
+        output
+    );
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let final_exit_code = exit_code.unwrap_or(if !cancelled && !timed_out { 0 } else { 1 });
+    Ok(ToolExecutionResult {
+        output: summary,
+        artifact: Some(artifact),
+        success: !cancelled && !timed_out && exit_code == Some(0),
+        cancelled,
+        duration_ms: Some(duration_ms),
+        exit_code: Some(final_exit_code),
+        terminal_output: Some(output),
+        files_changed: None,
+    })
+}
+
+async fn learn_skill(
+    args: &serde_json::Value,
+    _context: &ToolContext,
+) -> Result<ToolExecutionResult, String> {
+    let name = required_string(args, "name")?;
+    let description = required_string(args, "description")?;
+    let instructions = required_string(args, "instructions")?;
+
+    let skill = super::skills::save_skill_markdown(name, description, instructions).await?;
+    let artifact = Some(new_artifact(
+        format!("Learned Skill: {}", skill.name),
+        "markdown",
+        Some("markdown".into()),
+        format!(
+            "# {}\n**Description:** {}\n\n{}",
+            skill.name, skill.description, instructions
+        ),
+        Some(skill.path.clone()),
+    ));
+
+    Ok(ToolExecutionResult::success(
+        format!(
+            "Successfully learned skill '{}' and saved to {}. It is now registered and active in the agent skill registry.",
+            skill.name, skill.path
+        ),
+        artifact,
+    ))
+}
+
+async fn terminate_child(child: &mut Child) {
+    #[cfg(windows)]
+    if let Some(id) = child.id() {
+        let _ = Command::new("taskkill")
+            .arg("/PID")
+            .arg(id.to_string())
+            .arg("/T")
+            .arg("/F")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+    let _ = child.kill().await;
+}
+
+fn append_process_line(
+    output: &mut String,
+    total_bytes: &mut usize,
+    truncated: &mut bool,
+    line: &ProcessLine,
+    artifact_id: &str,
+    sink: &Option<ToolEventSink>,
+) {
+    *total_bytes += line.text.len();
+    if output.len() >= MAX_COMMAND_BYTES {
+        *truncated = true;
+        return;
+    }
+    let remaining = MAX_COMMAND_BYTES - output.len();
+    let mut accepted = line.text.clone();
+    if accepted.len() > remaining {
+        let mut end = remaining;
+        while !accepted.is_char_boundary(end) {
+            end -= 1;
+        }
+        accepted.truncate(end);
+        *truncated = true;
+    }
+    output.push_str(&accepted);
+    if !accepted.is_empty() {
+        if let Some(sink) = sink {
+            sink(ToolEvent::TerminalOutput {
+                artifact_id: artifact_id.into(),
+                delta: accepted,
+                stream: line.stream.clone(),
+            });
+        }
+    }
+}
+
+async fn fetch_web_page(
+    args: &serde_json::Value,
+    context: &ToolContext,
+) -> Result<ToolExecutionResult, String> {
+    let mut current = Url::parse(required_string(args, "url")?)
+        .map_err(|error| format!("Invalid URL: {error}"))?;
+    let max_chars = args
+        .get("maxChars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100_000)
+        .clamp(2_000, 500_000) as usize;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("AetherAgent/0.2")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut response = None;
+    for _ in 0..=5 {
+        validate_public_url(&current).await?;
+        let next = tokio::select! {
+            _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Web fetch cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+            result = client.get(current.clone()).send() => result.map_err(|error| format!("Web fetch failed: {error}"))?
+        };
+        if next.status().is_redirection() {
+            let location = next
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .ok_or("Redirect has no Location header")?;
+            current = current
+                .join(location)
+                .map_err(|error| format!("Invalid redirect: {error}"))?;
+            continue;
+        }
+        response = Some(next);
+        break;
+    }
+    let response = response.ok_or("Too many redirects")?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("Web page returned HTTP {status}"));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_WEB_BYTES as u64)
+    {
+        return Err("Web page exceeds 5 MiB".into());
+    }
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    loop {
+        let next = tokio::select! {
+            _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Web fetch cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+            item = stream.next() => item,
+        };
+        let Some(item) = next else { break };
+        let chunk = item.map_err(|error| format!("Web response stream failed: {error}"))?;
+        if bytes.len() + chunk.len() > MAX_WEB_BYTES {
+            return Err("Web page exceeded the 5 MiB response limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let raw = String::from_utf8_lossy(&bytes).to_string();
+    let extracted = if content_type.contains("text/html")
+        || raw.trim_start().starts_with("<!DOCTYPE")
+        || raw.trim_start().starts_with("<html")
+    {
+        tokio::task::spawn_blocking(move || html2text::from_read(raw.as_bytes(), 100))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?
+    } else {
+        raw
+    };
+    let (extracted, truncated) = bounded_chars(extracted.trim(), max_chars);
+    let artifact = if extracted.lines().count() > 25 {
+        Some(new_artifact(
+            format!("Web: {}", current.host_str().unwrap_or("page")),
+            "markdown",
+            Some("markdown".into()),
+            extracted.clone(),
+            Some(current.to_string()),
+        ))
+    } else {
+        None
+    };
+    Ok(ToolExecutionResult::success(
+        format!(
+            "Fetched {}{}\n\n{}",
+            current,
+            if truncated { " (truncated)" } else { "" },
+            extracted
+        ),
+        artifact,
+    ))
+}
+
+async fn validate_public_url(url: &Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Only HTTP(S) URLs are allowed".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URLs containing credentials are not allowed".into());
+    }
+    let host = url.host_str().ok_or("URL must contain a host")?;
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
+        return Err("Local/private web targets are blocked".into());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !is_public_ip(ip) {
+            return Err(
+                "Private, loopback, link-local, and unspecified web targets are blocked".into(),
+            );
+        }
+        return Ok(());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or("URL has no usable port")?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("DNS lookup failed: {error}"))?;
+    let mut found = false;
+    for address in addresses {
+        found = true;
+        if !is_public_ip(address.ip()) {
+            return Err("URL resolves to a private or local address".into());
+        }
+    }
+    if found {
+        Ok(())
+    } else {
+        Err("DNS returned no addresses".into())
+    }
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || octets[0] >= 240 // 240.0.0.0/4 reserved for future use
+                || (octets[0] == 100 && (64..=127).contains(&octets[1])) // 100.64.0.0/10 CGNAT
+                || (octets[0] == 198 && (18..=19).contains(&octets[1])) // 198.18.0.0/15 benchmarking
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0) // 192.0.0.0/24
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)) // 192.88.99.0/24)
+        }
+        IpAddr::V6(ip) => {
+            // IPv4-mapped (::ffff:0:0/96), 6to4 (2002::/16) and Teredo
+            // (2001::/32) addresses wrap an IPv4 target, so the embedded
+            // address must face the same filter instead of the IPv6 wrapper.
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(mapped));
+            }
+            let segments = ip.segments();
+            if segments[0] == 0x2001 && segments[1] == 0x0db8 {
+                // 2001:db8::/32 is documentation-only.
+                return false;
+            }
+            if segments[0] == 0x0064 && segments[1] == 0xff9b {
+                // 64:ff9b::/96 (NAT64 well-known prefix) embeds an IPv4
+                // target, which must face the same filter.
+                let embedded = Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_ip(IpAddr::V4(embedded));
+            }
+            if segments[0] == 0x2002 {
+                let embedded = Ipv4Addr::new(
+                    (segments[1] >> 8) as u8,
+                    segments[1] as u8,
+                    (segments[2] >> 8) as u8,
+                    segments[2] as u8,
+                );
+                return is_public_ip(IpAddr::V4(embedded));
+            }
+            if segments[0] == 0x2001 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0 {
+                let server = Ipv4Addr::new(
+                    (segments[4] >> 8) as u8,
+                    segments[4] as u8,
+                    (segments[5] >> 8) as u8,
+                    segments[5] as u8,
+                );
+                return is_public_ip(IpAddr::V4(server));
+            }
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast())
+        }
+    }
+}
+
+pub fn resolve_workspace_path(cwd: &str, requested: &str) -> Result<PathBuf, String> {
+    if requested.contains('\0') || requested.starts_with(r"\\?\") || requested.starts_with(r"\\.\")
+    {
+        return Err("NT device/namespace paths are not allowed".into());
+    }
+    if cwd.trim().is_empty() {
+        return Err(
+            "No active workspace selected. Choose a workspace before using workspace file tools."
+                .into(),
+        );
+    }
+    let root =
+        std::fs::canonicalize(cwd).map_err(|error| format!("Workspace is unavailable: {error}"))?;
+    if !root.is_dir() {
+        return Err("Workspace is not a directory".into());
+    }
+    let raw = Path::new(requested);
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        validate_relative_path(requested)?;
+        root.join(raw)
+    };
+    if candidate
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err("Parent traversal is not allowed; use a workspace-contained path".into());
+    }
+    if candidate.exists() {
+        let resolved = std::fs::canonicalize(&candidate)
+            .map_err(|error| format!("Cannot resolve {}: {error}", candidate.display()))?;
+        if !resolved.starts_with(&root) {
+            return Err("Path escapes the active workspace".into());
+        }
+        return Ok(resolved);
+    }
+    let mut ancestor = candidate.parent().unwrap_or(&root);
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or("Cannot find an existing target ancestor")?;
+    }
+    let resolved_ancestor = std::fs::canonicalize(ancestor).map_err(|error| error.to_string())?;
+    if !resolved_ancestor.starts_with(&root) {
+        return Err("Target parent escapes the active workspace".into());
+    }
+    Ok(candidate)
+}
+
+fn validate_relative_path(path: &str) -> Result<(), String> {
+    for part in path.replace('\\', "/").split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return Err("Parent traversal is not allowed".into());
+        }
+        if part.contains(':') || part.ends_with('.') || part.ends_with(' ') {
+            return Err("Path contains a Windows-unsafe component".into());
+        }
+        let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+        if matches!(
+            stem.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        ) {
+            return Err("Windows reserved device names are not allowed".into());
+        }
+    }
+    Ok(())
+}
+
+pub async fn list_workspace_files(
+    cwd: &str,
+    query: Option<&str>,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if cwd.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = resolve_workspace_path(cwd, ".")?;
+    let query = query.unwrap_or_default().to_ascii_lowercase();
+    let limit = limit.clamp(1, 200);
+    tokio::task::spawn_blocking(move || {
+        let mut files = Vec::new();
+        for entry in WalkBuilder::new(&root)
+            .hidden(false)
+            .filter_entry(|entry| {
+                if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                !matches!(
+                    name.as_str(),
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | "dist"
+                        | "dist-ssr"
+                        | "build"
+                        | "out"
+                        | "coverage"
+                        | ".next"
+                )
+            })
+            .build()
+            .filter_map(Result::ok)
+        {
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if relative.to_ascii_lowercase().contains(&query) {
+                files.push(relative);
+                if files.len() >= limit {
+                    break;
+                }
+            }
+        }
+        files.sort();
+        files
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("aether-tools-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn rejects_traversal_and_accepts_nested_workspace_path() {
+        let root = workspace();
+        let root_string = root.to_string_lossy().to_string();
+        assert!(resolve_workspace_path(&root_string, ".").is_ok());
+        assert!(resolve_workspace_path(&root_string, "../escape.txt").is_err());
+        assert!(resolve_workspace_path(&root_string, "nested/ok.txt").is_ok());
+        assert!(resolve_workspace_path(&root_string, "nul.txt").is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn no_workspace_never_grants_absolute_file_access() {
+        assert!(resolve_workspace_path("", "D:/outside.txt").is_err());
+        assert!(resolve_workspace_path("", "/etc/passwd").is_err());
+        assert!(resolve_workspace_path("", "relative.txt").is_err());
+    }
+
+    #[test]
+    fn process_utf8_decoder_preserves_split_characters() {
+        let mut bytes = "héllo".as_bytes().to_vec();
+        let split = bytes.iter().position(|byte| *byte == 0xC3).unwrap() + 1;
+        let tail = bytes.split_off(split);
+        assert_eq!(take_utf8_output(&mut bytes, false), "h");
+        bytes.extend_from_slice(&tail);
+        assert_eq!(take_utf8_output(&mut bytes, true), "éllo");
+    }
+
+    #[test]
+    fn symlink_escape_is_rejected() {
+        #[cfg(unix)]
+        {
+            let root = workspace();
+            let outside = workspace();
+            std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+            assert!(resolve_workspace_path(&root.to_string_lossy(), "link/secret.txt").is_err());
+            let _ = std::fs::remove_dir_all(root);
+            let _ = std::fs::remove_dir_all(outside);
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_edit_generates_diff_and_writes_once() {
+        let root = workspace();
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        let result = edit_file(
+            &serde_json::json!({"path":"a.txt","oldString":"two","newString":"three"}),
+            &root.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert!(result.artifact.unwrap().content.contains("+three"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "one\nthree\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn empty_file_read_is_successful() {
+        let root = workspace();
+        std::fs::write(root.join("empty.txt"), "").unwrap();
+        let result = read_file(
+            &serde_json::json!({"path":"empty.txt"}),
+            &root.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("empty file"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn context_file_listing_excludes_generated_and_vcs_directories() {
+        let root = workspace();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src/main.ts"), "export {};\n").unwrap();
+        std::fs::write(root.join(".git/config"), "secret").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "module").unwrap();
+        let files = list_workspace_files(&root.to_string_lossy(), None, 50)
+            .await
+            .unwrap();
+        assert_eq!(files, vec!["src/main.ts"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_streams_output_and_finishes() {
+        let root = workspace();
+        let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let captured = events.clone();
+        let context = ToolContext {
+            cwd: root.to_string_lossy().to_string(),
+            cancel: CancellationToken::new(),
+            sink: Some(Arc::new(move |event| {
+                if let ToolEvent::TerminalOutput { delta, .. } = event {
+                    captured.lock().unwrap().push(delta);
+                }
+            })),
+        };
+        let result = run_command(
+            &serde_json::json!({"command":"Write-Output 'hello-aether'","timeoutSeconds":20}),
+            &context,
+        )
+        .await
+        .unwrap();
+        assert!(result.success, "{}", result.output);
+        assert!(result.output.contains("hello-aether"));
+        assert!(events.lock().unwrap().join("").contains("hello-aether"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_giant_unbroken_output_is_bounded() {
+        let root = workspace();
+        let context = ToolContext {
+            cwd: root.to_string_lossy().to_string(),
+            cancel: CancellationToken::new(),
+            sink: None,
+        };
+        let result = run_command(
+            &serde_json::json!({
+                "command": "[Console]::Out.Write('a' * (2 * 1024 * 1024))",
+                "timeoutSeconds": 20
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+        assert!(result.success, "{}", result.output);
+        assert!(result.output.contains("terminal output truncated at 1 MiB"));
+        assert!(result.artifact.unwrap().content.len() <= MAX_COMMAND_BYTES + 128);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_cancellation_terminates_the_process() {
+        let root = workspace();
+        let cancel = CancellationToken::new();
+        let context = ToolContext {
+            cwd: root.to_string_lossy().to_string(),
+            cancel: cancel.clone(),
+            sink: None,
+        };
+        let task = tokio::spawn(async move {
+            run_command(&serde_json::json!({"command":"Start-Sleep -Seconds 30; Write-Output 'unreachable'","timeoutSeconds":60}), &context).await
+        });
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(8), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(result.cancelled);
+        assert!(!result.output.contains("unreachable"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn private_addresses_are_blocked() {
+        assert!(!is_public_ip("127.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_public_ip("1.1.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_mapped_and_embedded_ipv6_targets_cannot_bypass_the_private_filter() {
+        // IPv4-mapped (::ffff:0:0/96) addresses must be filtered as their IPv4 selves.
+        assert!(!is_public_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("::ffff:169.254.169.254".parse().unwrap()));
+        // A genuinely public IPv4-mapped address stays allowed.
+        assert!(is_public_ip("::ffff:8.8.8.8".parse().unwrap()));
+        // 6to4 (2002::/16) and Teredo (2001::/32) embed an IPv4 target that
+        // must face the same filter instead of being treated as public.
+        assert!(!is_public_ip("2002:7f00:0001::".parse().unwrap()));
+        assert!(is_public_ip("2002:0808:0808::".parse().unwrap()));
+        assert!(!is_public_ip(
+            "2001:0000:0000:0000:0000:0000:7f00:0001".parse().unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_ipv4_mapped_loopback_literal_urls() {
+        let error = validate_public_url(&Url::parse("http://[::ffff:127.0.0.1]/").unwrap())
+            .await
+            .expect_err("IPv4-mapped loopback must be rejected");
+        assert!(
+            error.contains("private") || error.contains("local"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn agent_tools_contain_subagent_and_skill_contracts() {
+        let tools = get_agent_tools();
+        let array = tools.as_array().expect("tools array");
+        let names: Vec<&str> = array
+            .iter()
+            .filter_map(|t| t.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(names.contains(&"spawn_subagent"));
+        assert!(names.contains(&"use_skill"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"run_command"));
+    }
+
+    #[tokio::test]
+    async fn guarded_write_rejects_stale_or_unexpected_disk_state() {
+        let root = workspace();
+        let file = root.join("guarded.txt");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        guarded_atomic_write(&file, b"one\nthree\n", Some("one\ntwo\n"))
+            .await
+            .expect("unchanged snapshot must be writable");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\nthree\n");
+        let error = guarded_atomic_write(&file, b"clobbered", Some("one\ntwo\n"))
+            .await
+            .expect_err("stale snapshot must be rejected");
+        assert!(
+            error.contains("changed") || error.contains("appeared"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\nthree\n");
+        let error = guarded_atomic_write(&file, b"clobbered", None)
+            .await
+            .expect_err("unexpected existing file must be rejected");
+        assert!(error.contains("appeared"), "{error}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\nthree\n");
+        let fresh = root.join("fresh.txt");
+        guarded_atomic_write(&fresh, b"new", None)
+            .await
+            .expect("fresh target must be writable");
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn write_file_reports_accurate_diff_stats_for_overwrite() {
+        let root = workspace();
+        std::fs::write(root.join("w.txt"), "a\nb\nc\n").unwrap();
+        let result = write_file(
+            &serde_json::json!({"path":"w.txt","content":"a\n"}),
+            &root.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        let stats = result.files_changed.expect("files changed stats");
+        assert_eq!(
+            stats[0].additions, 0,
+            "the surviving line is unchanged, so it is not an addition"
+        );
+        assert_eq!(stats[0].deletions, 2, "two overwritten lines are deletions");
+        let empty = write_file(
+            &serde_json::json!({"path":"e.txt","content":""}),
+            &root.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        let stats = empty.files_changed.expect("files changed stats");
+        assert_eq!(stats[0].additions, 0);
+        assert_eq!(stats[0].deletions, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reserved_benchmark_and_shared_ipv4_ranges_are_blocked() {
+        assert!(!is_public_ip("240.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("255.255.255.254".parse().unwrap()));
+        assert!(!is_public_ip("100.64.0.1".parse().unwrap()));
+        assert!(!is_public_ip("100.127.255.255".parse().unwrap()));
+        assert!(!is_public_ip("198.18.0.1".parse().unwrap()));
+        assert!(!is_public_ip("198.19.255.255".parse().unwrap()));
+        assert!(!is_public_ip("192.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("192.88.99.1".parse().unwrap()));
+        assert!(is_public_ip("100.63.255.255".parse().unwrap()));
+        assert!(is_public_ip("100.128.0.1".parse().unwrap()));
+        assert!(is_public_ip("198.20.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv6_documentation_and_nat64_targets_cannot_bypass_the_private_filter() {
+        assert!(!is_public_ip("2001:db8::1".parse().unwrap()));
+        assert!(!is_public_ip("64:ff9b::7f00:1".parse().unwrap()));
+        assert!(!is_public_ip("64:ff9b::a00:1".parse().unwrap()));
+        assert!(is_public_ip("64:ff9b::808:808".parse().unwrap()));
     }
 }

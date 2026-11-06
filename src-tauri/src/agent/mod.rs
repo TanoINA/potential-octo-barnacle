@@ -1,5 +1,11 @@
-pub mod types;
-pub mod tools;
+pub mod git;
+pub mod mcp;
 pub mod provider;
-pub mod storage;
+pub mod pty;
+pub mod reflection;
 pub mod runner;
+pub mod search;
+pub mod skills;
+pub mod storage;
+pub mod tools;
+pub mod types;

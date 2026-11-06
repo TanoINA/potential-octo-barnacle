@@ -13,6 +13,17 @@ export default defineConfig({
     },
   },
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          'markdown-vendor': ['react-markdown', 'remark-gfm'],
+          'tauri-vendor': ['@tauri-apps/api', '@tauri-apps/plugin-dialog'],
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,
