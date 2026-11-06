@@ -58,4 +58,20 @@ describe('SubagentTreeCard', () => {
     fireEvent.click(button);
     expect(select).toHaveBeenCalledWith('art-1');
   });
+
+  it('renders cancelled status for cancelled subagent', () => {
+    const cancelledSubagents: SubagentProgress[] = [
+      {
+        id: 'sub-1',
+        role: 'Auditor',
+        task: 'Audit codebase',
+        status: 'cancelled',
+        startedAt: Date.now() - 3000,
+        completedAt: Date.now(),
+      },
+    ];
+    render(<SubagentTreeCard subagents={cancelledSubagents} />);
+    expect(screen.getByText('0/1 done · 1 cancelled')).toBeTruthy();
+    expect(screen.getByText('cancelled')).toBeTruthy();
+  });
 });

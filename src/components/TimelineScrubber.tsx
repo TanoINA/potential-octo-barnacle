@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { ChatMessage } from '../types/agent';
 
 interface TimelineTurn {
@@ -147,16 +148,30 @@ export const TimelineScrubber = memo(function TimelineScrubber({
 
   return (
     <div
-      className="absolute right-2 top-20 bottom-28 z-30 flex items-center select-none"
+      className="absolute right-2 top-20 bottom-28 z-30 flex flex-col items-center justify-center select-none pointer-events-auto"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       data-testid="timeline-scrubber"
     >
+      {/* Top arrow button (jump to top) */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onJumpToMessage(0);
+        }}
+        className="mb-1 p-0.5 text-[#6e7681] hover:text-[#e6edf3] transition-colors rounded hover:bg-[#30363d]/40"
+        title="Jump to top"
+        aria-label="Jump to top"
+      >
+        <ChevronUp size={11} strokeWidth={2.5} />
+      </button>
+
       {/* Vertical Dashed & Dotted Track */}
       <div
         ref={trackRef}
         onClick={handleTrackClick}
-        className="relative flex h-full max-h-[380px] w-5 cursor-pointer flex-col items-center justify-between py-2 group"
+        className="relative flex h-full max-h-[380px] w-5 cursor-pointer flex-col items-center justify-between py-1 group"
         title="Session timeline scrubber"
       >
         {/* Vertical line connector */}
@@ -202,6 +217,22 @@ export const TimelineScrubber = memo(function TimelineScrubber({
           }}
         />
       </div>
+
+      {/* Bottom arrow button (jump to bottom) */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (messages.length > 0) {
+            onJumpToMessage(messages.length - 1);
+          }
+        }}
+        className="mt-1 p-0.5 text-[#6e7681] hover:text-[#e6edf3] transition-colors rounded hover:bg-[#30363d]/40"
+        title="Jump to bottom"
+        aria-label="Jump to bottom"
+      >
+        <ChevronDown size={11} strokeWidth={2.5} />
+      </button>
 
       {/* Floating Hover Card (Antigravity Style Popover) */}
       {isHovered && (

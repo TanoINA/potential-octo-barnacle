@@ -6,6 +6,7 @@ import { playTaskCompleteChime, showDesktopNotification } from '../utils/audioCh
 import type {
   AgentEvent,
   MessageSegment,
+  ToolCallItem,
   AgentRunRequest,
   AgentSettings,
   ChatMessage,
@@ -44,10 +45,20 @@ function createSession(workspaceCwd?: string): SessionData {
 }
 
 function cancelledMessage(message: ChatMessage): ChatMessage {
+  const cancelTool = (tool: ToolCallItem): ToolCallItem =>
+    tool.status === 'running' || tool.status === 'pending'
+      ? { ...tool, status: 'cancelled' as const }
+      : tool;
+
   return {
-    ...message, isStreaming: false, runStatus: 'cancelled',
-    toolCalls: message.toolCalls?.map((tool) => tool.status === 'running' || tool.status === 'pending'
-      ? { ...tool, status: 'cancelled' } : tool),
+    ...message,
+    isStreaming: false,
+    runStatus: 'cancelled',
+    toolCalls: message.toolCalls?.map(cancelTool),
+    segments: message.segments?.map((seg) => ({
+      ...seg,
+      toolCalls: seg.toolCalls?.map(cancelTool),
+    })),
     councilTurn: message.councilTurn ? {
       ...message.councilTurn,
       candidateA: { ...message.councilTurn.candidateA, isStreaming: false },
@@ -485,6 +496,15 @@ export function useAgent() {
               void playTaskCompleteChime();
             }
           }
+          if (payload.data.cancelled) {
+            setSubagents((prev) =>
+              prev.map((s) =>
+                s.status === 'running'
+                  ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
+                  : s
+              )
+            );
+          }
           mutateData((current) => ({
             ...current,
             session: {
@@ -493,10 +513,17 @@ export function useAgent() {
               messageCount: current.messages.length,
               preview: extractPreview(current.messages),
             },
-            messages: current.messages.map((message) => message.id === streamingMessageIdRef.current ? {
-              ...message, isStreaming: false,
-              runStatus: payload.data.cancelled ? 'cancelled' : payload.data.successful === false || runFailedRef.current ? 'failed' : 'completed',
-            } : message),
+            messages: current.messages.map((message) => {
+              if (message.id !== streamingMessageIdRef.current) return message;
+              if (payload.data.cancelled) {
+                return cancelledMessage(message);
+              }
+              return {
+                ...message,
+                isStreaming: false,
+                runStatus: payload.data.successful === false || runFailedRef.current ? 'failed' : 'completed',
+              };
+            }),
           }));
           setActiveSkills([]);
           setIsStreaming(false);
@@ -665,6 +692,8 @@ export function useAgent() {
     streamingMessageIdRef.current = assistantId;
     setIsStreaming(true);
     setStopRequested(false);
+    setSubagents([]);
+    setActiveSkills([]);
 
     if (options?.council && options.candidateA && options.candidateB) {
       const requestA: AgentRunRequest = {
@@ -763,18 +792,42 @@ export function useAgent() {
     const runId = currentRunRef.current;
     if (!runId || stopRequested) return;
     setStopRequested(true);
+    setSubagents((prev) =>
+      prev.map((s) =>
+        s.status === 'running'
+          ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
+          : s
+      )
+    );
+    setActiveSkills([]);
+    mutateData((current) => ({
+      ...current,
+      messages: current.messages.map((message) =>
+        message.id === streamingMessageIdRef.current || (message.role === 'assistant' && message.runId === runId)
+          ? cancelledMessage(message)
+          : message
+      ),
+    }));
     try {
       await invoke('abort_agent', { runId });
     } catch (error) {
       setLastError(`Could not stop run: ${String(error)}`);
       setStopRequested(false);
     }
-  }, [stopRequested]);
+  }, [stopRequested, mutateData]);
 
   const detachCurrentRun = useCallback(() => {
     flushPending();
     const runId = currentRunRef.current;
     if (!runId) return;
+    setSubagents((prev) =>
+      prev.map((s) =>
+        s.status === 'running'
+          ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
+          : s
+      )
+    );
+    setActiveSkills([]);
     mutateData((current) => ({
       ...current,
       messages: current.messages.map((message) => message.role === 'assistant' && message.runId === runId
@@ -1282,6 +1335,8 @@ export function useAgent() {
       currentRunRef.current = null;
       setIsStreaming(false);
       setStopRequested(false);
+      setSubagents([]);
+      setActiveSkills([]);
       void invoke('abort_agent', { runId: activeRun }).catch(() => {});
     }
     if (sessionOperationRef.current) {
@@ -1344,6 +1399,8 @@ export function useAgent() {
       currentRunRef.current = null;
       setIsStreaming(false);
       setStopRequested(false);
+      setSubagents([]);
+      setActiveSkills([]);
       void invoke('abort_agent', { runId: activeRun }).catch(() => {});
     }
     if (sessionOperationRef.current) {

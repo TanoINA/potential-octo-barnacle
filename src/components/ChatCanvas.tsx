@@ -371,10 +371,16 @@ export function ChatCanvas({
   }, [virtualizer]);
 
   useEffect(() => {
+    setShowJumpBottom(false);
     if (messages.length === 0) return;
     stickToBottomRef.current = true;
     requestAnimationFrame(() => virtualizer.scrollToIndex(messages.length - 1, { align: 'end' }));
   }, [messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setShowJumpBottom(false);
+    stickToBottomRef.current = true;
+  }, [sessionTitle]);
 
   useEffect(() => {
     if (!stickToBottomRef.current || !parentRef.current || messages.length === 0) return;
@@ -1005,9 +1011,10 @@ export function ChatCanvas({
         className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
         onScroll={(event) => {
           const element = event.currentTarget;
-          const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 160;
+          const hasOverflow = element.scrollHeight > element.clientHeight + 60;
+          const isNearBottom = !hasOverflow || (element.scrollHeight - element.scrollTop - element.clientHeight < 160);
           stickToBottomRef.current = isNearBottom;
-          setShowJumpBottom(!isNearBottom);
+          setShowJumpBottom(hasOverflow && !isNearBottom);
         }}
       >
         {messages.length === 0 ? (
@@ -1069,9 +1076,9 @@ export function ChatCanvas({
           type="button"
           onClick={handleJumpToBottom}
           aria-label="Jump to bottom"
-          className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 rounded-full border border-[#30363d] bg-[#161b22]/95 px-3.5 py-1.5 text-xs text-[#e6edf3] shadow-xl backdrop-blur-md hover:border-[#58a6ff]/60 hover:bg-[#21262d] transition-all animate-fadeIn"
+          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-full border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-xl backdrop-blur-md hover:border-[#58a6ff]/60 hover:bg-[#21262d] transition-all animate-fadeIn"
         >
-          <ChevronDown size={14} className="text-[#58a6ff]" />
+          <ChevronDown size={13} className="text-[#58a6ff]" />
           <span className="font-medium text-[11px]">
             {isStreaming ? 'New output' : 'Jump to bottom'}
           </span>

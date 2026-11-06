@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bot, CheckCircle2, ChevronDown, ChevronRight, FileCode2, Loader2, XCircle } from 'lucide-react';
+import { Ban, Bot, CheckCircle2, ChevronDown, ChevronRight, FileCode2, Loader2, XCircle } from 'lucide-react';
 import type { SubagentProgress } from '../types/agent';
 
 interface SubagentTreeCardProps {
@@ -14,6 +14,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
 
   const runningCount = subagents.filter((s) => s.status === 'running').length;
   const completedCount = subagents.filter((s) => s.status === 'completed').length;
+  const cancelledCount = subagents.filter((s) => s.status === 'cancelled').length;
 
   return (
     <div
@@ -29,6 +30,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
           <span className="text-xs font-semibold text-[#e6edf3]">Subagent Tasks</span>
           <span className="rounded-full bg-[#30363d] px-2 py-0.5 text-[10px] font-mono text-[#8b949e]">
             {completedCount}/{subagents.length} done
+            {cancelledCount > 0 && ` · ${cancelledCount} cancelled`}
           </span>
           {runningCount > 0 && (
             <span className="flex items-center gap-1 rounded-full bg-[#f0883e]/15 px-2 py-0.5 text-[10px] font-medium text-[#f0883e]">
@@ -51,6 +53,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
           {subagents.map((sub) => {
             const isRunning = sub.status === 'running';
             const isCompleted = sub.status === 'completed';
+            const isCancelled = sub.status === 'cancelled';
             const durationMs = (sub.completedAt || Date.now()) - sub.startedAt;
             const durationSec = Math.max(1, Math.round(durationMs / 1000));
 
@@ -64,6 +67,8 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
                     <Loader2 size={14} className="animate-spin text-[#f0883e]" />
                   ) : isCompleted ? (
                     <CheckCircle2 size={14} className="text-[#3fb950]" />
+                  ) : isCancelled ? (
+                    <Ban size={14} className="text-[#8b949e]" />
                   ) : (
                     <XCircle size={14} className="text-[#f85149]" />
                   )}
@@ -72,7 +77,10 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-[#f0f6fc]">{sub.role}</span>
-                    <span className="font-mono text-[10px] text-[#8b949e]">{durationSec}s</span>
+                    <span className="font-mono text-[10px] text-[#8b949e]">
+                      {isCancelled && <span className="mr-1.5 text-[#8b949e] font-sans font-medium">cancelled</span>}
+                      {durationSec}s
+                    </span>
                   </div>
 
                   <p className="mt-1 text-[11px] leading-relaxed text-[#8b949e]">{sub.task}</p>

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import {
+  Ban,
   BookOpen,
   Bot,
   ChevronDown,
@@ -182,6 +183,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   }, [toolCalls]);
 
   const hasRunning = isStreaming || toolCalls.some((t) => t.status === 'running' || t.status === 'pending');
+  const hasCancelled = !hasRunning && toolCalls.some((t) => t.status === 'cancelled');
   const hasError = toolCalls.some((t) => t.status === 'error' || (t.exitCode !== undefined && t.exitCode !== 0));
 
   // Default: open while running or if error; collapsed when completed unless user explicitly toggled
@@ -221,12 +223,17 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
           </span>
         </div>
 
-        {hasRunning && (
+        {hasRunning ? (
           <span className="flex items-center gap-1.5 shrink-0 text-[10px] text-[#f0883e] font-mono animate-pulse">
             <span className="w-1.5 h-1.5 rounded-full bg-[#f0883e]" />
             in progress
           </span>
-        )}
+        ) : hasCancelled ? (
+          <span className="flex items-center gap-1 shrink-0 text-[10px] text-[#8b949e] font-mono">
+            <Ban size={10} className="text-[#8b949e]" />
+            cancelled
+          </span>
+        ) : null}
       </button>
 
       {/* Expanded Detailed Status Rows */}
@@ -259,6 +266,12 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                     {tool.status === 'running' && (
                       <span className="flex items-center gap-1 text-[10px] text-[#f0883e]">
                         <Loader2 size={10} className="animate-spin" />
+                      </span>
+                    )}
+
+                    {tool.status === 'cancelled' && (
+                      <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
+                        cancelled
                       </span>
                     )}
 

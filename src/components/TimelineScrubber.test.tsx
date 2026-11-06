@@ -111,4 +111,24 @@ describe('TimelineScrubber', () => {
     // Turn 2 is at index 2 in dummyMessages
     expect(onJumpToMessage).toHaveBeenCalledWith(2);
   });
+
+  it('jumps to top and bottom when clicking scrubber chevron arrows', () => {
+    const onJumpToMessage = vi.fn();
+    render(
+      <TimelineScrubber
+        messages={dummyMessages}
+        sessionTitle="Installing coding tools and agent toolkits"
+        scrollElement={null}
+        onJumpToMessage={onJumpToMessage}
+      />,
+    );
+
+    const topBtn = screen.getByLabelText('Jump to top');
+    fireEvent.click(topBtn);
+    expect(onJumpToMessage).toHaveBeenCalledWith(0);
+
+    const bottomBtn = screen.getByLabelText('Jump to bottom');
+    fireEvent.click(bottomBtn);
+    expect(onJumpToMessage).toHaveBeenCalledWith(dummyMessages.length - 1);
+  });
 });
