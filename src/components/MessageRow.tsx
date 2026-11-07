@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Copy,
   Folder,
+  Image as ImageIcon,
   Info,
   Paperclip,
   Pencil,
@@ -113,7 +114,13 @@ export const MessageRow = memo(function MessageRow({
               key={att.id}
               className="inline-flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-[11px] font-mono text-[#58a6ff]"
             >
-              {att.isDir ? <Folder size={11} className="text-[#d29922]" /> : <Paperclip size={11} className="text-[#58a6ff]" />}
+              {att.isDir ? (
+                <Folder size={11} className="text-[#d29922]" />
+              ) : /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(att.name) ? (
+                <ImageIcon size={11} className="text-[#a371f7]" />
+              ) : (
+                <Paperclip size={11} className="text-[#58a6ff]" />
+              )}
               <span className="truncate max-w-[220px]" title={att.path}>{att.name}</span>
             </span>
           ))}

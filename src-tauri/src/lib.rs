@@ -503,6 +503,25 @@ async fn run_shell_command(
     agent::pty::run_shell_command(&cwd, &command).await
 }
 
+#[tauri::command]
+fn inspect_paths(paths: Vec<String>) -> Vec<agent::types::AttachedContext> {
+    storage::inspect_paths(paths)
+}
+
+#[tauri::command]
+async fn save_pasted_attachment(
+    state: State<'_, AppState>,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<agent::types::AttachedContext, String> {
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    storage::save_attachment(Some(&cwd), &name, &bytes).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial_cwd = storage::load_workspace_sync();
@@ -570,7 +589,9 @@ pub fn run() {
             compact_session,
             init_workspace_agents_md,
             read_workspace_agents_md,
-            save_workspace_agents_md
+            save_workspace_agents_md,
+            inspect_paths,
+            save_pasted_attachment
         ])
         .run(tauri::generate_context!())
         .expect("error while running AetherAgent application");

@@ -1,6 +1,6 @@
 use super::types::{
-    AgentSettings, ChatMessage, GlobalArtifactItem, McpServerConfig, ProviderConfig, ProviderKind,
-    Session, SessionData,
+    AgentSettings, AttachedContext, ChatMessage, GlobalArtifactItem, McpServerConfig, ProviderConfig,
+    ProviderKind, Session, SessionData,
 };
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -942,6 +942,94 @@ pub fn validate_mcp_server(server: &McpServerConfig) -> Result<(), String> {
     Ok(())
 }
 
+pub fn inspect_paths(paths: Vec<String>) -> Vec<AttachedContext> {
+    paths
+        .into_iter()
+        .filter_map(|p| {
+            let trimmed = p.trim().to_string();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let std_path = Path::new(&trimmed);
+            let name = std_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| trimmed.clone());
+            let is_dir = std_path.is_dir();
+            let id = format!(
+                "att-{}-{}",
+                chrono::Utc::now().timestamp_millis(),
+                &Uuid::new_v4().simple().to_string()[..6]
+            );
+            Some(AttachedContext {
+                id,
+                path: trimmed,
+                name,
+                is_dir,
+            })
+        })
+        .collect()
+}
+
+pub async fn save_attachment(
+    workspace_cwd: Option<&str>,
+    name: &str,
+    bytes: &[u8],
+) -> Result<AttachedContext, String> {
+    if bytes.is_empty() {
+        return Err("Attachment data cannot be empty".into());
+    }
+    const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024; // 25 MiB
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err("Attachment exceeds the 25 MiB limit".into());
+    }
+
+    let target_dir = match workspace_cwd {
+        Some(cwd) if !cwd.trim().is_empty() && Path::new(cwd).is_dir() => {
+            Path::new(cwd).join(".aether-agent").join("attachments")
+        }
+        _ => config_dir().join("attachments"),
+    };
+
+    fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|e| format!("Failed to create attachments directory: {e}"))?;
+
+    let clean_name = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "attachment.png".into());
+
+    let stem = Path::new(&clean_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "attachment".into());
+    let ext = Path::new(&clean_name)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    let suffix = &Uuid::new_v4().simple().to_string()[..8];
+    let unique_filename = format!("{stem}_{suffix}{ext}");
+    let file_path = target_dir.join(&unique_filename);
+
+    atomic_write(&file_path, bytes).await?;
+
+    let id = format!(
+        "att-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        &Uuid::new_v4().simple().to_string()[..6]
+    );
+
+    Ok(AttachedContext {
+        id,
+        path: file_path.to_string_lossy().to_string(),
+        name: clean_name,
+        is_dir: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,5 +1280,52 @@ mod tests {
         assert_eq!(val["sessionUpdatedAt"], 12345678);
         assert_eq!(val["artifact"]["title"], "index.ts");
         assert_eq!(val["artifact"]["type"], "code");
+    }
+
+    #[test]
+    fn inspect_paths_distinguishes_files_and_directories() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("aether_test_{}.txt", Uuid::new_v4().simple()));
+        std::fs::write(&test_file, b"sample text").unwrap();
+
+        let inspected = inspect_paths(vec![
+            temp_dir.to_string_lossy().to_string(),
+            test_file.to_string_lossy().to_string(),
+            "".to_string(),
+        ]);
+
+        let _ = std::fs::remove_file(&test_file);
+
+        assert_eq!(inspected.len(), 2);
+        assert!(inspected[0].is_dir);
+        assert!(!inspected[1].is_dir);
+        assert!(inspected[1].name.ends_with(".txt"));
+    }
+
+    #[tokio::test]
+    async fn save_attachment_persists_bytes_and_rejects_empty_data() {
+        let empty_err = save_attachment(None, "test.png", b"").await;
+        assert!(empty_err.is_err());
+
+        let temp_workspace = std::env::temp_dir().join(format!("aether_ws_{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&temp_workspace).unwrap();
+
+        let att = save_attachment(
+            Some(&temp_workspace.to_string_lossy()),
+            "screenshot.png",
+            b"fake-image-bytes",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(att.name, "screenshot.png");
+        assert!(!att.is_dir);
+        assert!(att.path.contains(".aether-agent"));
+        assert!(std::path::Path::new(&att.path).exists());
+
+        let read_back = std::fs::read(&att.path).unwrap();
+        assert_eq!(read_back, b"fake-image-bytes");
+
+        let _ = std::fs::remove_dir_all(&temp_workspace);
     }
 }

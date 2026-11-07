@@ -12,6 +12,7 @@ import {
   FileCode2,
   Folder,
   Globe,
+  Image as ImageIcon,
   Mic,
   MicOff,
   MoreHorizontal,
@@ -31,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import type { AttachedContext, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult } from '../types/agent';
 import { MessageRow } from './MessageRow';
 import { AetherLogo } from './AetherLogo';
@@ -422,22 +424,54 @@ export function ChatCanvas({
     setIsDraggingOver(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
     const droppedFiles = Array.from(e.dataTransfer?.files || []);
     if (droppedFiles.length === 0) return;
 
-    const newContexts: AttachedContext[] = droppedFiles.map((f) => {
+    const realPaths = droppedFiles
+      .map((f) => (f as any).path)
+      .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+
+    if (realPaths.length > 0 && typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      try {
+        const contexts = await invoke<AttachedContext[]>('inspect_paths', { paths: realPaths });
+        setAttachedContexts((prev) => {
+          const existing = new Set(prev.map((c) => c.path));
+          const unique = contexts.filter((c) => !existing.has(c.path));
+          return [...prev, ...unique];
+        });
+        return;
+      } catch (err) {
+        console.warn('Failed to inspect dropped paths from HTML5 drop', err);
+      }
+    }
+
+    const newContexts: AttachedContext[] = [];
+    for (const f of droppedFiles) {
+      if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const buf = await f.arrayBuffer();
+          const att = await invoke<AttachedContext>('save_pasted_attachment', {
+            name: f.name,
+            bytes: Array.from(new Uint8Array(buf)),
+          });
+          newContexts.push(att);
+          continue;
+        } catch {
+          // fallback
+        }
+      }
       const fullPath = (f as any).path || f.name;
       const isDir = !f.name.includes('.') && f.size === 0;
-      return {
+      newContexts.push({
         id: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: f.name,
         path: fullPath,
         isDir,
-      };
-    });
+      });
+    }
 
     setAttachedContexts((prev) => {
       const existing = new Set(prev.map((c) => c.path));
@@ -445,6 +479,146 @@ export function ChatCanvas({
       return [...prev, ...unique];
     });
   };
+
+  const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement> | ClipboardEvent) => {
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
+
+    const items = clipboardData.items;
+    const files = clipboardData.files;
+
+    const fileList: File[] = [];
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (f) fileList.push(f);
+      }
+    } else if (items && items.length > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (f) fileList.push(f);
+        }
+      }
+    }
+
+    // Normal text paste, allow native textarea paste
+    if (fileList.length === 0) return;
+
+    // Prevent pasting raw binary file content into textarea
+    e.preventDefault();
+
+    const newContexts: AttachedContext[] = [];
+
+    for (const file of fileList) {
+      const osPath = (file as any).path;
+      if (typeof osPath === 'string' && osPath.trim().length > 0) {
+        try {
+          if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+            const inspected = await invoke<AttachedContext[]>('inspect_paths', { paths: [osPath] });
+            if (inspected && inspected.length > 0) {
+              newContexts.push(inspected[0]);
+              continue;
+            }
+          }
+        } catch (err) {
+          console.warn('inspect_paths failed for pasted file path', err);
+        }
+      }
+
+      try {
+        const buf = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buf));
+        let filename = file.name;
+        if (!filename || filename === 'image.png' || filename === 'blob') {
+          const ext = file.type.includes('jpeg') ? 'jpg' : file.type.includes('webp') ? 'webp' : 'png';
+          const now = new Date();
+          const dateStr = now.toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+          filename = `pasted_image_${dateStr}.${ext}`;
+        }
+
+        if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+          const att = await invoke<AttachedContext>('save_pasted_attachment', {
+            name: filename,
+            bytes,
+          });
+          newContexts.push(att);
+        } else {
+          newContexts.push({
+            id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: filename,
+            path: filename,
+            isDir: false,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to process pasted attachment', err);
+      }
+    }
+
+    if (newContexts.length > 0) {
+      setAttachedContexts((prev) => {
+        const existing = new Set(prev.map((c) => c.path));
+        const unique = newContexts.filter((c) => !existing.has(c.path));
+        return [...prev, ...unique];
+      });
+    }
+  }, []);
+
+  // Native Tauri drag & drop event listener
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setupTauriDrop = async () => {
+      try {
+        if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+          const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+          unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
+            if (event.payload.type === 'enter' || event.payload.type === 'over') {
+              setIsDraggingOver(true);
+            } else if (event.payload.type === 'leave') {
+              setIsDraggingOver(false);
+            } else if (event.payload.type === 'drop') {
+              setIsDraggingOver(false);
+              const paths = event.payload.paths;
+              if (paths && paths.length > 0) {
+                try {
+                  const contexts = await invoke<AttachedContext[]>('inspect_paths', { paths });
+                  setAttachedContexts((prev) => {
+                    const existing = new Set(prev.map((c) => c.path));
+                    const unique = contexts.filter((c) => !existing.has(c.path));
+                    return [...prev, ...unique];
+                  });
+                } catch (err) {
+                  console.error('Failed to inspect dropped paths', err);
+                }
+              }
+            }
+          });
+        }
+      } catch (err) {
+        // Outside Tauri or test env
+      }
+    };
+
+    setupTauriDrop();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Global paste listener when user presses Ctrl+V anywhere in ChatCanvas
+  useEffect(() => {
+    const onGlobalPaste = (e: ClipboardEvent) => {
+      if (e.target === textareaRef.current) return;
+      const targetTag = (e.target as HTMLElement)?.tagName;
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA') return;
+      handlePaste(e);
+    };
+
+    window.addEventListener('paste', onGlobalPaste);
+    return () => window.removeEventListener('paste', onGlobalPaste);
+  }, [handlePaste]);
 
   // Preload skills automatically on mount and whenever streaming finishes
   useEffect(() => {
@@ -1504,7 +1678,13 @@ export function ChatCanvas({
                   key={att.id}
                   className="inline-flex items-center gap-1.5 rounded-md border border-[#30363d] bg-[#0d1117] px-2 py-0.5 text-[11px] font-mono text-[#58a6ff]"
                 >
-                  {att.isDir ? <Folder size={11} className="text-[#d29922]" /> : <Paperclip size={11} className="text-[#58a6ff]" />}
+                  {att.isDir ? (
+                    <Folder size={11} className="text-[#d29922]" />
+                  ) : /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(att.name) ? (
+                    <ImageIcon size={11} className="text-[#a371f7]" />
+                  ) : (
+                    <Paperclip size={11} className="text-[#58a6ff]" />
+                  )}
                   <span className="max-w-[200px] truncate" title={att.path}>{att.name}</span>
                   <button
                     type="button"
@@ -1535,6 +1715,7 @@ export function ChatCanvas({
               }}
               onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
               onKeyDown={onKeyDown}
+              onPaste={handlePaste}
               placeholder="Message AetherAgent…"
               className={`max-h-44 min-h-[58px] w-full resize-none border-0 bg-transparent pb-2 pt-3.5 text-[13px] leading-5 text-[#e6edf3] placeholder:text-[#6e7681] focus:border-0 focus:outline-none focus:ring-0 focus-visible:outline-none ${
                 input.startsWith('/') ? 'pl-2 pr-4' : 'px-4'
