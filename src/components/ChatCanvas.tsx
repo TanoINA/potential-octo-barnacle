@@ -466,6 +466,9 @@ export function ChatCanvas({
   const handleJumpToBottom = useCallback(() => {
     stickToBottomRef.current = true;
     setShowJumpBottom(false);
+    if (parentRef.current) {
+      parentRef.current.scrollTop = parentRef.current.scrollHeight;
+    }
     if (messages.length > 0) {
       virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
     }
@@ -477,10 +480,14 @@ export function ChatCanvas({
   }, [virtualizer]);
 
   useEffect(() => {
-    setShowJumpBottom(false);
-    if (messages.length === 0) return;
-    stickToBottomRef.current = true;
-    requestAnimationFrame(() => virtualizer.scrollToIndex(messages.length - 1, { align: 'end' }));
+    if (messages.length === 0) {
+      setShowJumpBottom(false);
+      return;
+    }
+    // Only auto-scroll on message changes if user is actively stuck to bottom
+    if (stickToBottomRef.current) {
+      requestAnimationFrame(() => virtualizer.scrollToIndex(messages.length - 1, { align: 'end' }));
+    }
   }, [messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -492,7 +499,7 @@ export function ChatCanvas({
     if (!stickToBottomRef.current || !parentRef.current || messages.length === 0) return;
     const frame = requestAnimationFrame(() => {
       const element = parentRef.current;
-      if (element) element.scrollTop = element.scrollHeight;
+      if (element && stickToBottomRef.current) element.scrollTop = element.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
   }, [messages]);
@@ -842,6 +849,11 @@ export function ChatCanvas({
     const interruptsRun = slashItem?.command === '/stop';
     if ((!clean && draftAttachments.length === 0) || isReviewing) return;
 
+    if (!isStreaming) {
+      stickToBottomRef.current = true;
+      setShowJumpBottom(false);
+    }
+
     if (isStreaming && !interruptsRun) {
       setQueuedPrompts((prev) => [
         ...prev,
@@ -1158,12 +1170,33 @@ export function ChatCanvas({
       <div
         ref={parentRef}
         className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+        onWheel={(e) => {
+          if (e.deltaY < 0) {
+            // User intentionally scrolled up with the mouse wheel
+            stickToBottomRef.current = false;
+          }
+        }}
+        onTouchMove={() => {
+          const element = parentRef.current;
+          if (element) {
+            const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+            if (distanceToBottom > 35) {
+              stickToBottomRef.current = false;
+            }
+          }
+        }}
         onScroll={(event) => {
           const element = event.currentTarget;
-          const hasOverflow = element.scrollHeight > element.clientHeight + 60;
-          const isNearBottom = !hasOverflow || (element.scrollHeight - element.scrollTop - element.clientHeight < 160);
-          stickToBottomRef.current = isNearBottom;
-          setShowJumpBottom(hasOverflow && !isNearBottom);
+          const hasOverflow = element.scrollHeight > element.clientHeight + 40;
+          const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+          const isAtBottom = !hasOverflow || distanceToBottom < 35;
+          if (isAtBottom) {
+            stickToBottomRef.current = true;
+            setShowJumpBottom(false);
+          } else {
+            stickToBottomRef.current = false;
+            setShowJumpBottom(hasOverflow);
+          }
         }}
       >
         {messages.length === 0 ? (
