@@ -55,6 +55,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitResult, setCommitResult] = useState<{ success: boolean; message: string } | null>(null);
   const [fileActions, setFileActions] = useState<Record<string, 'reverted' | 'accepted' | 'loading'>>({});
+  const [isMinimized, setIsMinimized] = useState(false);
 
   const handleRevertFile = async (filePath: string) => {
     setFileActions((prev) => ({ ...prev, [filePath]: 'loading' }));
@@ -140,8 +141,25 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   return (
     <div className="mt-3 w-full rounded-xl border border-[#30363d] bg-[#0d1117] overflow-hidden shadow-sm">
       {/* Header Bar */}
-      <div className="flex items-center justify-between border-b border-[#21262d] bg-[#161b22] px-3.5 py-2 text-xs">
+      <div
+        onClick={() => setIsMinimized((prev) => !prev)}
+        className={`flex items-center justify-between bg-[#161b22] px-3.5 py-2 text-xs select-none cursor-pointer hover:bg-[#1c2128] transition-colors ${
+          isMinimized ? '' : 'border-b border-[#21262d]'
+        }`}
+        title={isMinimized ? 'Click to expand changed files' : 'Click to minimize'}
+      >
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsMinimized((prev) => !prev);
+            }}
+            className="text-[#8b949e] hover:text-[#e6edf3] p-0.5 rounded transition-colors"
+            aria-label={isMinimized ? 'Expand changed files' : 'Minimize changed files'}
+          >
+            <ChevronDown size={14} className={`transition-transform duration-200 ${isMinimized ? '-rotate-90' : ''}`} />
+          </button>
           <GitCompare size={14} className="text-[#58a6ff]" />
           <span className="font-medium text-[#e6edf3]">
             {files.length} file{files.length > 1 ? 's' : ''} changed
@@ -152,9 +170,14 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               {gitStatus.branch}
             </span>
           )}
+          {isMinimized && (
+            <span className="text-[10px] text-[#6e7681] italic">
+              (minimized)
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center gap-1.5 font-mono text-[11px]">
             {totalAdditions > 0 && (
               <span className="text-[#3fb950] font-medium">+{totalAdditions}</span>
@@ -166,7 +189,10 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
           {gitStatus?.isRepo && (
             <button
               type="button"
-              onClick={() => setShowCommitBar((prev) => !prev)}
+              onClick={() => {
+                if (isMinimized) setIsMinimized(false);
+                setShowCommitBar((prev) => !prev);
+              }}
               className="flex items-center gap-1 rounded border border-[#30363d] bg-[#21262d] px-2 py-0.5 text-[10px] font-medium text-[#e6edf3] hover:border-[#58a6ff] hover:text-[#58a6ff] transition-colors"
               title="Toggle Git Commit Bar"
             >
@@ -175,12 +201,21 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               {showCommitBar ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setIsMinimized((prev) => !prev)}
+            className="flex items-center gap-1 rounded border border-[#30363d] bg-[#21262d] px-1.5 py-0.5 text-[10px] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#8b949e] transition-colors"
+            title={isMinimized ? 'Expand' : 'Minimize'}
+          >
+            {isMinimized ? 'Expand' : 'Minimize'}
+          </button>
         </div>
       </div>
 
       {/* File List */}
-      <div className="divide-y divide-[#21262d]/60 bg-[#0d1117] p-1">
-        {files.map(({ stat, artifactId }) => {
+      {!isMinimized && (
+        <div className="divide-y divide-[#21262d]/60 bg-[#0d1117] p-1">
+          {files.map(({ stat, artifactId }) => {
           const filename = stat.path.replace(/.*[/\\]/, '');
           const dir = stat.path.includes('/') || stat.path.includes('\\')
             ? stat.path.replace(/[/\\][^/\\]+$/, '')
@@ -263,9 +298,10 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
           );
         })}
       </div>
+      )}
 
       {/* One-Click Git Commit & Push Bar */}
-      {showCommitBar && gitStatus?.isRepo && (
+      {!isMinimized && showCommitBar && gitStatus?.isRepo && (
         <div className="border-t border-[#30363d] bg-[#161b22] p-3 space-y-2">
           <div className="flex items-center gap-2">
             <input

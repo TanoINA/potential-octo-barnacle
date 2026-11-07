@@ -11,6 +11,7 @@ use super::types::{
     CouncilDoneData, DoneEventData, ErrorEventData, MicroCompactionEvent, NoticeEventData,
     ProviderConfig, ReasoningEffort, SkillActivatedEventData, SkillInfo, StreamEventData,
     SubagentEventData, SubagentProgress, TerminalEventData, ToolCallItem, ToolEventData,
+    ExecutionMode,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -796,6 +797,13 @@ impl AgentRunner {
             Err(error) => emitter.error(error),
         }
         system.push_str(&format!("\n## Active workspace\n{workspace_cwd}"));
+        let mode_instructions = match request.execution_mode {
+            ExecutionMode::RequestReview => "\n## Permission & Execution Mode: REQUEST REVIEW\nEvery command and destructive operation requires explicit operator approval before execution. You must ask the user for confirmation and explain what the command does before proceeding with write or execute tools.",
+            ExecutionMode::Default => "\n## Permission & Execution Mode: DEFAULT\nAsk before sensitive or destructive operations (e.g. deleting files, rm/Remove-Item, git reset --hard, force push, drop table, kill process). Standard non-destructive reads and edits can proceed directly.",
+            ExecutionMode::Auto => "\n## Permission & Execution Mode: AUTO (PREVIEW)\nAutomatically evaluate the impact of operations. Proceed autonomously on routine actions, but pause and request operator confirmation if an operation has significant risk of data loss.",
+            ExecutionMode::Turbo => "\n## Permission & Execution Mode: TURBO\nRun all commands, tool calls, and workflows autonomously without restrictions or confirmation prompts unless explicitly requested by the operator.",
+        };
+        system.push_str(mode_instructions);
 
         let mut request_messages = request.messages.clone();
         if request.auto_compaction_enabled {
@@ -1359,6 +1367,14 @@ impl AgentRunner {
             system_a.push_str(&workspace_section);
             system_b.push_str(&workspace_section);
         }
+        let mode_instructions = match request_a.execution_mode {
+            ExecutionMode::RequestReview => "\n## Permission & Execution Mode: REQUEST REVIEW\nEvery command and destructive operation requires explicit operator approval before execution. You must ask the user for confirmation and explain what the command does before proceeding with write or execute tools.",
+            ExecutionMode::Default => "\n## Permission & Execution Mode: DEFAULT\nAsk before sensitive or destructive operations (e.g. deleting files, rm/Remove-Item, git reset --hard, force push, drop table, kill process). Standard non-destructive reads and edits can proceed directly.",
+            ExecutionMode::Auto => "\n## Permission & Execution Mode: AUTO (PREVIEW)\nAutomatically evaluate the impact of operations. Proceed autonomously on routine actions, but pause and request operator confirmation if an operation has significant risk of data loss.",
+            ExecutionMode::Turbo => "\n## Permission & Execution Mode: TURBO\nRun all commands, tool calls, and workflows autonomously without restrictions or confirmation prompts unless explicitly requested by the operator.",
+        };
+        system_a.push_str(mode_instructions);
+        system_b.push_str(mode_instructions);
         match load_workspace_memory(&workspace_cwd).await {
             Ok(Some(memory)) => {
                 let section = format!("\n## Workspace AGENTS.md instructions\n{memory}");

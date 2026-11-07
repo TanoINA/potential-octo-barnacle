@@ -203,4 +203,34 @@ describe('ChatCanvas prompt queueing', () => {
       expect(onSendMessage).toHaveBeenCalledWith('Next prompt to run after stream', undefined);
     });
   });
+
+  it('renders execution mode pill and allows selecting different execution modes', async () => {
+    localStorage.removeItem('aether_execution_mode');
+    const onSendMessage = vi.fn(async () => true);
+    renderCanvas({ onSendMessage });
+
+    const modeBtn = screen.getByLabelText('Execution mode');
+    expect(modeBtn).toBeTruthy();
+    expect(modeBtn.textContent).toContain('Turbo');
+
+    // Open execution mode menu
+    fireEvent.click(modeBtn);
+    expect(screen.getByText('Request Review')).toBeTruthy();
+    expect(screen.getByText('Every command requires approval.')).toBeTruthy();
+    expect(screen.getByText('Default')).toBeTruthy();
+    expect(screen.getByText('Auto (Preview)')).toBeTruthy();
+
+    // Select Request Review
+    fireEvent.click(screen.getByText('Request Review'));
+    expect(modeBtn.textContent).toContain('Request Review');
+
+    // Type a prompt and send
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Test prompt' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledWith('Test prompt', undefined, { executionMode: 'request_review' });
+    });
+  });
 });

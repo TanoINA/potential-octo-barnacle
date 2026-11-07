@@ -134,6 +134,8 @@ export interface McpServerConfig {
   enabled: boolean;
 }
 
+export type ExecutionMode = 'request_review' | 'default' | 'auto' | 'turbo';
+
 export interface AgentSettings {
   providers: ProviderConfig[];
   activeProviderId: string;
@@ -152,6 +154,7 @@ export interface AgentSettings {
   self_improvement_enabled: boolean;
   autoCompactionEnabled?: boolean;
   autoCompactionThresholdTokens?: number;
+  executionMode?: ExecutionMode;
 }
 
 export interface Session {
@@ -209,6 +212,7 @@ export interface AgentRunRequest {
   self_improvement_enabled: boolean;
   autoCompactionEnabled?: boolean;
   autoCompactionThresholdTokens?: number;
+  executionMode?: ExecutionMode;
 }
 
 export interface MicroCompactionEvent {

@@ -107,6 +107,20 @@ fn default_compaction_threshold() -> u32 {
     65_536
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    RequestReview,
+    Default,
+    Auto,
+    #[default]
+    Turbo,
+}
+
+fn default_execution_mode() -> ExecutionMode {
+    ExecutionMode::Turbo
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSettings {
@@ -143,6 +157,8 @@ pub struct AgentSettings {
         default = "default_compaction_threshold"
     )]
     pub auto_compaction_threshold_tokens: u32,
+    #[serde(rename = "executionMode", default = "default_execution_mode")]
+    pub execution_mode: ExecutionMode,
 }
 
 impl Default for AgentSettings {
@@ -165,6 +181,7 @@ impl Default for AgentSettings {
             self_improvement_enabled: false,
             auto_compaction_enabled: true,
             auto_compaction_threshold_tokens: 65_536,
+            execution_mode: ExecutionMode::Turbo,
         }
     }
 }
@@ -397,6 +414,8 @@ pub struct AgentRunRequest {
     pub auto_compaction_enabled: bool,
     #[serde(rename = "autoCompactionThresholdTokens", default)]
     pub auto_compaction_threshold_tokens: Option<u32>,
+    #[serde(rename = "executionMode", default = "default_execution_mode")]
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

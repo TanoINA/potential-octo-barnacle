@@ -19,6 +19,7 @@ import type {
   SessionData,
   SelfImprovementEvent,
   SessionModelOverride,
+  ExecutionMode,
 } from '../types/agent';
 
 function makeId(prefix: string): string {
@@ -696,6 +697,7 @@ export function useAgent() {
       council?: boolean;
       candidateA?: { provider: ProviderConfig; thinking?: boolean; reasoningEffort?: ReasoningEffort };
       candidateB?: { provider: ProviderConfig; thinking?: boolean; reasoningEffort?: ReasoningEffort };
+      executionMode?: ExecutionMode;
     },
   ) => {
     const prompt = (rawPrompt || '').trim();
@@ -784,6 +786,8 @@ export function useAgent() {
     setSubagents([]);
     setActiveSkills([]);
 
+    const selectedExecutionMode: ExecutionMode = options?.executionMode ?? currentSettings.executionMode ?? 'turbo';
+
     if (options?.council && options.candidateA && options.candidateB) {
       const requestA: AgentRunRequest = {
         runId,
@@ -802,6 +806,7 @@ export function useAgent() {
         self_improvement_enabled: false,
         autoCompactionEnabled: currentSettings.autoCompactionEnabled ?? true,
         autoCompactionThresholdTokens: currentSettings.autoCompactionThresholdTokens ?? 65536,
+        executionMode: selectedExecutionMode,
       };
       const requestB: AgentRunRequest = {
         runId,
@@ -820,6 +825,7 @@ export function useAgent() {
         self_improvement_enabled: false,
         autoCompactionEnabled: currentSettings.autoCompactionEnabled ?? true,
         autoCompactionThresholdTokens: currentSettings.autoCompactionThresholdTokens ?? 65536,
+        executionMode: selectedExecutionMode,
       };
       try {
         await persistData(dataRef.current);
@@ -857,6 +863,7 @@ export function useAgent() {
       self_improvement_enabled: currentSettings.self_improvement_enabled === true,
       autoCompactionEnabled: currentSettings.autoCompactionEnabled ?? true,
       autoCompactionThresholdTokens: currentSettings.autoCompactionThresholdTokens ?? 65536,
+      executionMode: selectedExecutionMode,
     };
     try {
       await persistData(dataRef.current);

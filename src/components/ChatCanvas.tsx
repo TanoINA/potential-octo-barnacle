@@ -30,16 +30,53 @@ import {
   Trash2,
   Users,
   X,
+  Eye,
+  Lock,
+  Shield,
+  ShieldAlert,
+  Check,
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult } from '../types/agent';
+import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult, ExecutionMode } from '../types/agent';
 import { MessageRow } from './MessageRow';
 import { AetherLogo } from './AetherLogo';
 import { SubagentTreeCard } from './SubagentTreeCard';
 import { BackgroundTasksCard } from './BackgroundTasksCard';
 import { TimelineScrubber } from './TimelineScrubber';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
+
+const EXECUTION_MODES: Array<{
+  id: ExecutionMode;
+  title: string;
+  description: string;
+  icon: typeof ShieldAlert;
+}> = [
+  {
+    id: 'request_review',
+    title: 'Request Review',
+    description: 'Every command requires approval.',
+    icon: Eye,
+  },
+  {
+    id: 'default',
+    title: 'Default',
+    description: 'Ask before sensitive operations.',
+    icon: Lock,
+  },
+  {
+    id: 'auto',
+    title: 'Auto (Preview)',
+    description: 'Automatically decide if commands run.',
+    icon: Shield,
+  },
+  {
+    id: 'turbo',
+    title: 'Turbo',
+    description: 'Run all commands without restrictions.',
+    icon: ShieldAlert,
+  },
+];
 
 interface ChatCanvasProps {
   messages: import('../types/agent').ChatMessage[];
@@ -52,6 +89,7 @@ interface ChatCanvasProps {
       council?: boolean;
       candidateA?: { provider: import('../types/agent').ProviderConfig; thinking?: boolean; reasoningEffort?: import('../types/agent').ReasoningEffort };
       candidateB?: { provider: import('../types/agent').ProviderConfig; thinking?: boolean; reasoningEffort?: import('../types/agent').ReasoningEffort };
+      executionMode?: ExecutionMode;
     },
   ) => Promise<boolean>;
   onStop: () => void;
@@ -456,6 +494,29 @@ export function ChatCanvas({
   const [skillsMenuOpen, setSkillsMenuOpen] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? (localStorage.getItem('aether_execution_mode') as ExecutionMode) : null;
+      if (saved && ['request_review', 'default', 'auto', 'turbo'].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'turbo';
+  });
+  const [executionMenuOpen, setExecutionMenuOpen] = useState(false);
+
+  const handleSelectExecutionMode = useCallback((mode: ExecutionMode) => {
+    setExecutionMode(mode);
+    try {
+      localStorage.setItem('aether_execution_mode', mode);
+    } catch {}
+    setExecutionMenuOpen(false);
+  }, []);
+
+  const activeExecutionMode = useMemo(() => {
+    return EXECUTION_MODES.find((m) => m.id === executionMode) || EXECUTION_MODES[3];
+  }, [executionMode]);
+  const ActiveModeIcon = activeExecutionMode.icon;
   const parentRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
@@ -829,6 +890,9 @@ export function ChatCanvas({
       if (!target.closest('[data-more-menu]')) {
         setMoreMenuOpen(false);
       }
+      if (!target.closest('[data-execution-menu]')) {
+        setExecutionMenuOpen(false);
+      }
     };
     window.addEventListener('mousedown', handleGlobalClick);
     return () => window.removeEventListener('mousedown', handleGlobalClick);
@@ -1129,6 +1193,7 @@ export function ChatCanvas({
             thinking: effectiveConfig?.thinking ?? false,
             reasoningEffort: effectiveConfig?.reasoningEffort ?? 'medium',
           },
+          executionMode,
         });
         clearIfUnchanged(accepted);
         return;
@@ -1138,6 +1203,7 @@ export function ChatCanvas({
     const accepted = await onSendMessage(
       draft,
       draftAttachments.length > 0 ? draftAttachments : undefined,
+      { executionMode },
     );
     clearIfUnchanged(accepted);
   };
@@ -1870,21 +1936,6 @@ export function ChatCanvas({
                 )}
               </div>
 
-              {/* Voice Dictation (Microphone) */}
-              <button
-                type="button"
-                onClick={toggleListening}
-                className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all ${
-                  isListening
-                    ? 'border-[#f85149] bg-[#da3633]/25 text-[#f85149] animate-pulse ring-2 ring-[#f85149]/40'
-                    : 'border-[#30363d] bg-[#21262d] text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]'
-                }`}
-                title={isListening ? 'Listening to voice... Click to stop' : 'Voice Dictation (Speech-to-Text)'}
-                aria-label="Voice Dictation"
-              >
-                {isListening ? <MicOff size={13} className="text-[#f85149]" /> : <Mic size={13} />}
-              </button>
-
               {/* Model & Thinking pill - directly next to [+] like Antigravity & Hermes */}
               <div className="relative" data-thinking-menu>
                 <button
@@ -2018,10 +2069,90 @@ export function ChatCanvas({
             </div>
             </div>
 
-            {/* Right cluster: [Enter to send hint] and [Send / Stop button] */}
-            <div className="flex items-center gap-3">
-              
+            {/* Right cluster: Execution Mode, Voice Dictation, and Send / Stop button */}
+            <div className="flex items-center gap-2">
               {isReviewing && <span role="status" className="flex items-center gap-1.5 text-[11px] text-[#8b949e]"><Brain size={12} /> Reviewing…</span>}
+
+              {/* Antigravity-style Execution Mode Pill & Dropdown */}
+              <div className="relative" data-execution-menu>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExecutionMenuOpen((value) => !value);
+                    setThinkingMenuOpen(false);
+                    setAddContextOpen(false);
+                    setSkillsMenuOpen(false);
+                  }}
+                  className="flex h-7 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
+                  title={`Execution mode: ${activeExecutionMode.title}`}
+                  aria-label="Execution mode"
+                >
+                  <ActiveModeIcon size={13} className="shrink-0 text-[#8b949e]" />
+                  <span className="font-medium text-[11px]">
+                    {activeExecutionMode.title.replace(' (Preview)', '')}
+                  </span>
+                  <ChevronUp size={12} className={`text-[#8b949e] transition-transform ${executionMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {executionMenuOpen && (
+                  <div
+                    className="fixed bottom-24 right-3 z-50 w-72 rounded-2xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl sm:absolute sm:bottom-9 sm:right-0 sm:w-80"
+                    role="menu"
+                    aria-label="Execution mode selection"
+                  >
+                    <div className="space-y-0.5">
+                      {EXECUTION_MODES.map((mode) => {
+                        const Icon = mode.icon;
+                        const isSelected = executionMode === mode.id;
+                        return (
+                          <button
+                            key={mode.id}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => handleSelectExecutionMode(mode.id)}
+                            className={`flex w-full items-start gap-3 rounded-xl p-2.5 text-left transition-colors ${
+                              isSelected
+                                ? 'bg-[#21262d] text-[#e6edf3]'
+                                : 'text-[#8b949e] hover:bg-[#21262d]/60 hover:text-[#e6edf3]'
+                            }`}
+                          >
+                            <div className="mt-0.5 shrink-0">
+                              <Icon size={16} className={isSelected ? 'text-[#e6edf3]' : 'text-[#8b949e]'} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className={`text-xs font-semibold ${isSelected ? 'text-white' : 'text-[#c9d1d9]'}`}>
+                                  {mode.title}
+                                </span>
+                                {isSelected && <Check size={14} className="text-[#e6edf3] shrink-0 ml-2" />}
+                              </div>
+                              <p className="mt-0.5 text-[11px] leading-relaxed text-[#8b949e]">
+                                {mode.description}
+                              </p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Voice Dictation (Microphone) */}
+              <button
+                type="button"
+                onClick={toggleListening}
+                className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all ${
+                  isListening
+                    ? 'border-[#f85149] bg-[#da3633]/25 text-[#f85149] animate-pulse ring-2 ring-[#f85149]/40'
+                    : 'border-[#30363d] bg-[#21262d] text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]'
+                }`}
+                title={isListening ? 'Listening to voice... Click to stop' : 'Voice Dictation (Speech-to-Text)'}
+                aria-label="Voice Dictation"
+              >
+                {isListening ? <MicOff size={13} className="text-[#f85149]" /> : <Mic size={13} />}
+              </button>
+
               <div className="shrink-0">
                 {isStreaming ? (
                   <div className="flex items-center gap-2">
