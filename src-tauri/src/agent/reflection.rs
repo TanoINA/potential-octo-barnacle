@@ -192,7 +192,14 @@ async fn reflect_with_timeout(
         result = tokio::time::timeout_at(deadline, stream_chat_completion(
             &safe_provider, &messages, &tools, &options, |_| {}, |_| {}, |_| {}, cancel.clone(),
         )) => result.map_err(|_| "Reflection timed out".to_string())?
-            .map_err(|_| "Reflection provider completion failed".to_string())?,
+            .map_err(|mut error| {
+                for secret in &secrets {
+                    if !secret.is_empty() {
+                        error = error.replace(secret, "[redacted]");
+                    }
+                }
+                format!("Reflection provider completion failed: {error}")
+            })?,
     };
     if result.cancelled || cancel.is_cancelled() {
         return Err("Reflection cancelled".into());

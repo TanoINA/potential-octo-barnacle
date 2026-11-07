@@ -1,6 +1,8 @@
 use super::types::{ProviderConfig, ProviderKind, ReasoningEffort};
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -364,7 +366,8 @@ where
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !options.stream || !content_type.contains("text/event-stream") {
+    let is_event_stream = content_type.contains("text/event-stream");
+    if !is_event_stream {
         let body = match read_bounded_response(response, &cancel, MAX_PROVIDER_RESPONSE_BYTES).await
         {
             Ok(body) => body,
@@ -376,26 +379,93 @@ where
             }
             Err(error) => return Err(error),
         };
-        let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
-            format!("Expected JSON or SSE from provider, received invalid JSON: {error}")
-        })?;
-        let mut accumulator = StreamAccumulator::default();
-        match provider.kind {
-            ProviderKind::Anthropic => process_anthropic_message(
-                &value,
-                &mut accumulator,
-                &mut on_chunk,
-                &mut on_reasoning,
-                &mut on_tool_delta,
-            ),
-            _ => process_openai_message(
-                &value,
-                &mut accumulator,
-                &mut on_chunk,
-                &mut on_reasoning,
-                &mut on_tool_delta,
-            ),
+        let trimmed = body.trim_start();
+        if !trimmed.starts_with("data:") && !trimmed.starts_with("event:") {
+            let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+                format!("Expected JSON or SSE from provider, received invalid JSON: {error}")
+            })?;
+            let mut accumulator = StreamAccumulator::default();
+            match provider.kind {
+                ProviderKind::Anthropic => process_anthropic_message(
+                    &value,
+                    &mut accumulator,
+                    &mut on_chunk,
+                    &mut on_reasoning,
+                    &mut on_tool_delta,
+                ),
+                _ => process_openai_message(
+                    &value,
+                    &mut accumulator,
+                    &mut on_chunk,
+                    &mut on_reasoning,
+                    &mut on_tool_delta,
+                ),
+            }
+            let result = accumulator.finish();
+            validate_stream_result(&result)?;
+            return Ok(result);
         }
+        let mut accumulator = StreamAccumulator::default();
+        let done = AtomicBool::new(false);
+        let stream_error = Mutex::new(None::<String>);
+        {
+            let mut process_event = |data: &str| {
+                if data.trim() == "[DONE]" {
+                    done.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let value = match serde_json::from_str::<serde_json::Value>(data) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Ok(mut slot) = stream_error.lock() {
+                            *slot = Some(format!("Provider emitted malformed SSE JSON: {error}"));
+                        }
+                        done.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+                if let Some(error) = value.get("error") {
+                    let message = error
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| error.as_str())
+                        .unwrap_or("Provider emitted an error event");
+                    if let Ok(mut slot) = stream_error.lock() {
+                        *slot = Some(message.to_string());
+                    }
+                    done.store(true, Ordering::Relaxed);
+                    return;
+                }
+                match provider.kind {
+                    ProviderKind::Anthropic => process_anthropic_event(
+                        &value,
+                        &mut accumulator,
+                        &mut on_chunk,
+                        &mut on_reasoning,
+                        &mut on_tool_delta,
+                    ),
+                    _ => process_openai_event(
+                        &value,
+                        &mut accumulator,
+                        &mut on_chunk,
+                        &mut on_reasoning,
+                        &mut on_tool_delta,
+                    ),
+                }
+            };
+            let mut decoder = SseDecoder::default();
+            decoder.feed(body.as_bytes(), &mut process_event);
+            if !cancel.is_cancelled() && !done.load(Ordering::Relaxed) {
+                decoder.finish(&mut process_event);
+            }
+            if decoder.failed {
+                return Err(SSE_EVENT_TOO_LARGE.to_string());
+            }
+        }
+        if let Some(error) = stream_error.into_inner().unwrap_or(None) {
+            return Err(error);
+        }
+        accumulator.cancelled = cancel.is_cancelled();
         let result = accumulator.finish();
         validate_stream_result(&result)?;
         return Ok(result);
@@ -978,6 +1048,7 @@ fn request_headers(provider: &ProviderConfig) -> Result<HeaderMap, String> {
         "accept",
         HeaderValue::from_static("application/json, text/event-stream"),
     );
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     if !provider.api_key.is_empty() {
         let value = HeaderValue::from_str(&provider.api_key)
             .map_err(|_| "API key contains invalid header characters".to_string())?;
@@ -1707,5 +1778,97 @@ mod tests {
         assert!(!is_retryable_provider_error("A model must be selected"));
         assert!(!is_retryable_provider_error("Provider base URL is required"));
         assert!(!is_retryable_provider_error("Provider stream ended with finish_reason 'length'"));
+    }
+
+    #[test]
+    fn request_headers_includes_identity_encoding() {
+        let provider = ProviderConfig::default();
+        let headers = request_headers(&provider).expect("headers must build");
+        assert_eq!(
+            headers.get(ACCEPT_ENCODING).and_then(|v| v.to_str().ok()),
+            Some("identity")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_non_streaming_request_handles_event_stream_response() {
+        let (base_url, _server) = sse_server(concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello from sse\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ).to_string()).await;
+
+        let provider = ProviderConfig {
+            base_url,
+            model: "test-model".into(),
+            ..ProviderConfig::default()
+        };
+        let result = stream_chat_completion(
+            &provider,
+            &serde_json::json!([{"role":"user","content":"test"}]),
+            &serde_json::json!([]),
+            &CompletionOptions {
+                thinking: false,
+                reasoning_effort: ReasoningEffort::Low,
+                temperature: 0.0,
+                max_tokens: Some(512),
+                stream: false,
+            },
+            |_| {},
+            |_| {},
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await
+        .expect("non-streaming request must succeed when server returns event-stream");
+
+        assert_eq!(result.content, "hello from sse");
+        assert_eq!(result.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[tokio::test]
+    async fn openai_non_streaming_request_handles_json_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut scratch = [0u8; 1024];
+            let _ = stream.read(&mut scratch).await.unwrap();
+            let body = r#"{"choices":[{"message":{"content":"hello from json"},"finish_reason":"stop"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let provider = ProviderConfig {
+            base_url: format!("http://{address}"),
+            model: "test-model".into(),
+            ..ProviderConfig::default()
+        };
+        let result = stream_chat_completion(
+            &provider,
+            &serde_json::json!([{"role":"user","content":"test"}]),
+            &serde_json::json!([]),
+            &CompletionOptions {
+                thinking: false,
+                reasoning_effort: ReasoningEffort::Low,
+                temperature: 0.0,
+                max_tokens: Some(512),
+                stream: false,
+            },
+            |_| {},
+            |_| {},
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await
+        .expect("non-streaming request must succeed when server returns json");
+
+        assert_eq!(result.content, "hello from json");
+        assert_eq!(result.finish_reason.as_deref(), Some("stop"));
     }
 }
