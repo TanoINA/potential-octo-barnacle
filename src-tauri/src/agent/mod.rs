@@ -7,6 +7,7 @@ pub mod runner;
 pub mod search;
 pub mod skills;
 pub mod storage;
+pub mod tasks;
 pub mod tools;
 pub mod types;
 

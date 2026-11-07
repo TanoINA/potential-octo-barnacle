@@ -146,6 +146,9 @@ export function App() {
           onUpdateOverride={(override) => { void agent.updateRunConfig(override); }}
           onSelectModel={(providerId, model) => { void agent.selectModel(providerId, model); }}
           subagents={agent.subagents}
+          backgroundTasks={agent.backgroundTasks}
+          onKillBackgroundTask={agent.killBackgroundTask}
+          onRefreshBackgroundTasks={agent.refreshBackgroundTasks}
           activeSkills={agent.activeSkills}
           onListSkills={agent.listSkills}
           onOpenHistory={openHistory}

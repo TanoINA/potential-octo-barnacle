@@ -5,6 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { playTaskCompleteChime, showDesktopNotification } from '../utils/audioChime';
 import type {
   AgentEvent,
+  BackgroundTask,
   MessageSegment,
   ToolCallItem,
   AgentRunRequest,
@@ -161,6 +162,7 @@ export function useAgent() {
   const [gitStatus, setGitStatus] = useState<GitRepoStatus | null>(null);
   const [subagents, setSubagents] = useState<import('../types/agent').SubagentProgress[]>([]);
   const [activeSkills, setActiveSkills] = useState<import('../types/agent').SkillInfo[]>([]);
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
 
   const dataRef = useRef(data);
   const settingsRef = useRef(settings);
@@ -192,6 +194,24 @@ export function useAgent() {
       setLastError(`Could not list sessions: ${String(error)}`);
     }
   }, []);
+
+  const refreshBackgroundTasks = useCallback(async () => {
+    try {
+      const list = await invoke<BackgroundTask[]>('list_background_tasks');
+      setBackgroundTasks(list || []);
+    } catch {
+      // background tasks not available or desktop mock
+    }
+  }, []);
+
+  const killBackgroundTask = useCallback(async (taskId: string) => {
+    try {
+      await invoke('kill_background_task', { taskId });
+      await refreshBackgroundTasks();
+    } catch (err) {
+      setLastError(`Failed to kill background task: ${String(err)}`);
+    }
+  }, [refreshBackgroundTasks]);
 
   const persistData = useCallback((value: SessionData): Promise<void> => {
     const queued = persistenceQueueRef.current.then(async () => {
@@ -306,13 +326,17 @@ export function useAgent() {
     void Promise.allSettled([
       invoke<AgentSettings>('get_settings'),
       invoke<Session[]>('list_sessions'),
-    ]).then(([settingsResult, sessionsResult]) => {
+      invoke<BackgroundTask[]>('list_background_tasks'),
+    ]).then(([settingsResult, sessionsResult, tasksResult]) => {
       if (!active) return;
       if (settingsResult.status === 'fulfilled') {
         settingsRef.current = settingsResult.value;
         setSettings(settingsResult.value);
       } else {
         setLastError(`Backend settings unavailable: ${String(settingsResult.reason)}`);
+      }
+      if (tasksResult.status === 'fulfilled') {
+        setBackgroundTasks(tasksResult.value || []);
       }
       if (sessionsResult.status === 'fulfilled') {
         const sessionList = sessionsResult.value;
@@ -394,6 +418,9 @@ export function useAgent() {
               return { ...message, preamble, content, toolCalls: tools, segments };
             }),
           }));
+          if (payload.data.tool.name === 'run_command' || payload.data.tool.name === 'manage_task') {
+            void refreshBackgroundTasks();
+          }
           break;
         case 'artifact': {
           const artifact = payload.data.artifact;
@@ -532,6 +559,7 @@ export function useAgent() {
             }),
           }));
           setActiveSkills([]);
+          void refreshBackgroundTasks();
           setIsStreaming(false);
           setStopRequested(false);
           currentRunRef.current = null;
@@ -1173,6 +1201,15 @@ export function useAgent() {
     }
   }, [workspaceCwd, refreshGitStatus]);
 
+  useEffect(() => {
+    const hasRunning = backgroundTasks.some((t) => t.status === 'running');
+    if (!hasRunning) return;
+    const interval = setInterval(() => {
+      void refreshBackgroundTasks();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [backgroundTasks, refreshBackgroundTasks]);
+
   const activeArtifact = useMemo(
     () => data.artifacts.find((artifact) => artifact.id === activeArtifactId) || null,
     [data.artifacts, activeArtifactId],
@@ -1470,6 +1507,9 @@ export function useAgent() {
     activeArtifactId,
     setActiveArtifactId,
     subagents,
+    backgroundTasks,
+    refreshBackgroundTasks,
+    killBackgroundTask,
     activeSkills,
     listSkills,
     listAllArtifacts,

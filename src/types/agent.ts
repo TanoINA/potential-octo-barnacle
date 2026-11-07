@@ -229,6 +229,20 @@ export interface SubagentProgress {
   artifactId?: string;
 }
 
+export interface BackgroundTask {
+  id: string;
+  command: string;
+  toolSummary?: string;
+  isDaemon: boolean;
+  status: 'running' | 'completed' | 'failed' | 'killed';
+  pid?: number;
+  startedAt: number;
+  completedAt?: number;
+  exitCode?: number;
+  logPath: string;
+  recentOutput: string;
+}
+
 export type AgentEvent =
   | { type: 'chunk'; data: EventScope & { text: string } }
   | { type: 'reasoning'; data: EventScope & { text: string } }

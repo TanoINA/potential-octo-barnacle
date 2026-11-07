@@ -33,10 +33,11 @@ import {
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { AttachedContext, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult } from '../types/agent';
+import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult } from '../types/agent';
 import { MessageRow } from './MessageRow';
 import { AetherLogo } from './AetherLogo';
 import { SubagentTreeCard } from './SubagentTreeCard';
+import { BackgroundTasksCard } from './BackgroundTasksCard';
 import { TimelineScrubber } from './TimelineScrubber';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 
@@ -83,6 +84,9 @@ interface ChatCanvasProps {
   onToggleArtifacts: () => void;
   onListFiles: (query: string, limit?: number) => Promise<string[]>;
   subagents?: SubagentProgress[];
+  backgroundTasks?: BackgroundTask[];
+  onKillBackgroundTask?: (taskId: string) => void;
+  onRefreshBackgroundTasks?: () => void;
   activeSkills?: SkillInfo[];
   onListSkills?: (paths?: string[]) => Promise<SkillInfo[]>;
   settings?: import('../types/agent').AgentSettings | null;
@@ -104,6 +108,7 @@ export interface SlashItem {
 
 const COMMAND_ITEMS: SlashItem[] = [
   { id: 'cmd_plan', category: 'COMMANDS', command: '/plan', description: 'Formulate an interactive step-by-step execution plan', usage: 'Formulate execution plan\n/plan <task goal>', iconType: 'terminal', needsPrompt: true },
+  { id: 'cmd_tasks', category: 'COMMANDS', command: '/tasks', description: 'List and inspect active background tasks and processes', usage: 'Manage background tasks\n/tasks', iconType: 'terminal' },
   { id: 'cmd_export', category: 'COMMANDS', command: '/export', description: 'Export this conversation transcript to Markdown (.md)', usage: 'Export conversation\n/export', iconType: 'terminal' },
   { id: 'cmd_review', category: 'COMMANDS', command: '/review', description: 'Review the latest completed turn for reusable lessons', iconType: 'terminal' },
   { id: 'cmd_reflect', category: 'COMMANDS', command: '/reflect', description: 'Review the latest completed turn (alias of /review)', iconType: 'terminal' },
@@ -284,6 +289,9 @@ export function ChatCanvas({
   onToggleArtifacts,
   onListFiles,
   subagents = [],
+  backgroundTasks = [],
+  onKillBackgroundTask,
+  onRefreshBackgroundTasks,
   activeSkills = [],
   onListSkills,
   settings,
@@ -951,6 +959,12 @@ export function ChatCanvas({
           onOpenTools();
         }
         break;
+      case '/tasks':
+        if (onRefreshBackgroundTasks) {
+          onRefreshBackgroundTasks();
+        }
+        void onSendMessage('List and report all background tasks using manage_task with action list.');
+        break;
       case '/skills':
         handleOpenSkillsList();
         break;
@@ -1513,6 +1527,14 @@ export function ChatCanvas({
 
         {subagents && subagents.length > 0 && (
           <SubagentTreeCard subagents={subagents} onSelectArtifact={onSelectArtifact} />
+        )}
+
+        {backgroundTasks && backgroundTasks.length > 0 && (
+          <BackgroundTasksCard
+            tasks={backgroundTasks}
+            onKillTask={onKillBackgroundTask}
+            onRefreshTasks={onRefreshBackgroundTasks}
+          />
         )}
 
         {activeSkills.length > 0 && isStreaming && (

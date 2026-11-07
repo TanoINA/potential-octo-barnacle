@@ -599,6 +599,21 @@ async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Re
     }
 }
 
+#[tauri::command]
+async fn list_background_tasks() -> Result<Vec<agent::tasks::TaskInfo>, String> {
+    Ok(agent::tasks::get_task_manager().list_tasks().await)
+}
+
+#[tauri::command]
+async fn kill_background_task(task_id: String) -> Result<String, String> {
+    agent::tasks::get_task_manager().kill_task(&task_id).await
+}
+
+#[tauri::command]
+async fn get_background_task_output(task_id: String, tail_lines: Option<usize>) -> Result<agent::tasks::TaskInfo, String> {
+    agent::tasks::get_task_manager().get_status(&task_id, tail_lines).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial_cwd = storage::load_workspace_sync();
@@ -669,7 +684,10 @@ pub fn run() {
             save_workspace_agents_md,
             inspect_paths,
             save_pasted_attachment,
-            open_path_or_url
+            open_path_or_url,
+            list_background_tasks,
+            kill_background_task,
+            get_background_task_output
         ])
         .run(tauri::generate_context!())
         .expect("error while running AetherAgent application");

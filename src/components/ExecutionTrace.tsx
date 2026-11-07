@@ -11,6 +11,7 @@ import {
   Loader2,
   Search,
   Settings,
+  Terminal,
 } from 'lucide-react';
 import type { ToolCallItem } from '../types/agent';
 import { TerminalOutput } from './TerminalOutput';
@@ -77,18 +78,49 @@ function getToolDisplayInfo(tool: ToolCallItem): {
 
   if (name === 'run_command') {
     const command = extractArg(tool, 'command');
-    const displayCmd = command.length > 70 ? `${command.slice(0, 67)}...` : command;
+    const isDaemon = tool.args?.isDaemon === true || tool.args?.is_daemon === true;
+    const summary = extractArg(tool, 'toolSummary') || extractArg(tool, 'tool_summary');
+    const displayCmd = summary || (command.length > 70 ? `${command.slice(0, 67)}...` : command);
     let label = '';
     if (isRunning) {
-      label = displayCmd ? `Running "${displayCmd}"` : 'Running command...';
+      label = isDaemon
+        ? (displayCmd ? `Starting background task "${displayCmd}"...` : 'Starting background task...')
+        : (displayCmd ? `Running "${displayCmd}"` : 'Running command...');
     } else {
-      label = displayCmd ? `Ran "${displayCmd}"` : 'Ran command';
+      label = isDaemon
+        ? (displayCmd ? `Started background task "${displayCmd}"` : 'Started background task')
+        : (displayCmd ? `Ran "${displayCmd}"` : 'Ran command');
     }
     return {
       icon: isRunning ? <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" /> : <Settings size={13} className="text-[#8b949e] shrink-0" />,
       label,
       isTerminal: true,
       command,
+      output: tool.terminalOutput || tool.result || '',
+      isRunning,
+    };
+  }
+
+  if (name === 'manage_task') {
+    const action = extractArg(tool, 'action') || 'manage';
+    const taskId = extractArg(tool, 'taskId') || extractArg(tool, 'task_id') || '';
+    let label = '';
+    if (action === 'list') {
+      label = isRunning ? 'Listing background tasks...' : 'Listed background tasks';
+    } else if (action === 'status') {
+      label = isRunning ? `Checking status for ${taskId || 'task'}...` : `Checked status for ${taskId || 'task'}`;
+    } else if (action === 'send_input') {
+      label = isRunning ? `Sending input to ${taskId || 'task'}...` : `Sent input to ${taskId || 'task'}`;
+    } else if (action === 'kill') {
+      label = isRunning ? `Terminating ${taskId || 'task'}...` : `Terminated ${taskId || 'task'}`;
+    } else {
+      label = isRunning ? `Managing task ${taskId}...` : `Managed task ${taskId}`;
+    }
+    return {
+      icon: isRunning ? <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" /> : <Terminal size={13} className="text-[#58a6ff] shrink-0" />,
+      label,
+      isTerminal: true,
+      command: `manage_task ${action}${taskId ? ` ${taskId}` : ''}`,
       output: tool.terminalOutput || tool.result || '',
       isRunning,
     };
@@ -195,6 +227,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
     let files = 0;
     let commands = 0;
     let subagents = 0;
+    let managedTasks = 0;
     const skillNames: string[] = [];
 
     toolCalls.forEach((tool) => {
@@ -209,6 +242,8 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
         commands += 1;
       } else if (name === 'spawn_subagent') {
         subagents += 1;
+      } else if (name === 'manage_task') {
+        managedTasks += 1;
       }
     });
 
@@ -222,6 +257,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
     if (files > 0) parts.push(`explored ${files} file${files > 1 ? 's' : ''}`);
     if (commands > 0) parts.push(`ran ${commands} command${commands > 1 ? 's' : ''}`);
     if (subagents > 0) parts.push(`spawned ${subagents} subagent${subagents > 1 ? 's' : ''}`);
+    if (managedTasks > 0) parts.push(`managed ${managedTasks} background task${managedTasks > 1 ? 's' : ''}`);
 
     return parts.length > 0 ? parts.join(', ') : `${toolCalls.length} step${toolCalls.length > 1 ? 's' : ''} executed`;
   }, [toolCalls]);

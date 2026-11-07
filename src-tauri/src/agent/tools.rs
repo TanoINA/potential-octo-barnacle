@@ -154,14 +154,47 @@ pub fn get_agent_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "Execute PowerShell asynchronously with streaming terminal artifacts, timeout, and cancellation.",
+                "description": "Execute PowerShell asynchronously with streaming terminal artifacts, timeout, and cancellation. For long-running commands, dev servers, or background watchers, set isDaemon: true.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string"},
-                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120}
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
+                        "isDaemon": {"type": "boolean", "description": "Set to true for long-running support processes that should run in the background."},
+                        "toolSummary": {"type": "string", "description": "Brief 2-5 word label for the background task"}
                     },
                     "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "manage_task",
+                "description": "Manage background tasks and processes: 'list' running/recent tasks, check 'status' and recent logs, 'send_input' to stdin, or 'kill' a running task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "status", "send_input", "kill"],
+                            "description": "Action to perform: 'list', 'status', 'send_input', or 'kill'"
+                        },
+                        "taskId": {
+                            "type": "string",
+                            "description": "The task ID (e.g. 'task_1') as returned by list or run_command with isDaemon: true. Required for status, send_input, and kill."
+                        },
+                        "input": {
+                            "type": "string",
+                            "description": "Text input to send to stdin of the task. Required for send_input."
+                        },
+                        "tailLines": {
+                            "type": "integer",
+                            "description": "Number of recent log lines to return for status action (default 50, max 500).",
+                            "default": 50
+                        }
+                    },
+                    "required": ["action"]
                 }
             }
         },
@@ -278,6 +311,7 @@ pub async fn execute_tool(
         "list_directory" => list_directory(args, &context.cwd, &context.cancel).await,
         "search_files" => search_files(args, &context.cwd, &context.cancel).await,
         "run_command" => run_command(args, context).await,
+        "manage_task" => manage_task(args).await,
         "fetch_web_page" => fetch_web_page(args, context).await,
         "learn_skill" => learn_skill(args, context).await,
         _ => Err(format!("Unknown tool: {name}")),
@@ -932,6 +966,27 @@ async fn run_command(
         .and_then(|v| v.as_u64())
         .unwrap_or(120)
         .clamp(1, 600);
+
+    let is_daemon = args
+        .get("isDaemon")
+        .or_else(|| args.get("is_daemon"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let tool_summary = optional_string(args, "toolSummary", "tool_summary").map(|s| s.to_string());
+
+    if is_daemon {
+        let mgr = super::tasks::get_task_manager();
+        let task_info = mgr.spawn_task(command, &context.cwd, tool_summary, true).await?;
+        let output_msg = format!(
+            "Background task started successfully.\nTaskId: {}\nStatus: {}\nPID: {}\nLog Path: {}\nUse `manage_task` with action 'status' to monitor output or 'kill' to terminate.",
+            task_info.id,
+            task_info.status,
+            task_info.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".into()),
+            task_info.log_path
+        );
+        return Ok(ToolExecutionResult::success(output_msg, None));
+    }
+
     let root = if context.cwd.trim().is_empty() {
         std::env::temp_dir()
     } else {
@@ -1176,6 +1231,68 @@ fn append_process_line(
                 stream: line.stream.clone(),
             });
         }
+    }
+}
+
+async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, String> {
+    let action = required_string(args, "action")?.trim().to_lowercase();
+    let mgr = super::tasks::get_task_manager();
+    match action.as_str() {
+        "list" => {
+            let tasks = mgr.list_tasks().await;
+            let formatted = if tasks.is_empty() {
+                "No background tasks currently tracked.".to_string()
+            } else {
+                let mut s = String::new();
+                for t in &tasks {
+                    s.push_str(&format!(
+                        "- [{}] {} | status: {} | pid: {} | log: {}\n",
+                        t.id,
+                        t.tool_summary.as_deref().unwrap_or(&t.command),
+                        t.status,
+                        t.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".into()),
+                        t.log_path
+                    ));
+                }
+                s
+            };
+            Ok(ToolExecutionResult::success(formatted, None))
+        }
+        "status" => {
+            let task_id = optional_string(args, "taskId", "task_id")
+                .ok_or_else(|| "Missing required parameter 'taskId' for action 'status'".to_string())?;
+            let tail_lines = args.get("tailLines").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let info = mgr.get_status(task_id, tail_lines).await?;
+            let formatted = format!(
+                "Task: {}\nCommand: {}\nStatus: {}\nPID: {}\nStarted: {}ms\nCompleted: {}\nExit Code: {}\nLog Path: {}\n\n--- Recent Output ---\n{}",
+                info.id,
+                info.command,
+                info.status,
+                info.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".into()),
+                info.started_at,
+                info.completed_at.map(|c| format!("{c}ms")).unwrap_or_else(|| "running".into()),
+                info.exit_code.map(|e| e.to_string()).unwrap_or_else(|| "none".into()),
+                info.log_path,
+                if info.recent_output.is_empty() { "(no output yet)" } else { &info.recent_output }
+            );
+            Ok(ToolExecutionResult::success(formatted, None))
+        }
+        "send_input" => {
+            let task_id = optional_string(args, "taskId", "task_id")
+                .ok_or_else(|| "Missing required parameter 'taskId' for action 'send_input'".to_string())?;
+            let input = required_string(args, "input")?;
+            let res = mgr.send_input(task_id, input).await?;
+            Ok(ToolExecutionResult::success(res, None))
+        }
+        "kill" => {
+            let task_id = optional_string(args, "taskId", "task_id")
+                .ok_or_else(|| "Missing required parameter 'taskId' for action 'kill'".to_string())?;
+            let res = mgr.kill_task(task_id).await?;
+            Ok(ToolExecutionResult::success(res, None))
+        }
+        _ => Err(format!(
+            "Unknown action '{action}'. Supported actions: 'list', 'status', 'send_input', 'kill'"
+        )),
     }
 }
 
@@ -1765,6 +1882,73 @@ mod tests {
         assert!(names.contains(&"use_skill"));
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"run_command"));
+        assert!(names.contains(&"manage_task"));
+    }
+
+    #[tokio::test]
+    async fn manage_task_roundtrip_with_daemon() {
+        let root = workspace();
+        let cancel = CancellationToken::new();
+        let context = ToolContext {
+            cwd: root.to_string_lossy().to_string(),
+            cancel,
+            sink: None,
+        };
+
+        let cmd = if cfg!(windows) {
+            "Start-Sleep -Seconds 20"
+        } else {
+            "sleep 20"
+        };
+
+        // 1. Start daemon command
+        let spawn_res = run_command(
+            &serde_json::json!({
+                "command": cmd,
+                "isDaemon": true,
+                "toolSummary": "Test background watcher"
+            }),
+            &context,
+        )
+        .await
+        .expect("spawn daemon");
+        assert!(spawn_res.success);
+        assert!(spawn_res.output.contains("Background task started successfully"));
+
+        // Extract taskId
+        let task_id = spawn_res
+            .output
+            .lines()
+            .find(|l| l.starts_with("TaskId: "))
+            .map(|l| l.trim_start_matches("TaskId: ").trim())
+            .expect("task id in output");
+
+        // 2. Test manage_task list
+        let list_res = manage_task(&serde_json::json!({"action": "list"}))
+            .await
+            .expect("list tasks");
+        assert!(list_res.output.contains(task_id));
+
+        // 3. Test manage_task status
+        let status_res = manage_task(&serde_json::json!({
+            "action": "status",
+            "taskId": task_id
+        }))
+        .await
+        .expect("status task");
+        assert!(status_res.output.contains(task_id));
+        assert!(status_res.output.contains("Status: running"));
+
+        // 4. Test manage_task kill
+        let kill_res = manage_task(&serde_json::json!({
+            "action": "kill",
+            "taskId": task_id
+        }))
+        .await
+        .expect("kill task");
+        assert!(kill_res.output.contains("terminated"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
