@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, ExternalLink, FileText } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { InteractivePlanCard } from './InteractivePlanCard';
 
 interface MarkdownRendererProps {
@@ -48,14 +49,32 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
             );
           },
           a({ href, children }) {
+            const isWeb = Boolean(href && /^(https?:\/\/|mailto:)/i.test(href));
+            const handleClick = (e: React.MouseEvent) => {
+              e.preventDefault();
+              if (!href) return;
+              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+                invoke('open_path_or_url', { pathOrUrl: href }).catch((err) => {
+                  console.error('Failed to open link or file', err);
+                });
+              } else {
+                window.open(href, '_blank', 'noopener,noreferrer');
+              }
+            };
+
             return (
               <a
                 href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#58a6ff] hover:underline underline-offset-2 break-all"
+                onClick={handleClick}
+                className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
+                title={isWeb ? `Open web link: ${href}` : `Open file: ${href}`}
               >
                 {children}
+                {isWeb ? (
+                  <ExternalLink size={11} className="shrink-0 opacity-70" />
+                ) : (
+                  <FileText size={11} className="shrink-0 opacity-70 text-[#a371f7]" />
+                )}
               </a>
             );
           },

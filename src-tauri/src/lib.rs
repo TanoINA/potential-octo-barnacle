@@ -522,6 +522,83 @@ async fn save_pasted_attachment(
     storage::save_attachment(Some(&cwd), &name, &bytes).await
 }
 
+#[tauri::command]
+async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Result<(), String> {
+    let target = path_or_url.trim();
+    if target.is_empty() {
+        return Ok(());
+    }
+
+    // 1. Web URLs: open in default browser
+    if target.starts_with("http://") || target.starts_with("https://") || target.starts_with("mailto:") {
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("rundll32")
+                .args(["url.dll,FileProtocolHandler", target])
+                .spawn()
+                .map_err(|e| format!("Failed to open URL in browser: {e}"))?;
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("open")
+                .arg(target)
+                .spawn()
+                .map_err(|e| format!("Failed to open URL: {e}"))?;
+            return Ok(());
+        }
+    }
+
+    // 2. Local files / directories
+    let clean_target = if let Some(stripped) = target.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = target.strip_prefix("file://") {
+        stripped
+    } else {
+        target
+    };
+
+    let p = std::path::Path::new(clean_target);
+    let resolved = if p.is_absolute() && p.exists() {
+        p.to_path_buf()
+    } else {
+        let cwd = state
+            .workspace_cwd
+            .lock()
+            .map_err(|_| "Workspace lock is unavailable".to_string())?
+            .clone();
+
+        if !cwd.is_empty() {
+            let candidate = std::path::Path::new(&cwd).join(clean_target);
+            if candidate.exists() {
+                candidate
+            } else {
+                p.to_path_buf()
+            }
+        } else {
+            p.to_path_buf()
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = resolved.to_string_lossy().to_string();
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path_str])
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("open")
+            .arg(&resolved)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial_cwd = storage::load_workspace_sync();
@@ -591,7 +668,8 @@ pub fn run() {
             read_workspace_agents_md,
             save_workspace_agents_md,
             inspect_paths,
-            save_pasted_attachment
+            save_pasted_attachment,
+            open_path_or_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running AetherAgent application");

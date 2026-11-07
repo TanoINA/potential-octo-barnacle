@@ -782,6 +782,7 @@ impl AgentRunner {
                             result: None,
                             artifact_id: None,
                             arguments_raw: Some(String::new()),
+                            started_at: Some(chrono::Utc::now().timestamp_millis()),
                             ..Default::default()
                         });
                     if let Some(name) = delta.name.filter(|value| !value.is_empty()) {

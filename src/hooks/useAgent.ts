@@ -371,18 +371,24 @@ export function useAgent() {
                 preamble = content;
                 content = '';
               }
+              const incomingTool = payload.data.tool;
               const tools = [...(message.toolCalls || [])];
-              const index = tools.findIndex((tool) => tool.id === payload.data.tool.id);
-              if (index >= 0) tools[index] = payload.data.tool;
-              else tools.push(payload.data.tool);
+              const index = tools.findIndex((tool) => tool.id === incomingTool.id);
+              const existingStartedAt = index >= 0 ? tools[index].startedAt : undefined;
+              const normalizedTool = {
+                ...incomingTool,
+                startedAt: incomingTool.startedAt || existingStartedAt || Date.now(),
+              };
+              if (index >= 0) tools[index] = normalizedTool;
+              else tools.push(normalizedTool);
 
               const segments: MessageSegment[] = message.segments ? [...message.segments] : [{ id: 'seg_0', text: '', toolCalls: [] }];
               const lastIdx = Math.max(0, segments.length - 1);
               const lastSeg = segments[lastIdx] || { id: `seg_${lastIdx}`, text: '', toolCalls: [] };
               const segTools = [...(lastSeg.toolCalls || [])];
-              const segIdx = segTools.findIndex((tool) => tool.id === payload.data.tool.id);
-              if (segIdx >= 0) segTools[segIdx] = payload.data.tool;
-              else segTools.push(payload.data.tool);
+              const segIdx = segTools.findIndex((tool) => tool.id === incomingTool.id);
+              if (segIdx >= 0) segTools[segIdx] = normalizedTool;
+              else segTools.push(normalizedTool);
               segments[lastIdx] = { ...lastSeg, toolCalls: segTools };
 
               return { ...message, preamble, content, toolCalls: tools, segments };

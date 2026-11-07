@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Ban,
   BookOpen,
@@ -28,112 +28,156 @@ function formatDuration(ms?: number): string {
   return `${seconds.endsWith('.0') ? seconds.slice(0, -2) : seconds}s`;
 }
 
+function extractArg(tool: ToolCallItem, key: string): string {
+  if (tool.args && typeof tool.args[key] === 'string' && tool.args[key].trim()) {
+    return tool.args[key].trim();
+  }
+  if (tool.argumentsRaw) {
+    try {
+      const parsed = JSON.parse(tool.argumentsRaw);
+      if (typeof parsed[key] === 'string' && parsed[key].trim()) {
+        return parsed[key].trim();
+      }
+    } catch {
+      // Partial JSON during streaming, e.g. {"command":"Get-ChildItem...
+      const regex = new RegExp(`"${key}"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)`);
+      const match = tool.argumentsRaw.match(regex);
+      if (match && match[1]) {
+        try {
+          return JSON.parse(`"${match[1]}"`).trim();
+        } catch {
+          return match[1].replace(/\\n/g, ' ').trim();
+        }
+      }
+    }
+  }
+  return '';
+}
+
 function getToolDisplayInfo(tool: ToolCallItem): {
   icon: React.ReactNode;
   label: string;
   isTerminal: boolean;
   command?: string;
   output?: string;
+  isRunning: boolean;
 } {
   const name = tool.name;
-  const args = tool.args || {};
+  const isRunning = tool.status === 'running' || tool.status === 'pending';
 
-  if (name === 'use_skill' || (name === 'read_file' && String(args.path || args.filePath || '').endsWith('SKILL.md'))) {
-    const skillName = typeof args.name === 'string' ? args.name : String(args.path || args.filePath || '').replace(/.*[/\\]([^/\\]+)[/\\]SKILL\.md$/, '$1');
+  if (name === 'use_skill' || (name === 'read_file' && String(tool.args?.path || tool.args?.filePath || '').endsWith('SKILL.md'))) {
+    const skillName = extractArg(tool, 'name') || String(tool.args?.path || tool.args?.filePath || '').replace(/.*[/\\]([^/\\]+)[/\\]SKILL\.md$/, '$1') || 'skill';
     return {
-      icon: <BookOpen size={13} className="text-[#f0883e] shrink-0" />,
-      label: `Loaded skill: ${skillName}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" /> : <BookOpen size={13} className="text-[#f0883e] shrink-0" />,
+      label: isRunning ? `Loading skill: ${skillName}...` : `Loaded skill: ${skillName}`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'run_command') {
-    const command = typeof args.command === 'string' ? args.command : '';
+    const command = extractArg(tool, 'command');
     const displayCmd = command.length > 70 ? `${command.slice(0, 67)}...` : command;
+    let label = '';
+    if (isRunning) {
+      label = displayCmd ? `Running "${displayCmd}"` : 'Running command...';
+    } else {
+      label = displayCmd ? `Ran "${displayCmd}"` : 'Ran command';
+    }
     return {
-      icon: <Settings size={13} className="text-[#8b949e] shrink-0" />,
-      label: `Ran "${displayCmd}"`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" /> : <Settings size={13} className="text-[#8b949e] shrink-0" />,
+      label,
       isTerminal: true,
       command,
       output: tool.terminalOutput || tool.result || '',
+      isRunning,
     };
   }
 
   if (name === 'read_file') {
-    const path = String(args.path || args.filePath || 'file');
-    const filename = path.replace(/.*[/\\]/, '');
+    const rawPath = extractArg(tool, 'path') || extractArg(tool, 'filePath') || 'file';
+    const filename = rawPath.replace(/.*[/\\]/, '') || 'file';
     return {
-      icon: <FileText size={13} className="text-[#8b949e] shrink-0" />,
-      label: `Read ${filename}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <FileText size={13} className="text-[#8b949e] shrink-0" />,
+      label: isRunning ? `Reading ${filename}...` : `Read ${filename}`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'search_files') {
-    const pattern = typeof args.pattern === 'string' ? args.pattern : '';
+    const pattern = extractArg(tool, 'pattern');
     return {
-      icon: <Search size={13} className="text-[#8b949e] shrink-0" />,
-      label: `Searched files "${pattern}"`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <Search size={13} className="text-[#8b949e] shrink-0" />,
+      label: isRunning ? (pattern ? `Searching files "${pattern}"...` : 'Searching files...') : (pattern ? `Searched files "${pattern}"` : 'Searched files'),
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'list_directory') {
-    const path = typeof args.path === 'string' ? args.path : '.';
+    const path = extractArg(tool, 'path') || '.';
     return {
-      icon: <FileCode2 size={13} className="text-[#8b949e] shrink-0" />,
-      label: `Explored directory "${path}"`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <FileCode2 size={13} className="text-[#8b949e] shrink-0" />,
+      label: isRunning ? `Exploring directory "${path}"...` : `Explored directory "${path}"`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'edit_file' || name === 'write_file') {
-    const path = String(args.path || 'file');
-    const filename = path.replace(/.*[/\\]/, '');
+    const rawPath = extractArg(tool, 'path') || 'file';
+    const filename = rawPath.replace(/.*[/\\]/, '') || 'file';
+    const action = name === 'edit_file' ? 'Edit' : 'Write';
     return {
-      icon: <FileCode2 size={13} className="text-[#58a6ff] shrink-0" />,
-      label: `${name === 'edit_file' ? 'Edited' : 'Wrote'} ${filename}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <FileCode2 size={13} className="text-[#58a6ff] shrink-0" />,
+      label: isRunning ? `${action}ing ${filename}...` : `${name === 'edit_file' ? 'Edited' : 'Wrote'} ${filename}`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'fetch_web_page') {
-    const url = typeof args.url === 'string' ? args.url : '';
+    const url = extractArg(tool, 'url');
     let host = url;
     try {
-      host = new URL(url).hostname;
+      if (url) host = new URL(url).hostname;
     } catch {
       // ignore
     }
     return {
-      icon: <Globe size={13} className="text-[#58a6ff] shrink-0" />,
-      label: `Fetched ${host}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <Globe size={13} className="text-[#58a6ff] shrink-0" />,
+      label: isRunning ? (host ? `Fetching ${host}...` : 'Fetching web page...') : (host ? `Fetched ${host}` : 'Fetched web page'),
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'spawn_subagent') {
-    const role = typeof args.role === 'string' ? args.role : typeof args.task === 'string' ? args.task.slice(0, 30) : 'Subagent';
+    const role = extractArg(tool, 'role') || extractArg(tool, 'task').slice(0, 30) || 'Subagent';
     return {
-      icon: <Bot size={13} className="text-[#58a6ff] shrink-0" />,
-      label: `spawn_subagent: ${role}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <Bot size={13} className="text-[#58a6ff] shrink-0" />,
+      label: isRunning ? `Spawning subagent: ${role}...` : `spawn_subagent: ${role}`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   if (name === 'learn_skill') {
-    const skillName = typeof args.name === 'string' ? args.name : 'skill';
+    const skillName = extractArg(tool, 'name') || 'skill';
     return {
-      icon: <BookOpen size={13} className="text-[#f0883e] shrink-0" />,
-      label: `Learned skill: ${skillName}`,
+      icon: isRunning ? <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" /> : <BookOpen size={13} className="text-[#f0883e] shrink-0" />,
+      label: isRunning ? `Learning skill: ${skillName}...` : `Learned skill: ${skillName}`,
       isTerminal: false,
+      isRunning,
     };
   }
 
   return {
-    icon: <Settings size={13} className="text-[#8b949e] shrink-0" />,
-    label: `${name}`,
+    icon: isRunning ? <Loader2 size={13} className="text-[#8b949e] animate-spin shrink-0" /> : <Settings size={13} className="text-[#8b949e] shrink-0" />,
+    label: isRunning ? `Executing ${name}...` : `${name}`,
     isTerminal: false,
+    isRunning,
   };
 }
 
@@ -185,6 +229,16 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   const hasRunning = isStreaming || toolCalls.some((t) => t.status === 'running' || t.status === 'pending');
   const hasCancelled = !hasRunning && toolCalls.some((t) => t.status === 'cancelled');
   const hasError = toolCalls.some((t) => t.status === 'error' || (t.exitCode !== undefined && t.exitCode !== 0));
+
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!hasRunning) return;
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 250);
+    return () => clearInterval(interval);
+  }, [hasRunning]);
 
   // Default: open while running or if error; collapsed when completed unless user explicitly toggled
   const isCollapsed = manualCollapsed !== null ? manualCollapsed : hasRunning || hasError ? false : true;
@@ -244,6 +298,10 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
             const isTerminalOpen = expandedTerminals[tool.id] !== undefined ? expandedTerminals[tool.id] : tool.status === 'running' || tool.status === 'error';
             const duration = formatDuration(tool.durationMs);
             const isClickable = info.isTerminal || Boolean(tool.artifactId && onSelectArtifact);
+            const isToolRunning = tool.status === 'running' || tool.status === 'pending';
+            const liveElapsedSec = isToolRunning
+              ? Math.max(1, Math.floor((now - (tool.startedAt || now)) / 1000))
+              : null;
 
             return (
               <div key={tool.id} className="group">
@@ -263,9 +321,10 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    {tool.status === 'running' && (
-                      <span className="flex items-center gap-1 text-[10px] text-[#f0883e]">
-                        <Loader2 size={10} className="animate-spin" />
+                    {isToolRunning && (
+                      <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
+                        <Loader2 size={10} className="animate-spin text-[#f0883e]" />
+                        <span>{liveElapsedSec}s</span>
                       </span>
                     )}
 
@@ -275,7 +334,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                       </span>
                     )}
 
-                    {duration && (
+                    {!isToolRunning && duration && (
                       <span className="text-[10px] text-[#6e7681]">{duration}</span>
                     )}
 
