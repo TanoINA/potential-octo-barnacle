@@ -190,7 +190,7 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
 
     // Check status of this file
     let status_out = super::create_hidden_command("git")
-        .args(["status", "--porcelain", file_path])
+        .args(["status", "--porcelain", "--", file_path])
         .current_dir(cwd)
         .output()
         .await;
@@ -218,7 +218,7 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
     if !checkout_out.status.success() {
         // Fallback to git restore
         let restore_out = super::create_hidden_command("git")
-            .args(["restore", file_path])
+            .args(["restore", "--", file_path])
             .current_dir(cwd)
             .output()
             .await

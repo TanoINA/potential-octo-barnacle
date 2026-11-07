@@ -635,7 +635,11 @@ export function ChatCanvas({
           isDir: false,
         };
       });
-      setAttachedContexts((prev) => [...prev, ...newAtts]);
+      setAttachedContexts((prev) => {
+        const existing = new Set(prev.map((c) => c.path));
+        const unique = newAtts.filter((c) => !existing.has(c.path));
+        return [...prev, ...unique];
+      });
     } catch (error) {
       console.error('Failed to select files', error);
     }
@@ -654,7 +658,10 @@ export function ChatCanvas({
         name,
         isDir: true,
       };
-      setAttachedContexts((prev) => [...prev, newAtt]);
+      setAttachedContexts((prev) => {
+        if (prev.some((c) => c.path === selected)) return prev;
+        return [...prev, newAtt];
+      });
     } catch (error) {
       console.error('Failed to select folder', error);
     }

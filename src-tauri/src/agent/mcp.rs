@@ -187,7 +187,20 @@ impl McpClient {
 
     pub async fn shutdown(&self) {
         let mut child = self.child.lock().await;
-        if child.id().is_some() {
+        if let Some(id) = child.id() {
+            #[cfg(windows)]
+            {
+                let _ = super::create_hidden_command("taskkill")
+                    .arg("/PID")
+                    .arg(id.to_string())
+                    .arg("/T")
+                    .arg("/F")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            }
             let _ = child.kill().await;
         }
     }

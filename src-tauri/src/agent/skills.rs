@@ -310,12 +310,17 @@ pub async fn save_skill_markdown(
         "description": description.trim(),
     }))
     .map_err(|error| format!("Failed to encode skill metadata: {error}"))?;
-    let markdown = format!(
-        "---\n{}---\n# {}\n\n{}\n",
-        frontmatter,
-        clean_name,
-        instructions.trim()
-    );
+    let trimmed_instructions = instructions.trim();
+    let markdown = if trimmed_instructions.starts_with("# ") {
+        format!("---\n{}---\n{}\n", frontmatter, trimmed_instructions)
+    } else {
+        format!(
+            "---\n{}---\n# {}\n\n{}\n",
+            frontmatter,
+            clean_name,
+            trimmed_instructions
+        )
+    };
 
     super::storage::atomic_write(&file_path, markdown.as_bytes()).await?;
 

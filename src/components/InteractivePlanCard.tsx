@@ -11,13 +11,13 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
   const lines = rawPlan.split('\n').filter((l) => l.trim().length > 0);
 
   const initialItems: PlanItem[] = lines.map((line, idx) => {
-    const match = line.match(/^\s*[-*]\s*\[([ xX\-~])\]\s*(.*)$/);
+    const match = line.match(/^\s*(?:[-*]|\d+\.)\s*\[([ xX\-~])\]\s*(.*)$/);
     if (match) {
       const mark = match[1].trim();
       const status = mark.toLowerCase() === 'x' ? 'done' : mark === '-' || mark === '~' ? 'in_progress' : 'pending';
       return { id: `item-${idx}`, status, text: match[2].trim() };
     }
-    return { id: `item-${idx}`, status: 'pending', text: line.replace(/^\s*[-*]\s*/, '').trim() };
+    return { id: `item-${idx}`, status: 'pending', text: line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim() };
   });
 
   const [items, setItems] = useState<PlanItem[]>(initialItems);

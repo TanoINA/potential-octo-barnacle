@@ -127,6 +127,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         setCommitResult({ success: true, message: `Committed: ${commitOut}` });
       }
       setShowCommitBar(false);
+      invoke<GitStatusResult>('git_status').then(setGitStatus).catch(() => {});
     } catch (err) {
       setCommitResult({ success: false, message: String(err) });
     } finally {

@@ -32,4 +32,17 @@ describe('InteractivePlanCard', () => {
     // After clicking again, reverts to 1/3
     expect(screen.getByText('1/3 completed')).toBeTruthy();
   });
+
+  it('parses numbered plan items with checkboxes correctly', () => {
+    const numberedPlan = `
+1. [x] First numbered task
+2. [-] Second in progress task
+3. [ ] Third pending task
+`;
+    render(<InteractivePlanCard rawPlan={numberedPlan} />);
+    expect(screen.getByText('1/3 completed')).toBeTruthy();
+    expect(screen.getByText('First numbered task')).toBeTruthy();
+    expect(screen.getByText('Second in progress task')).toBeTruthy();
+    expect(screen.getByText('Third pending task')).toBeTruthy();
+  });
 });
