@@ -544,14 +544,18 @@ fn decode_percent(input: &str) -> String {
 }
 
 pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::PathBuf {
-    let clean = if let Some(stripped) = target.strip_prefix("file:///") {
+    let raw = target.trim();
+    let without_hash = raw.split('#').next().unwrap_or(raw);
+    let without_query = without_hash.split('?').next().unwrap_or(without_hash);
+
+    let clean = if let Some(stripped) = without_query.strip_prefix("file:///") {
         stripped
-    } else if let Some(stripped) = target.strip_prefix("file://localhost/") {
+    } else if let Some(stripped) = without_query.strip_prefix("file://localhost/") {
         stripped
-    } else if let Some(stripped) = target.strip_prefix("file://") {
+    } else if let Some(stripped) = without_query.strip_prefix("file://") {
         stripped
     } else {
-        target
+        without_query
     };
 
     let decoded = decode_percent(clean);
@@ -559,10 +563,12 @@ pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::Path
     let decoded = {
         let trimmed = if decoded.starts_with('/') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
             &decoded[1..]
+        } else if decoded.starts_with('\\') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
+            &decoded[1..]
         } else {
             &decoded
         };
-        trimmed.replace('/', "\\")
+        trimmed.trim_matches('"').replace('/', "\\")
     };
     #[cfg(not(target_os = "windows"))]
     let decoded = decoded;
@@ -666,11 +672,19 @@ async fn reveal_in_explorer(state: State<'_, AppState>, path: String) -> Result<
         use std::os::windows::process::CommandExt;
         let win_path = resolved.to_string_lossy().replace('/', "\\");
         let mut cmd = std::process::Command::new("explorer");
-        cmd.creation_flags(0x08000000);
         if resolved.is_dir() {
             cmd.arg(&win_path);
+        } else if resolved.exists() {
+            cmd.raw_arg(format!("/select,\"{}\"", win_path));
+        } else if let Some(parent) = resolved.parent() {
+            let parent_path = parent.to_string_lossy().replace('/', "\\");
+            if parent.exists() {
+                cmd.arg(&parent_path);
+            } else {
+                cmd.raw_arg(format!("/select,\"{}\"", win_path));
+            }
         } else {
-            cmd.arg(format!("/select,\"{}\"", win_path));
+            cmd.raw_arg(format!("/select,\"{}\"", win_path));
         }
         cmd.spawn()
             .map_err(|e| format!("Failed to reveal in explorer: {e}"))?;
@@ -870,6 +884,12 @@ mod tests {
 
             let resolved2 = resolve_open_target("D:/UNIKOM/file.docx", "");
             assert_eq!(resolved2.to_string_lossy(), "D:\\UNIKOM\\file.docx");
+
+            let resolved3 = resolve_open_target("file:///D:/folder%20name/doc.docx#L12-L20", "");
+            assert_eq!(resolved3.to_string_lossy(), "D:\\folder name\\doc.docx");
+
+            let resolved4 = resolve_open_target("file:///D:/folder with space/doc.docx", "");
+            assert_eq!(resolved4.to_string_lossy(), "D:\\folder with space\\doc.docx");
         }
     }
 }
