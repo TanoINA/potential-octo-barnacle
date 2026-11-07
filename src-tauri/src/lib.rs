@@ -600,7 +600,9 @@ async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Re
     if target.starts_with("http://") || target.starts_with("https://") || target.starts_with("mailto:") {
         #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
             std::process::Command::new("rundll32")
+                .creation_flags(0x08000000)
                 .args(["url.dll,FileProtocolHandler", target])
                 .spawn()
                 .map_err(|e| format!("Failed to open URL in browser: {e}"))?;
@@ -627,8 +629,10 @@ async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Re
 
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         let path_str = resolved.to_string_lossy().to_string();
         std::process::Command::new("cmd")
+            .creation_flags(0x08000000)
             .args(["/C", "start", "", &path_str])
             .spawn()
             .map_err(|e| format!("Failed to open file: {e}"))?;
