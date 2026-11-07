@@ -93,3 +93,114 @@ describe('ChatCanvas council candidates', () => {
     expect(selects[0].value).not.toBe(selects[1].value);
   });
 });
+
+describe('ChatCanvas prompt queueing', () => {
+  it('queues a message when submitted while streaming and shows queue banner', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    renderCanvas({ isStreaming: true, onSendMessage });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Analyze performance bottlenecks' } });
+
+    // The Queue button should be visible when streaming with text in input
+    const queueBtn = screen.getByRole('button', { name: /Queue message/i });
+    expect(queueBtn).toBeTruthy();
+    fireEvent.click(queueBtn);
+
+    // Input should be cleared
+    expect((input as HTMLTextAreaElement).value).toBe('');
+    // onSendMessage should not have been called yet
+    expect(onSendMessage).not.toHaveBeenCalled();
+
+    // Queue banner should appear
+    expect(screen.getByTestId('queued-prompts-banner')).toBeTruthy();
+    expect(screen.getByText('Analyze performance bottlenecks')).toBeTruthy();
+    expect(screen.getByText('#1')).toBeTruthy();
+  });
+
+  it('allows editing a queued prompt back into the composer', async () => {
+    renderCanvas({ isStreaming: true });
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'First instruction to edit' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.getByText('First instruction to edit')).toBeTruthy();
+    expect(input.value).toBe('');
+
+    // Click Edit button
+    const editBtn = screen.getByRole('button', { name: /Edit/i });
+    fireEvent.click(editBtn);
+
+    // Prompt restored to composer and removed from queue banner
+    expect(input.value).toBe('First instruction to edit');
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('allows removing a queued prompt', async () => {
+    renderCanvas({ isStreaming: true });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Cancel this instruction' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.getByText('Cancel this instruction')).toBeTruthy();
+
+    const removeBtn = screen.getByRole('button', { name: /Remove queued prompt/i });
+    fireEvent.click(removeBtn);
+
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('automatically dispatches queued prompt when streaming ends', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const { rerender } = render(<ChatCanvas {...{
+      messages: [],
+      isStreaming: true,
+      stopRequested: false,
+      onSendMessage,
+      onStop: vi.fn(),
+      onSelectArtifact: vi.fn(),
+      onClearSession: vi.fn(),
+      onNewSession: () => 'new',
+      onOpenSettings: vi.fn(),
+      onOpenModelPicker: vi.fn(),
+      effectiveConfig: null,
+      sessionTitle: 'Command test',
+      artifactCount: 0,
+      isArtifactOpen: false,
+      onToggleArtifacts: vi.fn(),
+      onListFiles: async () => [],
+    } as any} />);
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Next prompt to run after stream' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSendMessage).not.toHaveBeenCalled();
+
+    // Now stream completes (isStreaming becomes false)
+    rerender(<ChatCanvas {...{
+      messages: [],
+      isStreaming: false,
+      stopRequested: false,
+      onSendMessage,
+      onStop: vi.fn(),
+      onSelectArtifact: vi.fn(),
+      onClearSession: vi.fn(),
+      onNewSession: () => 'new',
+      onOpenSettings: vi.fn(),
+      onOpenModelPicker: vi.fn(),
+      effectiveConfig: null,
+      sessionTitle: 'Command test',
+      artifactCount: 0,
+      isArtifactOpen: false,
+      onToggleArtifacts: vi.fn(),
+      onListFiles: async () => [],
+    } as any} />);
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledWith('Next prompt to run after stream', undefined);
+    });
+  });
+});

@@ -6,6 +6,7 @@ import {
   BookOpen,
   Brain,
   ChevronUp,
+  Clock,
   Download,
   File,
   FileCode2,
@@ -17,6 +18,7 @@ import {
   PanelLeft,
   PanelRight,
   Paperclip,
+  Play,
   Plus,
   Search,
   Send,
@@ -239,6 +241,12 @@ const TOOL_ITEMS: SlashItem[] = [
   },
 ];
 
+interface QueuedPrompt {
+  id: string;
+  prompt: string;
+  attachments?: AttachedContext[];
+}
+
 export function ChatCanvas({
   messages,
   isStreaming,
@@ -290,6 +298,65 @@ export function ChatCanvas({
   const [councilModelA, setCouncilModelA] = useState<{ providerId: string; model: string } | null>(null);
   const [councilModelB, setCouncilModelB] = useState<{ providerId: string; model: string } | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const [stoppedWithQueue, setStoppedWithQueue] = useState(false);
+  const prevStreamingRef = useRef(isStreaming);
+  const wasStopRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (stopRequested) {
+      wasStopRequestedRef.current = true;
+    }
+  }, [stopRequested]);
+
+  // Reset queue when active session changes
+  useEffect(() => {
+    setQueuedPrompts([]);
+    setStoppedWithQueue(false);
+  }, [currentSessionId]);
+
+  // Auto-dispatch next queued prompt when streaming ends (unless user explicitly stopped)
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming) {
+      if (wasStopRequestedRef.current) {
+        wasStopRequestedRef.current = false;
+        if (queuedPrompts.length > 0) {
+          setStoppedWithQueue(true);
+        }
+      } else if (queuedPrompts.length > 0 && !isReviewing) {
+        setStoppedWithQueue(false);
+        const nextItem = queuedPrompts[0];
+        setQueuedPrompts((prev) => prev.slice(1));
+        onSendMessage(nextItem.prompt, nextItem.attachments);
+      }
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, queuedPrompts, isReviewing, onSendMessage]);
+
+  const handleResumeQueue = useCallback(() => {
+    if (queuedPrompts.length === 0 || isStreaming || isReviewing) return;
+    setStoppedWithQueue(false);
+    const nextItem = queuedPrompts[0];
+    setQueuedPrompts((prev) => prev.slice(1));
+    onSendMessage(nextItem.prompt, nextItem.attachments);
+  }, [queuedPrompts, isStreaming, isReviewing, onSendMessage]);
+
+  const handleEditQueued = useCallback((id: string) => {
+    const item = queuedPrompts.find((q) => q.id === id);
+    if (!item) return;
+    setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
+    setInput(item.prompt);
+    if (item.attachments) {
+      setAttachedContexts(item.attachments);
+    }
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, [queuedPrompts]);
+
+  const handleRemoveQueued = useCallback((id: string) => {
+    setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
+  }, []);
 
   const availableModelsList = useMemo(() => {
     if (!settings) return [];
@@ -766,7 +833,23 @@ export function ChatCanvas({
       : undefined;
     // /stop must stay reachable while a turn streams so the run can always be interrupted.
     const interruptsRun = slashItem?.command === '/stop';
-    if ((!clean && draftAttachments.length === 0) || isReviewing || (isStreaming && !interruptsRun)) return;
+    if ((!clean && draftAttachments.length === 0) || isReviewing) return;
+
+    if (isStreaming && !interruptsRun) {
+      setQueuedPrompts((prev) => [
+        ...prev,
+        {
+          id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          prompt: draft,
+          attachments: draftAttachments.length > 0 ? draftAttachments : undefined,
+        },
+      ]);
+      setStoppedWithQueue(false);
+      setInput('');
+      setAttachedContexts([]);
+      setCursor(0);
+      return;
+    }
 
     const clearIfUnchanged = (accepted: boolean) => {
       if (!accepted) return;
@@ -1309,6 +1392,70 @@ export function ChatCanvas({
             ))}
           </div>
         )}
+        {/* Queued Prompts Banner */}
+        {queuedPrompts.length > 0 && (
+          <div
+            className="mx-auto mb-2.5 w-full max-w-3xl space-y-1.5 animate-fadeIn"
+            data-testid="queued-prompts-banner"
+          >
+            <div className="flex items-center justify-between px-1 text-[11px] font-medium text-[#8b949e]">
+              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#f0883e]">
+                <Clock size={11} className={isStreaming ? 'animate-pulse' : ''} />
+                Queued Instructions ({queuedPrompts.length})
+              </span>
+              {stoppedWithQueue && !isStreaming && (
+                <button
+                  type="button"
+                  onClick={handleResumeQueue}
+                  className="flex items-center gap-1 rounded bg-[#238636] px-2 py-0.5 text-[10px] font-medium text-white hover:bg-[#2ea043] transition-colors"
+                >
+                  <Play size={10} fill="currentColor" /> Resume Queue
+                </button>
+              )}
+            </div>
+            {queuedPrompts.map((item, index) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between gap-2 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-md backdrop-blur-sm transition-all hover:border-[#58a6ff]/40"
+                data-testid={`queued-prompt-${index}`}
+              >
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span className="shrink-0 rounded bg-[#30363d]/70 px-1.5 py-0.5 font-mono text-[10px] text-[#f0883e]">
+                    #{index + 1}
+                  </span>
+                  <p className="truncate text-xs text-[#e6edf3]" title={item.prompt}>
+                    {item.prompt}
+                  </p>
+                  {item.attachments && item.attachments.length > 0 && (
+                    <span className="shrink-0 flex items-center gap-1 rounded bg-[#21262d] px-1.5 py-0.5 text-[10px] font-mono text-[#58a6ff]">
+                      <Paperclip size={10} /> +{item.attachments.length}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleEditQueued(item.id)}
+                    className="rounded px-2 py-0.5 text-[11px] font-medium text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] transition-colors"
+                    title="Edit prompt in composer"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveQueued(item.id)}
+                    className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#f85149] transition-colors"
+                    aria-label="Remove queued prompt"
+                    title="Remove from queue"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="mx-auto max-w-3xl rounded-2xl border border-[#30363d] bg-[#161b22] shadow-sm transition-colors focus-within:border-[#58a6ff]/70 focus-within:ring-1 focus-within:ring-[#58a6ff]/20">
           {attachedContexts.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-[#30363d]/50 px-3 py-2">
@@ -1592,9 +1739,28 @@ export function ChatCanvas({
               {isReviewing && <span role="status" className="flex items-center gap-1.5 text-[11px] text-[#8b949e]"><Brain size={12} /> Reviewing…</span>}
               <div className="shrink-0">
                 {isStreaming ? (
-                  <button type="button" onClick={onStop} disabled={stopRequested} className="flex items-center gap-1.5 rounded-lg bg-[#da3633] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#f85149] disabled:opacity-50">
-                    <Square size={12} fill="currentColor" /> {stopRequested ? 'Stopping…' : 'Stop'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {((input || '').trim().length > 0 || attachedContexts.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={send}
+                        className="flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 py-1.5 text-xs font-medium text-[#58a6ff] hover:bg-[#30363d] hover:border-[#58a6ff]/50 transition-colors"
+                        title="Add to queue (executes after current turn)"
+                        aria-label="Queue message"
+                      >
+                        <Clock size={12} className="text-[#f0883e]" />
+                        <span>Queue</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onStop}
+                      disabled={stopRequested}
+                      className="flex items-center gap-1.5 rounded-lg bg-[#da3633] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#f85149] disabled:opacity-50"
+                    >
+                      <Square size={12} fill="currentColor" /> {stopRequested ? 'Stopping…' : 'Stop'}
+                    </button>
+                  </div>
                 ) : (
                   <button
                     type="button"

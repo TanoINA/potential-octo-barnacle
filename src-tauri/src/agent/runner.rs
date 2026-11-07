@@ -12,7 +12,9 @@ use super::types::{
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use futures_util::future::join_all;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -673,13 +675,13 @@ impl AgentRunner {
             run_id: request.run_id.clone(),
             session_id: request.session_id.clone(),
         };
-        let mcp = tokio::select! {
+        let mcp = Arc::new(tokio::select! {
             _ = cancel.cancelled() => {
                 emitter.done(true, false);
                 return;
             }
             manager = McpManager::connect(&request.mcp_servers, &workspace_cwd) => manager,
-        };
+        });
         for warning in &mcp.warnings {
             emitter.artifact(Artifact {
                 id: format!("art-{}", Uuid::new_v4()),
@@ -693,7 +695,7 @@ impl AgentRunner {
         }
 
         let all_skill_paths = workspace_skill_paths(&workspace_cwd, &request.skill_paths);
-        let mut skills = load_skills(&all_skill_paths).await;
+        let skills = load_skills(&all_skill_paths).await;
         let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.";
         let mut system = match request
             .system_prompt
@@ -705,6 +707,7 @@ impl AgentRunner {
             None => default_prompt.to_string(),
         };
         system.push_str(&render_skill_catalog(&skills));
+        let skills_shared = Arc::new(RwLock::new(skills));
         match load_workspace_memory(&workspace_cwd).await {
             Ok(Some(memory)) => {
                 system.push_str("\n## Workspace AGENTS.md instructions\n");
@@ -820,10 +823,17 @@ impl AgentRunner {
                 "tool_calls": serde_json::to_value(&result.tool_calls).unwrap_or(serde_json::Value::Null),
             }));
 
+            struct PreparedCall {
+                call_id: String,
+                function_name: String,
+                arguments_raw: String,
+                ui_id: String,
+                args: serde_json::Value,
+                malformed_error: Option<String>,
+            }
+
+            let mut prepared_calls = Vec::with_capacity(result.tool_calls.len());
             for call in result.tool_calls.into_iter() {
-                if cancel.is_cancelled() {
-                    break;
-                }
                 let ui_id = format!("turn_{turns}_stream_{}", call.stream_index);
                 let parsed_args = if call.function.arguments.trim().is_empty() {
                     Ok(serde_json::json!({}))
@@ -831,187 +841,293 @@ impl AgentRunner {
                     serde_json::from_str::<serde_json::Value>(&call.function.arguments)
                         .map_err(|error| error.to_string())
                 };
-                let args = match parsed_args {
-                    Ok(args) => args,
+
+                match parsed_args {
+                    Ok(args) => {
+                        let tool_item = ToolCallItem {
+                            id: ui_id.clone(),
+                            name: call.function.name.clone(),
+                            args: args.clone(),
+                            status: "running".into(),
+                            result: None,
+                            artifact_id: None,
+                            arguments_raw: Some(call.function.arguments.clone()),
+                            started_at: Some(chrono::Utc::now().timestamp_millis()),
+                            completed_at: None,
+                            duration_ms: None,
+                            exit_code: None,
+                            terminal_output: None,
+                            files_changed: None,
+                        };
+                        emitter.tool(tool_item);
+                        prepared_calls.push(PreparedCall {
+                            call_id: call.id,
+                            function_name: call.function.name,
+                            arguments_raw: call.function.arguments,
+                            ui_id,
+                            args,
+                            malformed_error: None,
+                        });
+                    }
                     Err(error) => {
                         let message = format!(
                             "Tool '{}' returned malformed JSON arguments: {error}",
                             call.function.name
                         );
                         emitter.tool(ToolCallItem {
-                            id: ui_id,
+                            id: ui_id.clone(),
                             name: call.function.name.clone(),
                             args: serde_json::json!({ "raw": call.function.arguments.clone() }),
                             status: "error".into(),
                             result: Some(message.clone()),
                             artifact_id: None,
                             arguments_raw: Some(call.function.arguments.clone()),
+                            started_at: Some(chrono::Utc::now().timestamp_millis()),
+                            completed_at: Some(chrono::Utc::now().timestamp_millis()),
+                            duration_ms: Some(0),
+                            exit_code: None,
+                            terminal_output: None,
+                            files_changed: None,
+                        });
+                        prepared_calls.push(PreparedCall {
+                            call_id: call.id,
+                            function_name: call.function.name,
+                            arguments_raw: call.function.arguments,
+                            ui_id,
+                            args: serde_json::json!({}),
+                            malformed_error: Some(message),
+                        });
+                    }
+                }
+            }
+
+            let tool_futures = prepared_calls.into_iter().map(|prep| {
+                let emitter = emitter.clone();
+                let cancel = cancel.clone();
+                let request_provider = request.provider.clone();
+                let skill_paths = request.skill_paths.clone();
+                let workspace_cwd = workspace_cwd.clone();
+                let all_skill_paths = all_skill_paths.clone();
+                let mcp = Arc::clone(&mcp);
+                let skills_shared = Arc::clone(&skills_shared);
+
+                async move {
+                    if let Some(err) = prep.malformed_error {
+                        return (prep.call_id, ToolExecutionResult {
+                            output: err,
+                            success: false,
+                            cancelled: false,
                             ..Default::default()
                         });
-                        conversation.push(serde_json::json!({"role":"tool","tool_call_id":call.id,"content":message}));
-                        continue;
                     }
-                };
-                let mut tool_item = ToolCallItem {
-                    id: ui_id,
-                    name: call.function.name.clone(),
-                    args: args.clone(),
-                    status: "running".into(),
-                    result: None,
-                    artifact_id: None,
-                    arguments_raw: Some(call.function.arguments.clone()),
-                    started_at: Some(chrono::Utc::now().timestamp_millis()),
-                    completed_at: None,
-                    duration_ms: None,
-                    exit_code: None,
-                    terminal_output: None,
-                    files_changed: None,
-                };
-                emitter.tool(tool_item.clone());
 
-                let sink_emitter = emitter.clone();
-                let sink = Arc::new(move |event: ToolEvent| match event {
-                    ToolEvent::Artifact(artifact) => sink_emitter.artifact(artifact),
-                    ToolEvent::TerminalOutput {
-                        artifact_id,
-                        delta,
-                        stream,
-                    } => sink_emitter.terminal(artifact_id, delta, stream),
-                });
-                let context = ToolContext {
-                    cwd: workspace_cwd.clone(),
-                    cancel: cancel.clone(),
-                    sink: Some(sink),
-                };
-                let mut execution = if mcp.contains(&call.function.name) {
-                    let outcome = tokio::select! {
-                        _ = cancel.cancelled() => Err("MCP call cancelled".to_string()),
-                        result = mcp.call(&call.function.name, args.clone()) => result,
-                    };
                     if cancel.is_cancelled() {
-                        ToolExecutionResult {
-                            output: "MCP call cancelled".into(),
+                        let tool_item = ToolCallItem {
+                            id: prep.ui_id,
+                            name: prep.function_name,
+                            args: prep.args,
+                            status: "cancelled".into(),
+                            result: Some("Cancelled by operator".into()),
+                            artifact_id: None,
+                            arguments_raw: Some(prep.arguments_raw),
+                            started_at: Some(chrono::Utc::now().timestamp_millis()),
+                            completed_at: Some(chrono::Utc::now().timestamp_millis()),
+                            duration_ms: Some(0),
+                            exit_code: None,
+                            terminal_output: None,
+                            files_changed: None,
+                        };
+                        emitter.tool(tool_item);
+                        return (prep.call_id, ToolExecutionResult {
+                            output: "Cancelled by operator".into(),
                             success: false,
                             cancelled: true,
                             ..Default::default()
-                        }
-                    } else {
-                        match outcome {
-                            Ok(value) => {
-                                let text = result_text(&value);
-                                let is_error = value
-                                    .get("isError")
-                                    .and_then(|value| value.as_bool())
-                                    .unwrap_or(false);
-                                let artifact = if text.lines().count() > 25 {
-                                    Some(Artifact {
-                                        id: format!("art-{}", Uuid::new_v4()),
-                                        title: format!("MCP: {}", call.function.name),
-                                        artifact_type: "markdown".into(),
-                                        language: Some("markdown".into()),
-                                        content: text.clone(),
-                                        file_path: None,
-                                        timestamp: chrono::Utc::now().timestamp_millis(),
-                                    })
-                                } else {
-                                    None
-                                };
-                                super::tools::ToolExecutionResult {
-                                    output: text,
-                                    artifact,
-                                    success: !is_error,
+                        });
+                    }
+
+                    let started_at = chrono::Utc::now().timestamp_millis();
+                    let sink_emitter = emitter.clone();
+                    let sink = Arc::new(move |event: ToolEvent| match event {
+                        ToolEvent::Artifact(artifact) => sink_emitter.artifact(artifact),
+                        ToolEvent::TerminalOutput {
+                            artifact_id,
+                            delta,
+                            stream,
+                        } => sink_emitter.terminal(artifact_id, delta, stream),
+                    });
+                    let context = ToolContext {
+                        cwd: workspace_cwd.clone(),
+                        cancel: cancel.clone(),
+                        sink: Some(sink),
+                    };
+
+                    let mut execution = if mcp.contains(&prep.function_name) {
+                        let outcome = tokio::select! {
+                            _ = cancel.cancelled() => Err("MCP call cancelled".to_string()),
+                            result = mcp.call(&prep.function_name, prep.args.clone()) => result,
+                        };
+                        if cancel.is_cancelled() {
+                            ToolExecutionResult {
+                                output: "MCP call cancelled".into(),
+                                success: false,
+                                cancelled: true,
+                                ..Default::default()
+                            }
+                        } else {
+                            match outcome {
+                                Ok(value) => {
+                                    let text = result_text(&value);
+                                    let is_error = value
+                                        .get("isError")
+                                        .and_then(|value| value.as_bool())
+                                        .unwrap_or(false);
+                                    let artifact = if text.lines().count() > 25 {
+                                        Some(Artifact {
+                                            id: format!("art-{}", Uuid::new_v4()),
+                                            title: format!("MCP: {}", prep.function_name),
+                                            artifact_type: "markdown".into(),
+                                            language: Some("markdown".into()),
+                                            content: text.clone(),
+                                            file_path: None,
+                                            timestamp: chrono::Utc::now().timestamp_millis(),
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    super::tools::ToolExecutionResult {
+                                        output: text,
+                                        artifact,
+                                        success: !is_error,
+                                        cancelled: false,
+                                        ..Default::default()
+                                    }
+                                }
+                                Err(error) => super::tools::ToolExecutionResult {
+                                    output: error,
+                                    artifact: None,
+                                    success: false,
                                     cancelled: false,
                                     ..Default::default()
-                                }
+                                },
                             }
-                            Err(error) => super::tools::ToolExecutionResult {
-                                output: error,
-                                artifact: None,
-                                success: false,
-                                cancelled: false,
-                                ..Default::default()
-                            },
                         }
-                    }
-                } else if call.function.name == "use_skill" {
-                    let skill_name = args
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    let activation =
-                        activate_skill(&mut skills, skill_name, &all_skill_paths).await;
-                    if let Some(skill) = activation.skill {
-                        emitter.skill(skill);
-                    }
-                    activation.result
-                } else if call.function.name == "spawn_subagent" {
-                    let role = args
-                        .get("role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Specialist");
-                    let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
-                    let subpath = args.get("subpath").and_then(|v| v.as_str());
-                    let params = SubagentParams {
-                        role,
-                        task,
-                        subpath,
-                        skill_paths: &request.skill_paths,
-                    };
-                    run_subagent(
-                        &emitter,
-                        &request.provider,
-                        &workspace_cwd,
-                        params,
-                        cancel.clone(),
-                    )
-                    .await
-                } else {
-                    let exec = execute_tool(&call.function.name, &args, &context).await;
-                    if call.function.name == "learn_skill" && exec.success {
-                        skills = load_skills(&all_skill_paths).await;
-                    }
-                    if call.function.name == "read_file" {
-                        if let Some(file_path) = args
-                            .get("filePath")
-                            .or_else(|| args.get("file_path"))
+                    } else if prep.function_name == "use_skill" {
+                        let skill_name = prep.args
+                            .get("name")
                             .and_then(|v| v.as_str())
-                        {
-                            if file_path.ends_with("SKILL.md") {
-                                for s in &skills {
-                                    if file_path.contains(&s.name) || s.path.ends_with(file_path) {
-                                        emitter.skill(s.clone());
-                                        break;
+                            .unwrap_or_default();
+                        let mut skills_guard = skills_shared.write().await;
+                        let activation =
+                            activate_skill(&mut skills_guard, skill_name, &all_skill_paths).await;
+                        if let Some(skill) = activation.skill {
+                            emitter.skill(skill);
+                        }
+                        activation.result
+                    } else if prep.function_name == "spawn_subagent" {
+                        let role = prep.args
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Specialist")
+                            .to_string();
+                        let task = prep.args
+                            .get("task")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let subpath = prep.args
+                            .get("subpath")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let params = SubagentParams {
+                            role: &role,
+                            task: &task,
+                            subpath: subpath.as_deref(),
+                            skill_paths: &skill_paths,
+                        };
+                        run_subagent(
+                            &emitter,
+                            &request_provider,
+                            &workspace_cwd,
+                            params,
+                            cancel.clone(),
+                        )
+                        .await
+                    } else {
+                        let exec = execute_tool(&prep.function_name, &prep.args, &context).await;
+                        if prep.function_name == "learn_skill" && exec.success {
+                            let reloaded = load_skills(&all_skill_paths).await;
+                            let mut skills_guard = skills_shared.write().await;
+                            *skills_guard = reloaded;
+                        }
+                        if prep.function_name == "read_file" {
+                            if let Some(file_path) = prep.args
+                                .get("filePath")
+                                .or_else(|| prep.args.get("file_path"))
+                                .and_then(|v| v.as_str())
+                            {
+                                if file_path.ends_with("SKILL.md") {
+                                    let skills_guard = skills_shared.read().await;
+                                    for s in skills_guard.iter() {
+                                        if file_path.contains(&s.name) || s.path.ends_with(file_path) {
+                                            emitter.skill(s.clone());
+                                            break;
+                                        }
                                     }
                                 }
                             }
                         }
+                        exec
+                    };
+
+                    let mut artifact_id = None;
+                    if let Some(artifact) = execution.artifact.take() {
+                        artifact_id = Some(artifact.id.clone());
+                        emitter.artifact(artifact);
                     }
-                    exec
-                };
-                if let Some(artifact) = execution.artifact.take() {
-                    tool_item.artifact_id = Some(artifact.id.clone());
-                    emitter.artifact(artifact);
+                    let completed_at = chrono::Utc::now().timestamp_millis();
+                    let duration_ms = execution.duration_ms.or_else(|| {
+                        Some((completed_at - started_at).max(0) as u64)
+                    });
+                    let status = if execution.cancelled || cancel.is_cancelled() {
+                        "cancelled"
+                    } else if execution.success {
+                        "done"
+                    } else {
+                        "error"
+                    };
+                    let tool_item = ToolCallItem {
+                        id: prep.ui_id,
+                        name: prep.function_name,
+                        args: prep.args,
+                        status: status.into(),
+                        result: Some(execution.output.clone()),
+                        artifact_id,
+                        arguments_raw: Some(prep.arguments_raw),
+                        started_at: Some(started_at),
+                        completed_at: Some(completed_at),
+                        duration_ms,
+                        exit_code: execution.exit_code,
+                        terminal_output: execution.terminal_output.clone(),
+                        files_changed: execution.files_changed.clone(),
+                    };
+                    emitter.tool(tool_item);
+
+                    (prep.call_id, execution)
                 }
-                tool_item.status = if execution.cancelled {
-                    "cancelled"
-                } else if execution.success {
-                    "done"
-                } else {
-                    "error"
-                }
-                .into();
-                tool_item.result = Some(execution.output.clone());
-                tool_item.completed_at = Some(chrono::Utc::now().timestamp_millis());
-                tool_item.duration_ms = execution.duration_ms.or_else(|| {
-                    tool_item
-                        .started_at
-                        .map(|s| (chrono::Utc::now().timestamp_millis() - s).max(0) as u64)
-                });
-                tool_item.exit_code = execution.exit_code;
-                tool_item.terminal_output = execution.terminal_output;
-                tool_item.files_changed = execution.files_changed;
-                emitter.tool(tool_item);
-                conversation.push(serde_json::json!({"role":"tool","tool_call_id":call.id,"content":execution.output}));
+            });
+
+            let executed_results = join_all(tool_futures).await;
+            for (call_id, execution) in executed_results {
+                conversation.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": execution.output
+                }));
+            }
+
+            if cancel.is_cancelled() {
+                break;
             }
         }
         if !finished && !cancel.is_cancelled() && turns >= request.max_turns.clamp(1, 100) {
@@ -1792,5 +1908,18 @@ mod tests {
         assert!(is_substantive_finding(
             "Found 10 failure lines in red.log with code 500 across 3 sessions."
         ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_tool_calls_execute_simultaneously() {
+        let start = std::time::Instant::now();
+        let tasks = (0..5).map(|i| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            format!("result_{i}")
+        });
+        let results = join_all(tasks).await;
+        let elapsed = start.elapsed();
+        assert_eq!(results.len(), 5);
+        assert!(elapsed.as_millis() < 200, "Expected concurrent execution in <200ms, took {}ms", elapsed.as_millis());
     }
 }

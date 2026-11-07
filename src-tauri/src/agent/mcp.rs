@@ -279,8 +279,8 @@ impl McpManager {
         client.call_tool(original_name, arguments).await
     }
 
-    pub async fn shutdown(self) {
-        for client in self.clients {
+    pub async fn shutdown(&self) {
+        for client in &self.clients {
             client.shutdown().await;
         }
     }
