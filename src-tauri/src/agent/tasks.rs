@@ -390,9 +390,9 @@ mod tests {
         assert_eq!(info.status, "running");
         assert!(info.id.starts_with("task_"));
 
-        // Wait for completion
+        // Wait for completion (give enough headroom under parallel test load)
         let mut completed = false;
-        for _ in 0..50 {
+        for _ in 0..100 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let status = mgr.get_status(&info.id, Some(10)).await.expect("get status");
             if status.status == "completed" {

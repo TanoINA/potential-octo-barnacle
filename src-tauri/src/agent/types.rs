@@ -540,6 +540,20 @@ pub struct CouncilDoneData {
     pub duration_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoticeEventData {
+    pub run_id: String,
+    pub session_id: String,
+    pub message: String,
+    #[serde(default)]
+    pub attempt: Option<usize>,
+    #[serde(default)]
+    pub max_attempts: Option<usize>,
+    #[serde(default)]
+    pub reset_partial: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum AgentEvent {
@@ -565,6 +579,8 @@ pub enum AgentEvent {
     CouncilChunk(CouncilChunkData),
     #[serde(rename = "council_done")]
     CouncilDone(CouncilDoneData),
+    #[serde(rename = "notice")]
+    Notice(NoticeEventData),
 }
 
 #[cfg(test)]
@@ -643,6 +659,25 @@ mod tests {
         assert_eq!(value["data"]["candidate"], "A");
         assert_eq!(value["data"]["kind"], "content");
         assert_eq!(value["data"]["text"], "Hello from candidate A");
+    }
+
+    #[test]
+    fn notice_event_serializes_properly() {
+        let event = AgentEvent::Notice(NoticeEventData {
+            run_id: "run-notice-1".into(),
+            session_id: "sess-1".into(),
+            message: "Waiting for provider response... (reconnecting attempt 2/3)".into(),
+            attempt: Some(2),
+            max_attempts: Some(3),
+            reset_partial: true,
+        });
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "notice");
+        assert_eq!(value["data"]["runId"], "run-notice-1");
+        assert_eq!(value["data"]["sessionId"], "sess-1");
+        assert_eq!(value["data"]["attempt"], 2);
+        assert_eq!(value["data"]["maxAttempts"], 3);
+        assert_eq!(value["data"]["resetPartial"], true);
     }
 
     #[test]

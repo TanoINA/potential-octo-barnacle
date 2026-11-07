@@ -54,6 +54,7 @@ function cancelledMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     isStreaming: false,
+    notice: null,
     runStatus: 'cancelled',
     toolCalls: message.toolCalls?.map(cancelTool),
     segments: message.segments?.map((seg) => ({
@@ -374,13 +375,53 @@ export function useAgent() {
       const scope = payload.data;
       if (scope.runId !== currentRunRef.current || scope.sessionId !== sessionIdRef.current) return;
       switch (payload.type) {
+        case 'notice': {
+          const noticeData = payload.data;
+          if (noticeData.resetPartial) {
+            textBufferRef.current.content = '';
+            textBufferRef.current.reasoning = '';
+          }
+          mutateData((current) => ({
+            ...current,
+            messages: current.messages.map((message) => {
+              if (message.id !== streamingMessageIdRef.current) return message;
+              return {
+                ...message,
+                content: noticeData.resetPartial ? '' : message.content,
+                reasoning: noticeData.resetPartial ? '' : message.reasoning,
+                notice: noticeData.message ? {
+                  message: noticeData.message,
+                  attempt: noticeData.attempt,
+                  maxAttempts: noticeData.maxAttempts,
+                } : null,
+              };
+            }),
+          }));
+          break;
+        }
         case 'chunk':
           textBufferRef.current.content += payload.data.text;
           scheduleFlush();
+          mutateData((current) => {
+            const streamingMsg = current.messages.find((m) => m.id === streamingMessageIdRef.current);
+            if (!streamingMsg || !streamingMsg.notice) return current;
+            return {
+              ...current,
+              messages: current.messages.map((m) => m.id === streamingMessageIdRef.current ? { ...m, notice: null } : m),
+            };
+          });
           break;
         case 'reasoning':
           textBufferRef.current.reasoning += payload.data.text;
           scheduleFlush();
+          mutateData((current) => {
+            const streamingMsg = current.messages.find((m) => m.id === streamingMessageIdRef.current);
+            if (!streamingMsg || !streamingMsg.notice) return current;
+            return {
+              ...current,
+              messages: current.messages.map((m) => m.id === streamingMessageIdRef.current ? { ...m, notice: null } : m),
+            };
+          });
           break;
         case 'tool_update':
           flushPending();
@@ -512,6 +553,13 @@ export function useAgent() {
         case 'error':
           runFailedRef.current = true;
           setLastError(payload.data.message);
+          mutateData((current) => ({
+            ...current,
+            messages: current.messages.map((message) => {
+              if (message.id !== streamingMessageIdRef.current) return message;
+              return { ...message, notice: null };
+            }),
+          }));
           break;
         case 'done': {
           flushPending();
@@ -554,6 +602,7 @@ export function useAgent() {
               return {
                 ...message,
                 isStreaming: false,
+                notice: null,
                 runStatus: payload.data.successful === false || runFailedRef.current ? 'failed' : 'completed',
               };
             }),

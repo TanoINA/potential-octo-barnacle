@@ -104,7 +104,8 @@ export const MessageRow = memo(function MessageRow({
         <time className="text-[10px] text-[#6e7681]">
           {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </time>
-        {message.isStreaming && <span className="text-[10px] text-[#58a6ff] animate-pulse">streaming</span>}
+        {message.isStreaming && !message.notice && <span className="text-[10px] text-[#58a6ff] animate-pulse">streaming</span>}
+        {message.isStreaming && message.notice && <span className="text-[10px] text-[#e3b341] animate-pulse">reconnecting</span>}
       </div>
 
       {isUser && message.attachments && message.attachments.length > 0 && (
@@ -267,6 +268,19 @@ export const MessageRow = memo(function MessageRow({
 
       {!message.content && !message.preamble && message.isStreaming && !message.reasoning && (!message.toolCalls || message.toolCalls.length === 0) && (
         <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-xs text-[#8b949e]">Working…</div>
+      )}
+
+      {message.notice && (
+        <div
+          data-testid="provider-notice"
+          className="mt-2 inline-flex items-center gap-2 rounded-md border border-[#d29922]/30 bg-[#bb8009]/10 px-2.5 py-1 text-xs text-[#e3b341] animate-fadeIn"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#d29922] opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#d29922]" />
+          </span>
+          <span className="font-mono text-[11px] font-medium">{message.notice.message}</span>
+        </div>
       )}
 
       {/* Action Bar (Copy, Edit, Retry, Rollback) */}

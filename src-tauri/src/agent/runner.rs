@@ -1,14 +1,16 @@
 use super::mcp::{result_text, McpManager};
-use super::provider::{stream_chat_completion, CompletionOptions, ToolDelta};
+use super::provider::{
+    is_retryable_provider_error, stream_chat_completion, CompletionOptions, ToolDelta,
+};
 use super::skills::{
     find_skill, load_skills, read_skill_content, render_skill_catalog, workspace_skill_paths,
 };
 use super::tools::{execute_tool, get_agent_tools, ToolContext, ToolEvent, ToolExecutionResult};
 use super::types::{
     AgentEvent, AgentRunRequest, Artifact, ArtifactEventData, ChatMessage, CouncilChunkData,
-    CouncilDoneData, DoneEventData, ErrorEventData, MicroCompactionEvent, ProviderConfig,
-    ReasoningEffort, SkillActivatedEventData, SkillInfo, StreamEventData, SubagentEventData,
-    SubagentProgress, TerminalEventData, ToolCallItem, ToolEventData,
+    CouncilDoneData, DoneEventData, ErrorEventData, MicroCompactionEvent, NoticeEventData,
+    ProviderConfig, ReasoningEffort, SkillActivatedEventData, SkillInfo, StreamEventData,
+    SubagentEventData, SubagentProgress, TerminalEventData, ToolCallItem, ToolEventData,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -94,6 +96,25 @@ impl EmitterContext {
             session_id: self.session_id.clone(),
             skill,
         }));
+    }
+    fn notice(
+        &self,
+        message: String,
+        attempt: Option<usize>,
+        max_attempts: Option<usize>,
+        reset_partial: bool,
+    ) {
+        self.emit(AgentEvent::Notice(NoticeEventData {
+            run_id: self.run_id.clone(),
+            session_id: self.session_id.clone(),
+            message,
+            attempt,
+            max_attempts,
+            reset_partial,
+        }));
+    }
+    fn clear_notice(&self) {
+        self.notice(String::new(), None, None, false);
     }
 }
 
@@ -333,46 +354,104 @@ async fn run_subagent(
         turns += 1;
         let mut turn_text = String::new();
         let mut partial_tools: HashMap<usize, ToolCallItem> = HashMap::new();
-        let result = stream_chat_completion(
-            provider,
-            &serde_json::Value::Array(conversation.clone()),
-            &tools,
-            &options,
-            |chunk| {
-                turn_text.push_str(&chunk);
-            },
-            |_reasoning| {},
-            |delta: ToolDelta| {
-                let item = partial_tools
-                    .entry(delta.index)
-                    .or_insert_with(|| ToolCallItem {
-                        id: format!("sub_tool_{}", delta.index),
-                        name: "tool".into(),
-                        args: serde_json::Value::Object(Default::default()),
-                        status: "pending".into(),
-                        result: None,
-                        artifact_id: None,
-                        arguments_raw: Some(String::new()),
-                        ..Default::default()
-                    });
-                if let Some(name) = delta.name.filter(|v| !v.is_empty()) {
-                    item.name = name;
-                }
-                if let Some(args) = delta.arguments {
-                    item.arguments_raw = Some(format!(
-                        "{}{}",
-                        item.arguments_raw.clone().unwrap_or_default(),
-                        args
-                    ));
-                }
-            },
-            parent_cancel.clone(),
-        )
-        .await;
+        let mut subagent_attempt = 1;
+        let mut final_subagent_result = None;
+        let mut subagent_last_err = String::new();
 
-        let result = match result {
-            Ok(r) => r,
-            Err(err) => {
+        while subagent_attempt <= 3 {
+            if parent_cancel.is_cancelled() {
+                break;
+            }
+            if subagent_attempt > 1 {
+                let backoff = std::time::Duration::from_millis(1000 * (1 << (subagent_attempt - 2)));
+                tokio::select! {
+                    _ = parent_cancel.cancelled() => break,
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+                if parent_cancel.is_cancelled() {
+                    break;
+                }
+            }
+
+            turn_text.clear();
+            partial_tools.clear();
+
+            let attempt_result = stream_chat_completion(
+                provider,
+                &serde_json::Value::Array(conversation.clone()),
+                &tools,
+                &options,
+                |chunk| {
+                    turn_text.push_str(&chunk);
+                },
+                |_reasoning| {},
+                |delta: ToolDelta| {
+                    let item = partial_tools
+                        .entry(delta.index)
+                        .or_insert_with(|| ToolCallItem {
+                            id: format!("sub_tool_{}", delta.index),
+                            name: "tool".into(),
+                            args: serde_json::Value::Object(Default::default()),
+                            status: "pending".into(),
+                            result: None,
+                            artifact_id: None,
+                            arguments_raw: Some(String::new()),
+                            ..Default::default()
+                        });
+                    if let Some(name) = delta.name.filter(|v| !v.is_empty()) {
+                        item.name = name;
+                    }
+                    if let Some(args) = delta.arguments {
+                        item.arguments_raw = Some(format!(
+                            "{}{}",
+                            item.arguments_raw.clone().unwrap_or_default(),
+                            args
+                        ));
+                    }
+                },
+                parent_cancel.clone(),
+            )
+            .await;
+
+            match attempt_result {
+                Ok(r) => {
+                    final_subagent_result = Some(r);
+                    break;
+                }
+                Err(err) => {
+                    subagent_last_err = err.clone();
+                    if is_retryable_provider_error(&err) && subagent_attempt < 3 && !parent_cancel.is_cancelled() {
+                        subagent_attempt += 1;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let result = match final_subagent_result {
+            Some(r) => r,
+            None => {
+                if parent_cancel.is_cancelled() {
+                    progress.status = "cancelled".into();
+                    progress.completed_at = Some(chrono::Utc::now().timestamp_millis());
+                    emitter.subagent(progress);
+                    return ToolExecutionResult {
+                        output: "Subagent cancelled by operator".into(),
+                        artifact: None,
+                        success: false,
+                        cancelled: true,
+                        ..Default::default()
+                    };
+                }
+                let err = if subagent_last_err.is_empty() {
+                    "Subagent stream cancelled".to_string()
+                } else if subagent_attempt > 1 {
+                    format!("Subagent failed after {subagent_attempt} attempts: {subagent_last_err}")
+                } else {
+                    subagent_last_err
+                };
                 progress.status = "failed".into();
                 progress.completed_at = Some(chrono::Utc::now().timestamp_millis());
                 progress.summary = Some(format!("Error: {err}"));
@@ -760,51 +839,126 @@ impl AgentRunner {
                 break;
             }
             turns += 1;
-            let mut partial_tools: HashMap<usize, ToolCallItem> = HashMap::new();
-            let chunk_emitter = emitter.clone();
-            let reasoning_emitter = emitter.clone();
-            let tool_emitter = emitter.clone();
-            let result = stream_chat_completion(
-                &request.provider,
-                &serde_json::Value::Array(conversation.clone()),
-                &tools,
-                &options,
-                move |chunk| chunk_emitter.chunk(chunk),
-                move |reasoning| reasoning_emitter.reasoning(reasoning),
-                move |delta: ToolDelta| {
-                    let item = partial_tools
-                        .entry(delta.index)
-                        .or_insert_with(|| ToolCallItem {
-                            id: format!("turn_{turns}_stream_{}", delta.index),
-                            name: "tool".into(),
-                            args: serde_json::Value::Object(Default::default()),
-                            status: "pending".into(),
-                            result: None,
-                            artifact_id: None,
-                            arguments_raw: Some(String::new()),
-                            started_at: Some(chrono::Utc::now().timestamp_millis()),
-                            ..Default::default()
-                        });
-                    if let Some(name) = delta.name.filter(|value| !value.is_empty()) {
-                        item.name = name;
-                    }
-                    if let Some(arguments) = delta.arguments {
-                        item.arguments_raw = Some(format!(
-                            "{}{}",
-                            item.arguments_raw.clone().unwrap_or_default(),
-                            arguments
-                        ));
-                    }
-                    tool_emitter.tool(item.clone());
-                },
-                cancel.clone(),
-            )
-            .await;
+            let max_provider_attempts = 3;
+            let mut current_attempt = 1;
+            let mut last_provider_error = String::new();
+            let mut final_stream_result: Option<super::provider::StreamResult> = None;
 
-            let result = match result {
-                Ok(result) => result,
-                Err(error) => {
-                    emitter.error(redact_provider_error(error, &request.provider));
+            while current_attempt <= max_provider_attempts {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                if current_attempt > 1 {
+                    let backoff = std::time::Duration::from_millis(1000 * (1 << (current_attempt - 2)));
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                }
+
+                let mut partial_tools: HashMap<usize, ToolCallItem> = HashMap::new();
+                let chunk_emitter = emitter.clone();
+                let reasoning_emitter = emitter.clone();
+                let tool_emitter = emitter.clone();
+                let attempt_had_chunks = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let had_chunks_clone1 = attempt_had_chunks.clone();
+                let had_chunks_clone2 = attempt_had_chunks.clone();
+
+                let result = stream_chat_completion(
+                    &request.provider,
+                    &serde_json::Value::Array(conversation.clone()),
+                    &tools,
+                    &options,
+                    move |chunk| {
+                        had_chunks_clone1.store(true, std::sync::atomic::Ordering::Relaxed);
+                        chunk_emitter.chunk(chunk);
+                    },
+                    move |reasoning| {
+                        had_chunks_clone2.store(true, std::sync::atomic::Ordering::Relaxed);
+                        reasoning_emitter.reasoning(reasoning);
+                    },
+                    move |delta: ToolDelta| {
+                        let item = partial_tools
+                            .entry(delta.index)
+                            .or_insert_with(|| ToolCallItem {
+                                id: format!("turn_{turns}_stream_{}", delta.index),
+                                name: "tool".into(),
+                                args: serde_json::Value::Object(Default::default()),
+                                status: "pending".into(),
+                                result: None,
+                                artifact_id: None,
+                                arguments_raw: Some(String::new()),
+                                started_at: Some(chrono::Utc::now().timestamp_millis()),
+                                ..Default::default()
+                            });
+                        if let Some(name) = delta.name.filter(|value| !value.is_empty()) {
+                            item.name = name;
+                        }
+                        if let Some(arguments) = delta.arguments {
+                            item.arguments_raw = Some(format!(
+                                "{}{}",
+                                item.arguments_raw.clone().unwrap_or_default(),
+                                arguments
+                            ));
+                        }
+                        tool_emitter.tool(item.clone());
+                    },
+                    cancel.clone(),
+                )
+                .await;
+
+                match result {
+                    Ok(res) => {
+                        if current_attempt > 1 {
+                            emitter.clear_notice();
+                        }
+                        final_stream_result = Some(res);
+                        break;
+                    }
+                    Err(err) => {
+                        let had_deltas = attempt_had_chunks.load(std::sync::atomic::Ordering::Relaxed);
+                        last_provider_error = err.clone();
+                        let is_retryable = is_retryable_provider_error(&err);
+
+                        if is_retryable && current_attempt < max_provider_attempts && !cancel.is_cancelled() {
+                            current_attempt += 1;
+                            let notice_msg = format!(
+                                "No output from provider for 60s — reconnecting (attempt {}/{})...",
+                                current_attempt, max_provider_attempts
+                            );
+                            emitter.notice(
+                                notice_msg,
+                                Some(current_attempt),
+                                Some(max_provider_attempts),
+                                had_deltas,
+                            );
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let result = match final_stream_result {
+                Some(result) => result,
+                None => {
+                    let err_msg = if last_provider_error.is_empty() {
+                        "Provider stream was cancelled".to_string()
+                    } else if current_attempt > 1 {
+                        format!("Provider failed after {current_attempt} attempts: {last_provider_error}")
+                    } else {
+                        last_provider_error
+                    };
+                    emitter.error(redact_provider_error(err_msg, &request.provider));
                     break;
                 }
             };

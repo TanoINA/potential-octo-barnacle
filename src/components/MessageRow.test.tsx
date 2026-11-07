@@ -223,4 +223,31 @@ describe('MessageRow Action Buttons', () => {
     const traces = screen.getAllByTestId('execution-trace');
     expect(traces.length).toBe(2);
   });
+
+  it('renders provider reconnecting notice indicator when notice is present on streaming message', () => {
+    const streamingWithNotice: ChatMessage = {
+      id: 'msg-stream-notice-1',
+      role: 'assistant',
+      content: '',
+      timestamp: 1700000030000,
+      isStreaming: true,
+      notice: {
+        message: 'No output from provider for 60s — reconnecting (attempt 2/3)...',
+        attempt: 2,
+        maxAttempts: 3,
+      },
+    };
+
+    render(
+      <MessageRow
+        message={streamingWithNotice}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    const noticeEl = screen.getByTestId('provider-notice');
+    expect(noticeEl).toBeTruthy();
+    expect(noticeEl.textContent).toContain('No output from provider for 60s — reconnecting (attempt 2/3)...');
+    expect(screen.getByText('reconnecting')).toBeTruthy();
+  });
 });

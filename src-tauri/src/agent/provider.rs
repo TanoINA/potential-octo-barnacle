@@ -218,8 +218,47 @@ fn collect_model_ids(entries: &[serde_json::Value], output: &mut Vec<String>) {
     }
 }
 
-const PROVIDER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub const PROVIDER_STALE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Classifies provider errors into retryable (network drops, 5xx server errors,
+/// rate limits, stalled stream timeouts) vs non-retryable (bad request, auth failure, user cancel).
+pub fn is_retryable_provider_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    if lower.contains("cancelled") || lower.contains("canceled") {
+        return false;
+    }
+    if lower.contains("http 400")
+        || lower.contains("http 401")
+        || lower.contains("http 403")
+        || lower.contains("http 404")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid api key")
+        || lower.contains("base url is required")
+        || lower.contains("a model must be selected")
+        || lower.contains("finish_reason")
+    {
+        return false;
+    }
+    lower.contains("http 429")
+        || lower.contains("http 500")
+        || lower.contains("http 502")
+        || lower.contains("http 503")
+        || lower.contains("http 504")
+        || lower.contains("http 52")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("stalled")
+        || lower.contains("connection")
+        || lower.contains("network")
+        || lower.contains("reset by peer")
+        || lower.contains("broken pipe")
+        || lower.contains("stream failed")
+        || lower.contains("request failed")
+        || lower.contains("produced no content, reasoning, or tool calls")
+        || lower.contains("dns")
+        || lower.contains("eof")
+}
 
 async fn read_bounded_response(
     response: reqwest::Response,
@@ -237,8 +276,8 @@ async fn read_bounded_response(
     loop {
         let item = tokio::select! {
             _ = cancel.cancelled() => return Err("Provider response cancelled".into()),
-            result = tokio::time::timeout(PROVIDER_IDLE_TIMEOUT, stream.next()) => {
-                result.map_err(|_| "Provider response timed out while waiting for data".to_string())?
+            result = tokio::time::timeout(PROVIDER_STALE_TIMEOUT, stream.next()) => {
+                result.map_err(|_| "Provider response timed out after 60s waiting for data".to_string())?
             }
         };
         let Some(item) = item else { break };
@@ -293,7 +332,14 @@ where
         .map_err(|error| format!("Failed to build HTTP client: {error}"))?;
     let response = tokio::select! {
         _ = cancel.cancelled() => return Ok(StreamResult { cancelled: true, ..StreamResult::default() }),
-        result = client.post(&url).headers(request_headers(provider)?).json(&body).send() => result.map_err(|error| format!("Provider request failed: {error}"))?
+        result = tokio::time::timeout(
+            PROVIDER_STALE_TIMEOUT,
+            client.post(&url).headers(request_headers(provider)?).json(&body).send()
+        ) => match result {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(err)) => return Err(format!("Provider request failed: {err}")),
+            Err(_) => return Err("Provider response timed out after 60s waiting for initial response (TTFB)".to_string()),
+        }
     };
     let status = response.status();
     if !status.is_success() {
@@ -408,8 +454,8 @@ where
         loop {
             let next = tokio::select! {
                 _ = cancel.cancelled() => break,
-                item = tokio::time::timeout(PROVIDER_IDLE_TIMEOUT, stream.next()) => {
-                    item.map_err(|_| "Provider stream timed out after 120s without data".to_string())?
+                item = tokio::time::timeout(PROVIDER_STALE_TIMEOUT, stream.next()) => {
+                    item.map_err(|_| "Provider stream timed out after 60s without data".to_string())?
                 }
             };
             let Some(item) = next else { break };
@@ -1636,5 +1682,30 @@ mod tests {
         );
         assert_eq!(text, "network-answer");
         assert_eq!(reasoning, "network-think");
+    }
+
+    #[test]
+    fn retryable_provider_error_classification() {
+        // Retryable errors:
+        assert!(is_retryable_provider_error("Provider stream timed out after 60s without data"));
+        assert!(is_retryable_provider_error("Provider response timed out after 60s waiting for initial response (TTFB)"));
+        assert!(is_retryable_provider_error("Provider returned HTTP 500: Internal Server Error"));
+        assert!(is_retryable_provider_error("Provider returned HTTP 502: Bad Gateway"));
+        assert!(is_retryable_provider_error("Provider returned HTTP 503: Service Unavailable"));
+        assert!(is_retryable_provider_error("Provider returned HTTP 504: Gateway Timeout"));
+        assert!(is_retryable_provider_error("Provider returned HTTP 429: Rate limit exceeded"));
+        assert!(is_retryable_provider_error("Provider stream failed: connection reset by peer"));
+        assert!(is_retryable_provider_error("Provider request failed: error sending request"));
+        assert!(is_retryable_provider_error("Provider stream produced no content, reasoning, or tool calls before completing"));
+
+        // Non-retryable errors:
+        assert!(!is_retryable_provider_error("Provider returned HTTP 400: Bad Request"));
+        assert!(!is_retryable_provider_error("Provider returned HTTP 401: Invalid API Key"));
+        assert!(!is_retryable_provider_error("Provider returned HTTP 403: Forbidden"));
+        assert!(!is_retryable_provider_error("Provider returned HTTP 404: Not Found"));
+        assert!(!is_retryable_provider_error("Provider response cancelled"));
+        assert!(!is_retryable_provider_error("A model must be selected"));
+        assert!(!is_retryable_provider_error("Provider base URL is required"));
+        assert!(!is_retryable_provider_error("Provider stream ended with finish_reason 'length'"));
     }
 }

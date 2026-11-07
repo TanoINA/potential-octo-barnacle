@@ -79,6 +79,11 @@ export interface ChatMessage {
   selfImprovement?: SelfImprovementEvent;
   preamble?: string;
   segments?: MessageSegment[];
+  notice?: {
+    message: string;
+    attempt?: number;
+    maxAttempts?: number;
+  } | null;
 }
 
 export interface Artifact {
@@ -243,6 +248,13 @@ export interface BackgroundTask {
   recentOutput: string;
 }
 
+export interface NoticeEventData extends EventScope {
+  message: string;
+  attempt?: number;
+  maxAttempts?: number;
+  resetPartial?: boolean;
+}
+
 export type AgentEvent =
   | { type: 'chunk'; data: EventScope & { text: string } }
   | { type: 'reasoning'; data: EventScope & { text: string } }
@@ -254,7 +266,8 @@ export type AgentEvent =
   | { type: 'subagent_update'; data: EventScope & { subagent: SubagentProgress } }
   | { type: 'skill_activated'; data: EventScope & { skill: SkillInfo } }
   | { type: 'council_chunk'; data: EventScope & { candidate: 'A' | 'B'; kind: 'content' | 'reasoning'; text: string } }
-  | { type: 'council_done'; data: EventScope & { candidate: 'A' | 'B'; durationMs: number } };
+  | { type: 'council_done'; data: EventScope & { candidate: 'A' | 'B'; durationMs: number } }
+  | { type: 'notice'; data: NoticeEventData };
 
 export interface EffectiveRunConfig {
   provider: ProviderConfig;
