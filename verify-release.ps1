@@ -42,3 +42,16 @@ $Item = Get-Item -LiteralPath $Target
 Write-Host "==> Verified $Target" -ForegroundColor Green
 Write-Host "    Size:   $($Item.Length) bytes"
 Write-Host "    SHA256: $TargetHash"
+
+if (-not $SkipBundle) {
+  $SetupSource = Join-Path $Root 'src-tauri/target/release/bundle/nsis/AetherAgent_0.2.0_x64-setup.exe'
+  $SetupTarget = Join-Path $Root 'AetherAgent-Setup.exe'
+  if (Test-Path $SetupSource -PathType Leaf) {
+    Copy-Item -LiteralPath $SetupSource -Destination $SetupTarget -Force
+    $SetupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SetupTarget).Hash
+    $SetupItem = Get-Item -LiteralPath $SetupTarget
+    Write-Host "==> Verified $SetupTarget" -ForegroundColor Green
+    Write-Host "    Size:   $($SetupItem.Length) bytes"
+    Write-Host "    SHA256: $SetupHash"
+  }
+}
