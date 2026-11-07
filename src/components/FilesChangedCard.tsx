@@ -65,6 +65,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
       invoke<GitStatusResult>('git_status').then(setGitStatus).catch(() => {});
     } catch (err) {
       console.error('Failed to revert file', err);
+      setCommitResult({ success: false, message: `Revert failed: ${String(err)}` });
       setFileActions((prev) => {
         const next = { ...prev };
         delete next[filePath];
@@ -81,6 +82,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
       invoke<GitStatusResult>('git_status').then(setGitStatus).catch(() => {});
     } catch (err) {
       console.error('Failed to stage file', err);
+      setCommitResult({ success: false, message: `Stage failed: ${String(err)}` });
       setFileActions((prev) => {
         const next = { ...prev };
         delete next[filePath];
@@ -224,6 +226,8 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
           return (
             <div
               key={stat.path}
+              data-file-link="true"
+              data-file-path={stat.path}
               className="flex items-center justify-between px-3 py-2 text-xs hover:bg-[#161b22]/40 rounded-lg transition-colors group"
             >
               <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">

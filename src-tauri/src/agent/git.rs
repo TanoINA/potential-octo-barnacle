@@ -186,11 +186,17 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
     if cwd.trim().is_empty() || !Path::new(cwd).is_dir() {
         return Err("Invalid or missing workspace directory".to_string());
     }
-    let full_path = Path::new(cwd).join(file_path);
+    let p = Path::new(file_path);
+    let rel_str = if let Ok(stripped) = p.strip_prefix(cwd) {
+        stripped.to_string_lossy().replace('\\', "/")
+    } else {
+        file_path.trim_start_matches(['\\', '/']).replace('\\', "/")
+    };
+    let full_path = Path::new(cwd).join(&rel_str);
 
     // Check status of this file
     let status_out = super::create_hidden_command("git")
-        .args(["status", "--porcelain", "--", file_path])
+        .args(["status", "--porcelain", "--", &rel_str])
         .current_dir(cwd)
         .output()
         .await;
@@ -202,14 +208,14 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
             if full_path.is_file() {
                 std::fs::remove_file(&full_path)
                     .map_err(|e| format!("Failed to remove untracked file: {e}"))?;
-                return Ok(format!("Removed untracked file {}", file_path));
+                return Ok(format!("Removed untracked file {}", rel_str));
             }
         }
     }
 
     // Attempt git checkout
     let checkout_out = super::create_hidden_command("git")
-        .args(["checkout", "--", file_path])
+        .args(["checkout", "--", &rel_str])
         .current_dir(cwd)
         .output()
         .await
@@ -218,7 +224,7 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
     if !checkout_out.status.success() {
         // Fallback to git restore
         let restore_out = super::create_hidden_command("git")
-            .args(["restore", "--", file_path])
+            .args(["restore", "--", &rel_str])
             .current_dir(cwd)
             .output()
             .await
@@ -226,11 +232,11 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
 
         if !restore_out.status.success() {
             let err = String::from_utf8_lossy(&restore_out.stderr);
-            return Err(format!("Could not revert {}: {}", file_path, err.trim()));
+            return Err(format!("Could not revert {}: {}", rel_str, err.trim()));
         }
     }
 
-    Ok(format!("Reverted changes in {}", file_path))
+    Ok(format!("Reverted changes in {}", rel_str))
 }
 
 /// Stages a specific file (git add).
@@ -238,9 +244,15 @@ pub async fn git_stage_file(cwd: &str, file_path: &str) -> Result<String, String
     if cwd.trim().is_empty() || !Path::new(cwd).is_dir() {
         return Err("Invalid or missing workspace directory".to_string());
     }
+    let p = Path::new(file_path);
+    let rel_str = if let Ok(stripped) = p.strip_prefix(cwd) {
+        stripped.to_string_lossy().replace('\\', "/")
+    } else {
+        file_path.trim_start_matches(['\\', '/']).replace('\\', "/")
+    };
 
     let add_out = super::create_hidden_command("git")
-        .args(["add", "--", file_path])
+        .args(["add", "--", &rel_str])
         .current_dir(cwd)
         .output()
         .await
@@ -248,10 +260,10 @@ pub async fn git_stage_file(cwd: &str, file_path: &str) -> Result<String, String
 
     if !add_out.status.success() {
         let err = String::from_utf8_lossy(&add_out.stderr);
-        return Err(format!("Could not stage {}: {}", file_path, err.trim()));
+        return Err(format!("Could not stage {}: {}", rel_str, err.trim()));
     }
 
-    Ok(format!("Staged {}", file_path))
+    Ok(format!("Staged {}", rel_str))
 }
 
 #[cfg(test)]

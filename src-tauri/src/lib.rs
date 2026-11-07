@@ -574,24 +574,30 @@ pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::Path
     let decoded = decoded;
 
     let p = std::path::PathBuf::from(&decoded);
-    if p.is_absolute() && p.exists() {
-        p
-    } else if !workspace_cwd.trim().is_empty() {
-        let candidate = std::path::Path::new(workspace_cwd).join(&p);
-        if candidate.exists() {
-            candidate
+    #[cfg(target_os = "windows")]
+    {
+        if p.is_absolute() {
+            p
+        } else if !workspace_cwd.trim().is_empty() {
+            let win_cwd = workspace_cwd.replace('/', "\\");
+            std::path::Path::new(&win_cwd).join(&p)
+        } else if let Ok(current_dir) = std::env::current_dir() {
+            current_dir.join(&p)
         } else {
             p
         }
-    } else if let Ok(current_dir) = std::env::current_dir() {
-        let candidate = current_dir.join(&p);
-        if candidate.exists() {
-            candidate
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if p.is_absolute() {
+            p
+        } else if !workspace_cwd.trim().is_empty() {
+            std::path::Path::new(workspace_cwd).join(&p)
+        } else if let Ok(current_dir) = std::env::current_dir() {
+            current_dir.join(&p)
         } else {
             p
         }
-    } else {
-        p
     }
 }
 
@@ -669,22 +675,36 @@ async fn reveal_in_explorer(state: State<'_, AppState>, path: String) -> Result<
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         let win_path = resolved.to_string_lossy().replace('/', "\\");
         let mut cmd = std::process::Command::new("explorer");
         if resolved.is_dir() {
             cmd.arg(&win_path);
+            cmd.current_dir(&resolved);
         } else if resolved.exists() {
-            cmd.raw_arg(format!("/select,\"{}\"", win_path));
+            cmd.arg(format!("/select,{}", win_path));
+            if let Some(parent) = resolved.parent() {
+                if parent.exists() {
+                    cmd.current_dir(parent);
+                }
+            }
         } else if let Some(parent) = resolved.parent() {
             let parent_path = parent.to_string_lossy().replace('/', "\\");
             if parent.exists() {
                 cmd.arg(&parent_path);
+                cmd.current_dir(parent);
+            } else if !cwd.trim().is_empty() && std::path::Path::new(&cwd).exists() {
+                let win_cwd = cwd.replace('/', "\\");
+                cmd.arg(&win_cwd);
+                cmd.current_dir(&cwd);
             } else {
-                cmd.raw_arg(format!("/select,\"{}\"", win_path));
+                cmd.arg(format!("/select,{}", win_path));
             }
+        } else if !cwd.trim().is_empty() && std::path::Path::new(&cwd).exists() {
+            let win_cwd = cwd.replace('/', "\\");
+            cmd.arg(&win_cwd);
+            cmd.current_dir(&cwd);
         } else {
-            cmd.raw_arg(format!("/select,\"{}\"", win_path));
+            cmd.arg(format!("/select,{}", win_path));
         }
         cmd.spawn()
             .map_err(|e| format!("Failed to reveal in explorer: {e}"))?;
@@ -736,9 +756,25 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     };
 
+    let valid_dir = if target_dir.exists() && target_dir.is_dir() {
+        target_dir
+    } else if let Some(parent) = target_dir.parent() {
+        if parent.exists() && parent.is_dir() {
+            parent.to_path_buf()
+        } else if !cwd.is_empty() && std::path::Path::new(&cwd).exists() {
+            std::path::PathBuf::from(&cwd)
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        }
+    } else if !cwd.is_empty() && std::path::Path::new(&cwd).exists() {
+        std::path::PathBuf::from(&cwd)
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    };
+
     #[cfg(target_os = "windows")]
     {
-        let dir_str = target_dir.to_string_lossy().replace('/', "\\");
+        let dir_str = valid_dir.to_string_lossy().replace('/', "\\");
         std::process::Command::new("cmd")
             .args(["/C", "start", "powershell", "-NoExit", "-Command", &format!("Set-Location -LiteralPath '{}'", dir_str.replace('\'', "''"))])
             .spawn()
@@ -890,6 +926,9 @@ mod tests {
 
             let resolved4 = resolve_open_target("file:///D:/folder with space/doc.docx", "");
             assert_eq!(resolved4.to_string_lossy(), "D:\\folder with space\\doc.docx");
+
+            let resolved5 = resolve_open_target("clutter/script.py", "D:/UNIKOM/Pemrograman");
+            assert_eq!(resolved5.to_string_lossy(), "D:\\UNIKOM\\Pemrograman\\clutter\\script.py");
         }
     }
 }

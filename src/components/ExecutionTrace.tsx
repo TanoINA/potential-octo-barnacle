@@ -62,6 +62,7 @@ function getToolDisplayInfo(tool: ToolCallItem): {
   command?: string;
   output?: string;
   isRunning: boolean;
+  filePath?: string;
 } {
   const name = tool.name;
   const isRunning = tool.status === 'running' || tool.status === 'pending';
@@ -127,13 +128,14 @@ function getToolDisplayInfo(tool: ToolCallItem): {
   }
 
   if (name === 'read_file') {
-    const rawPath = extractArg(tool, 'path') || extractArg(tool, 'filePath') || 'file';
+    const rawPath = extractArg(tool, 'Path') || extractArg(tool, 'path') || extractArg(tool, 'filePath') || '';
     const filename = rawPath.replace(/.*[/\\]/, '') || 'file';
     return {
       icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <FileText size={13} className="text-[#8b949e] shrink-0" />,
       label: isRunning ? `Reading ${filename}...` : `Read ${filename}`,
       isTerminal: false,
       isRunning,
+      filePath: rawPath || undefined,
     };
   }
 
@@ -148,17 +150,18 @@ function getToolDisplayInfo(tool: ToolCallItem): {
   }
 
   if (name === 'list_directory') {
-    const path = extractArg(tool, 'path') || '.';
+    const path = extractArg(tool, 'Path') || extractArg(tool, 'path') || '.';
     return {
       icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <FileCode2 size={13} className="text-[#8b949e] shrink-0" />,
       label: isRunning ? `Exploring directory "${path}"...` : `Explored directory "${path}"`,
       isTerminal: false,
       isRunning,
+      filePath: path !== '.' ? path : undefined,
     };
   }
 
   if (name === 'edit_file' || name === 'write_file') {
-    const rawPath = extractArg(tool, 'path') || 'file';
+    const rawPath = extractArg(tool, 'Path') || extractArg(tool, 'path') || extractArg(tool, 'filePath') || '';
     const filename = rawPath.replace(/.*[/\\]/, '') || 'file';
     const action = name === 'edit_file' ? 'Edit' : 'Write';
     return {
@@ -166,6 +169,7 @@ function getToolDisplayInfo(tool: ToolCallItem): {
       label: isRunning ? `${action}ing ${filename}...` : `${name === 'edit_file' ? 'Edited' : 'Wrote'} ${filename}`,
       isTerminal: false,
       isRunning,
+      filePath: rawPath || undefined,
     };
   }
 
@@ -342,6 +346,11 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
             return (
               <div key={tool.id} className="group">
                 <div
+                  data-file-link={info.filePath ? 'true' : undefined}
+                  data-file-path={info.filePath}
+                  data-code-block={info.command ? 'true' : undefined}
+                  data-code-content={info.command ? encodeURIComponent(info.command) : undefined}
+                  data-code-lang={info.command ? 'powershell' : undefined}
                   onClick={() => {
                     if (info.isTerminal) {
                       toggleTerminal(tool.id);
