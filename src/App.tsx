@@ -3,6 +3,7 @@ import { AlertCircle, X } from 'lucide-react';
 import { ArtifactPane } from './components/ArtifactPane';
 import { ArtifactsLibraryModal } from './components/ArtifactsLibraryModal';
 import { ChatCanvas } from './components/ChatCanvas';
+import { ContextMenu } from './components/ContextMenu';
 import { InteractiveTerminal } from './components/InteractiveTerminal';
 import { MemoryModal } from './components/MemoryModal';
 import { ModelPicker } from './components/ModelPicker';
@@ -273,6 +274,21 @@ export function App() {
           Loading local state…
         </div>
       )}
+
+      <ContextMenu
+        workspaceCwd={agent.workspaceCwd}
+        currentSessionId={agent.currentSessionId}
+        onNewSession={agent.newSession}
+        onOpenSettings={openSettings}
+        onOpenModelPicker={openModelPicker}
+        onToggleSidebar={toggleSidebar}
+        onExportSession={(format) => { void agent.exportSession(agent.currentSessionId, format); }}
+        messages={agent.messages}
+        onRetryTurn={agent.retryTurn}
+        onEditAndResendMessage={agent.editAndResendMessage}
+        onRollbackToMessage={agent.rollbackToMessage}
+        onRefreshGitStatus={agent.refreshGitStatus}
+      />
     </div>
   );
 }

@@ -85,6 +85,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
               <a
                 href={href}
                 onClick={handleClick}
+                data-file-link="true"
+                data-file-path={href}
                 className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
                 title={isWeb ? `Open web link: ${href ?? ''}` : `Open file: ${href ?? ''}`}
               >
@@ -189,7 +191,12 @@ function CodeBlock({ codeText, className }: { codeText: string; className?: stri
   };
 
   return (
-    <div className="relative my-3 rounded-xl bg-[#0d1117] border border-[#30363d] overflow-hidden group shadow-sm">
+    <div
+      data-code-block="true"
+      data-code-lang={lang}
+      data-code-content={encodeURIComponent(codeText)}
+      className="relative my-3 rounded-xl bg-[#0d1117] border border-[#30363d] overflow-hidden group shadow-sm"
+    >
       <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#161b22] border-b border-[#30363d] text-[11px] text-[#8b949e] font-mono">
         <span>{lang || 'code'}</span>
         <button

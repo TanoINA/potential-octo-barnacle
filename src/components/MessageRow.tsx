@@ -96,7 +96,11 @@ export const MessageRow = memo(function MessageRow({
   }
 
   return (
-    <div className={`group mx-auto flex w-full max-w-3xl flex-col pb-5 ${isUser ? 'items-end' : 'items-start'}`}>
+    <div
+      data-message-id={message.id}
+      data-message-role={message.role}
+      className={`group mx-auto flex w-full max-w-3xl flex-col pb-5 ${isUser ? 'items-end' : 'items-start'}`}
+    >
       <div className="mb-1.5 flex items-center gap-2 px-1">
         <span className={`text-[11px] font-medium ${isUser ? 'text-[#58a6ff]' : 'text-[#8b949e]'}`}>
           {isUser ? 'You' : 'AetherAgent'}

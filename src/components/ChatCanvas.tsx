@@ -364,6 +364,44 @@ export function ChatCanvas({
     });
   }, [queuedPrompts]);
 
+  useEffect(() => {
+    const handleInsertPrompt = (e: Event) => {
+      const customEvent = e as CustomEvent<{ text: string; autoSend?: boolean }>;
+      if (!customEvent.detail?.text) return;
+      const { text, autoSend } = customEvent.detail;
+      if (autoSend && !isStreaming && !isReviewing) {
+        void onSendMessage(text);
+      } else {
+        setInput((prev) => (prev ? `${prev}\n\n${text}` : text));
+        requestAnimationFrame(() => {
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+            const len = textareaRef.current.value.length;
+            textareaRef.current.setSelectionRange(len, len);
+          }
+        });
+      }
+    };
+
+    const handleClearComposer = () => {
+      setInput('');
+      setAttachedContexts([]);
+    };
+
+    const handleFocusComposer = () => {
+      textareaRef.current?.focus();
+    };
+
+    window.addEventListener('aether:insert-prompt', handleInsertPrompt);
+    window.addEventListener('aether:clear-composer', handleClearComposer);
+    window.addEventListener('aether:focus-composer', handleFocusComposer);
+    return () => {
+      window.removeEventListener('aether:insert-prompt', handleInsertPrompt);
+      window.removeEventListener('aether:clear-composer', handleClearComposer);
+      window.removeEventListener('aether:focus-composer', handleFocusComposer);
+    };
+  }, [isStreaming, isReviewing, onSendMessage]);
+
   const handleRemoveQueued = useCallback((id: string) => {
     setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
   }, []);

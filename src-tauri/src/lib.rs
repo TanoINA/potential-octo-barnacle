@@ -649,6 +649,112 @@ async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Re
 }
 
 #[tauri::command]
+async fn reveal_in_explorer(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let target = path.trim();
+    if target.is_empty() {
+        return Ok(());
+    }
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    let resolved = resolve_open_target(target, &cwd);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let win_path = resolved.to_string_lossy().replace('/', "\\");
+        let mut cmd = std::process::Command::new("explorer");
+        cmd.creation_flags(0x08000000);
+        if resolved.is_dir() {
+            cmd.arg(&win_path);
+        } else {
+            cmd.arg(format!("/select,{}", win_path));
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to reveal in explorer: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &resolved.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in finder: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let parent = resolved.parent().unwrap_or(&resolved);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    let target_dir = if let Some(p) = path {
+        let p_trimmed = p.trim();
+        if !p_trimmed.is_empty() {
+            let resolved = resolve_open_target(p_trimmed, &cwd);
+            if resolved.is_dir() {
+                resolved
+            } else {
+                resolved.parent().unwrap_or(&resolved).to_path_buf()
+            }
+        } else if !cwd.is_empty() {
+            std::path::PathBuf::from(&cwd)
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        }
+    } else if !cwd.is_empty() {
+        std::path::PathBuf::from(&cwd)
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let dir_str = target_dir.to_string_lossy().replace('/', "\\");
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "powershell", "-NoExit", "-Command", &format!("Set-Location -LiteralPath '{}'", dir_str.replace('\'', "''"))])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Terminal", &target_dir.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("x-terminal-emulator")
+            .current_dir(&target_dir)
+            .spawn()
+            .or_else(|_| {
+                std::process::Command::new("terminal")
+                    .current_dir(&target_dir)
+                    .spawn()
+            })
+            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn list_background_tasks() -> Result<Vec<agent::tasks::TaskInfo>, String> {
     Ok(agent::tasks::get_task_manager().list_tasks().await)
 }
@@ -734,6 +840,8 @@ pub fn run() {
             inspect_paths,
             save_pasted_attachment,
             open_path_or_url,
+            reveal_in_explorer,
+            open_terminal,
             list_background_tasks,
             kill_background_task,
             get_background_task_output
