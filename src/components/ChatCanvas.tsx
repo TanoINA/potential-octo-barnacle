@@ -386,6 +386,9 @@ export function ChatCanvas({
     const handleClearComposer = () => {
       setInput('');
       setAttachedContexts([]);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
     };
 
     const handleFocusComposer = () => {
@@ -580,7 +583,7 @@ export function ChatCanvas({
         if (!filename || filename === 'image.png' || filename === 'blob') {
           const ext = file.type.includes('jpeg') ? 'jpg' : file.type.includes('webp') ? 'webp' : 'png';
           const now = new Date();
-          const dateStr = now.toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+          const dateStr = now.toISOString().replace(/[^0-9]/g, '').slice(0, 14);
           filename = `pasted_image_${dateStr}.${ext}`;
         }
 
@@ -1177,6 +1180,7 @@ export function ChatCanvas({
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
+      if (event.nativeEvent.isComposing) return;
       event.preventDefault();
       if (slashOpen && slashMatches[activeIndex]) {
         handleSelectSlashItem(slashMatches[activeIndex]);

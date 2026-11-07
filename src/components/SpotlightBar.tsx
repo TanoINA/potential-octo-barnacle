@@ -44,6 +44,7 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
+      if (e.nativeEvent.isComposing) return;
       e.preventDefault();
       if ((query || '').trim()) {
         void handleSubmit(query);

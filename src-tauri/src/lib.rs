@@ -670,7 +670,7 @@ async fn reveal_in_explorer(state: State<'_, AppState>, path: String) -> Result<
         if resolved.is_dir() {
             cmd.arg(&win_path);
         } else {
-            cmd.arg(format!("/select,{}", win_path));
+            cmd.arg(format!("/select,\"{}\"", win_path));
         }
         cmd.spawn()
             .map_err(|e| format!("Failed to reveal in explorer: {e}"))?;

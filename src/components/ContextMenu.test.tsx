@@ -267,4 +267,58 @@ describe('ContextMenu Component', () => {
 
     expect(handleRetry).toHaveBeenCalledWith('msg-2');
   });
+
+  it('supports full keyboard navigation with ArrowDown and Enter to select an item', () => {
+    const handleNewSession = vi.fn();
+    render(
+      <div>
+        <div data-testid="canvas">Canvas</div>
+        <ContextMenu onNewSession={handleNewSession} />
+      </div>,
+    );
+
+    const canvas = screen.getByTestId('canvas');
+    fireEvent.contextMenu(canvas, { clientX: 100, clientY: 100 });
+    expect(screen.getByTestId('aether-context-menu')).toBeTruthy();
+
+    // First item in canvas menu is "New Chat"
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: 'Enter' });
+
+    expect(handleNewSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('aether-context-menu')).toBeNull();
+  });
+
+  it('prioritizes clicked target when right-clicking outside of highlighted text selection', () => {
+    // Mock selection that does not intersect target
+    const mockRange = {
+      intersectsNode: vi.fn().mockReturnValue(false),
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      toString: () => 'some old highlighted text',
+      rangeCount: 1,
+      getRangeAt: () => mockRange as unknown as Range,
+    } as unknown as Selection);
+
+    render(
+      <div>
+        <a
+          data-testid="file-anchor"
+          data-file-link="true"
+          data-file-path="D:/project/README.md"
+          href="file:///D:/project/README.md"
+        >
+          README.md
+        </a>
+        <ContextMenu />
+      </div>,
+    );
+
+    const anchor = screen.getByTestId('file-anchor');
+    fireEvent.contextMenu(anchor, { clientX: 100, clientY: 100 });
+
+    // Should open File / Artifact menu, NOT Selection menu
+    expect(screen.getByText('File / Artifact')).toBeTruthy();
+    expect(screen.queryByText('Selection')).toBeNull();
+  });
 });

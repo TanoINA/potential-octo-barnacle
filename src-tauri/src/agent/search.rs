@@ -175,7 +175,7 @@ pub(crate) fn search_query_with(
             if clean.is_empty() {
                 String::new()
             } else {
-                format!("\"{}*\"", clean)
+                format!("\"{}\"*", clean)
             }
         })
         .filter(|w| !w.is_empty())
@@ -444,5 +444,24 @@ mod tests {
         assert_eq!(busy_result.match_count, 150);
         let rare_result = results.iter().find(|r| r.session_id == "rare").unwrap();
         assert_eq!(rare_result.match_count, 1);
+    }
+
+    #[test]
+    fn search_query_supports_prefix_wildcard_matching() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let s1 = sample_session("s1", "Factorial Algorithm", "Computing factorial recursion");
+        index_session_into(&mut conn, &s1).unwrap();
+
+        // Search using partial prefix "fact"
+        let results = search_query_with(&conn, "fact", 10).unwrap();
+        assert_eq!(results.len(), 1, "prefix query 'fact' must match 'factorial'");
+        assert_eq!(results[0].session_id, "s1");
+
+        // Search using full word "factorial"
+        let results_full = search_query_with(&conn, "factorial", 10).unwrap();
+        assert_eq!(results_full.len(), 1, "full query 'factorial' must match");
+        assert_eq!(results_full[0].session_id, "s1");
     }
 }

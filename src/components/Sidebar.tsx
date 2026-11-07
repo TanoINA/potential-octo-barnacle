@@ -196,6 +196,7 @@ export const Sidebar = memo(function Sidebar({
               value={renameValue}
               onChange={(event) => setRenameValue(event.target.value)}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
                 if (event.key === 'Enter') commitRename(session.id);
                 if (event.key === 'Escape') setRenamingId(null);
               }}
@@ -469,6 +470,7 @@ export const Sidebar = memo(function Sidebar({
                           placeholder="Commit message…"
                           className="w-full rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[11px] text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-[#58a6ff]"
                           onKeyDown={(e) => {
+                            if (e.nativeEvent.isComposing) return;
                             if (e.key === 'Enter' && (commitMsg || '').trim() && !isCommitting) {
                               void handleCommit();
                             }

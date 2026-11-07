@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Bug,
@@ -85,6 +85,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const [activeSubmenuId, setActiveSubmenuId] = useState<string | null>(null);
   const [submenuPos, setSubmenuPos] = useState<{ x: number; y: number } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number>(-1);
+  const [focusedSubIndex, setFocusedSubIndex] = useState<number>(-1);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
@@ -125,6 +127,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     setMenu(null);
     setActiveSubmenuId(null);
     setSubmenuPos(null);
+    setFocusedIndex(-1);
+    setFocusedSubIndex(-1);
   }, []);
 
   // Listen to global right-click
@@ -135,7 +139,32 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       const target = e.target as HTMLElement | null;
       if (!target) return;
 
-      const selection = window.getSelection()?.toString().trim() ?? '';
+      let selection = '';
+      const sel = window.getSelection();
+      if (sel) {
+        const text = sel.toString().trim();
+        if (text) {
+          if (typeof sel.getRangeAt === 'function' && sel.rangeCount > 0) {
+            try {
+              const range = sel.getRangeAt(0);
+              if (typeof range.intersectsNode === 'function') {
+                if (range.intersectsNode(target)) {
+                  selection = text;
+                }
+              } else if (sel.anchorNode && (target.contains(sel.anchorNode) || target === sel.anchorNode)) {
+                selection = text;
+              } else {
+                selection = text;
+              }
+            } catch {
+              selection = text;
+            }
+          } else {
+            selection = text;
+          }
+        }
+      }
+
       const isInput =
         target.tagName === 'INPUT' ||
         target.tagName === 'TEXTAREA' ||
@@ -712,6 +741,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       });
       setActiveSubmenuId(null);
       setSubmenuPos(null);
+      setFocusedIndex(-1);
+      setFocusedSubIndex(-1);
     };
 
     window.addEventListener('contextmenu', handleContextMenu);
@@ -734,7 +765,21 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     closeMenu,
   ]);
 
-  // Close on outside click, window blur, or scroll
+  const flatItems = useMemo(() => {
+    if (!menu) return [];
+    return menu.sections.flatMap((s) => s.items).filter((it) => !it.disabled);
+  }, [menu]);
+
+  const activeSubmenuItem = menu?.sections
+    .flatMap((s) => s.items)
+    .find((it) => it.id === activeSubmenuId);
+
+  const flatSubItems = useMemo(() => {
+    if (!activeSubmenuItem?.submenu) return [];
+    return activeSubmenuItem.submenu.filter((it) => !it.disabled);
+  }, [activeSubmenuItem]);
+
+  // Close on outside click, window blur, or scroll, and handle keyboard navigation
   useEffect(() => {
     if (!menu) return;
 
@@ -750,7 +795,101 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        closeMenu();
+        e.preventDefault();
+        if (activeSubmenuId) {
+          setActiveSubmenuId(null);
+          setSubmenuPos(null);
+          setFocusedSubIndex(-1);
+        } else {
+          closeMenu();
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (activeSubmenuId && flatSubItems.length > 0) {
+          setFocusedSubIndex((prev) => (prev + 1) % flatSubItems.length);
+        } else if (flatItems.length > 0) {
+          setFocusedIndex((prev) => (prev + 1) % flatItems.length);
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (activeSubmenuId && flatSubItems.length > 0) {
+          setFocusedSubIndex((prev) => (prev - 1 + flatSubItems.length) % flatSubItems.length);
+        } else if (flatItems.length > 0) {
+          setFocusedIndex((prev) => (prev - 1 + flatItems.length) % flatItems.length);
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        if (!activeSubmenuId && focusedIndex >= 0 && flatItems[focusedIndex]?.submenu?.length) {
+          e.preventDefault();
+          const item = flatItems[focusedIndex];
+          const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+          const btn = buttons ? buttons[focusedIndex] : null;
+          if (btn) {
+            const rect = btn.getBoundingClientRect();
+            const submenuWidth = 230;
+            let x = rect.right + 4;
+            if (x + submenuWidth > window.innerWidth - 8) {
+              x = rect.left - submenuWidth - 4;
+            }
+            let y = rect.top;
+            if (y + 240 > window.innerHeight - 8) {
+              y = Math.max(8, window.innerHeight - 250);
+            }
+            setActiveSubmenuId(item.id);
+            setSubmenuPos({ x, y });
+            setFocusedSubIndex(0);
+          } else {
+            setActiveSubmenuId(item.id);
+            setSubmenuPos({ x: (menu?.x ?? 0) + 200, y: menu?.y ?? 0 });
+            setFocusedSubIndex(0);
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        if (activeSubmenuId) {
+          e.preventDefault();
+          setActiveSubmenuId(null);
+          setSubmenuPos(null);
+          setFocusedSubIndex(-1);
+        }
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeSubmenuId && focusedSubIndex >= 0 && flatSubItems[focusedSubIndex]) {
+          const sub = flatSubItems[focusedSubIndex];
+          if (sub.action) {
+            void sub.action();
+          }
+        } else if (focusedIndex >= 0 && flatItems[focusedIndex]) {
+          const item = flatItems[focusedIndex];
+          if (item.submenu && item.submenu.length > 0) {
+            setActiveSubmenuId(item.id);
+            const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+            const btn = buttons ? buttons[focusedIndex] : null;
+            if (btn) {
+              const rect = btn.getBoundingClientRect();
+              setSubmenuPos({ x: rect.right + 4, y: rect.top });
+            } else {
+              setSubmenuPos({ x: (menu?.x ?? 0) + 200, y: menu?.y ?? 0 });
+            }
+            setFocusedSubIndex(0);
+          } else if (item.action) {
+            void item.action();
+          }
+        }
+        return;
       }
     };
 
@@ -769,7 +908,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('blur', closeMenu);
     };
-  }, [menu, closeMenu]);
+  }, [menu, closeMenu, activeSubmenuId, flatItems, flatSubItems, focusedIndex, focusedSubIndex]);
 
   // Adjust menu position after layout render
   useLayoutEffect(() => {
@@ -814,10 +953,6 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
   if (!menu) return null;
 
-  const activeSubmenuItem = menu.sections
-    .flatMap((s) => s.items)
-    .find((it) => it.id === activeSubmenuId);
-
   return (
     <>
       <div
@@ -839,6 +974,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 const isCopied = copiedId === item.id;
                 const hasSubmenu = Boolean(item.submenu && item.submenu.length > 0);
                 const isActiveSub = activeSubmenuId === item.id;
+                const isFocused = !activeSubmenuId && flatItems[focusedIndex]?.id === item.id;
 
                 return (
                   <button
@@ -850,13 +986,18 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                         void item.action();
                       }
                     }}
-                    onMouseEnter={(e) => handleItemHover(item, e)}
+                    onMouseEnter={(e) => {
+                      setFocusedIndex(flatItems.findIndex((it) => it.id === item.id));
+                      handleItemHover(item, e);
+                    }}
                     className={`group flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                       item.disabled
                         ? 'cursor-not-allowed opacity-40'
                         : item.danger
-                        ? 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
-                        : isActiveSub
+                        ? isFocused
+                          ? 'bg-[#b62324]/30 text-[#ff7b72]'
+                          : 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
+                        : isActiveSub || isFocused
                         ? 'bg-[#21262d] text-white'
                         : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-white'
                     }`}
@@ -899,22 +1040,32 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             {activeSubmenuItem.label}
           </div>
           <div className="space-y-0.5">
-            {activeSubmenuItem.submenu.map((sub) => (
-              <button
-                key={sub.id}
-                type="button"
-                disabled={sub.disabled}
-                onClick={() => {
-                  if (sub.action) void sub.action();
-                }}
-                className={`group flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  sub.disabled
-                    ? 'cursor-not-allowed opacity-40'
-                    : sub.danger
-                    ? 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
-                    : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-white'
-                }`}
-              >
+            {activeSubmenuItem.submenu.map((sub) => {
+              const isSubFocused = flatSubItems[focusedSubIndex]?.id === sub.id;
+
+              return (
+                <button
+                  key={sub.id}
+                  type="button"
+                  disabled={sub.disabled}
+                  onClick={() => {
+                    if (sub.action) void sub.action();
+                  }}
+                  onMouseEnter={() =>
+                    setFocusedSubIndex(flatSubItems.findIndex((it) => it.id === sub.id))
+                  }
+                  className={`group flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                    sub.disabled
+                      ? 'cursor-not-allowed opacity-40'
+                      : sub.danger
+                      ? isSubFocused
+                        ? 'bg-[#b62324]/30 text-[#ff7b72]'
+                        : 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
+                      : isSubFocused
+                      ? 'bg-[#21262d] text-white'
+                      : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-white'
+                  }`}
+                >
                 <div className="flex items-center gap-2 min-w-0">
                   {sub.icon && <span className="shrink-0">{sub.icon}</span>}
                   <span className="truncate">{sub.label}</span>
@@ -925,7 +1076,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                   </kbd>
                 )}
               </button>
-            ))}
+            );
+          })}
           </div>
         </div>
       )}
