@@ -231,9 +231,16 @@ pub async fn list_sessions() -> Vec<Session> {
         (true, true) => {
             let a_pin = a.pinned_at.unwrap_or(a.updated_at);
             let b_pin = b.pinned_at.unwrap_or(b.updated_at);
-            b_pin.cmp(&a_pin)
+            b_pin
+                .cmp(&a_pin)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.id.cmp(&b.id))
         }
-        (false, false) => b.updated_at.cmp(&a.updated_at),
+        (false, false) => b
+            .updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.id.cmp(&b.id)),
     });
     sessions
 }
@@ -420,18 +427,47 @@ async fn save_session_unlocked_with_pin_policy(
 ) -> Result<(), String> {
     let path = session_path(&data.session.id)?;
     let now = chrono::Utc::now().timestamp_millis();
+    let mut is_substantive_change = true;
     if let Ok(previous) = load_session_unlocked(&data.session.id).await {
         data.session.created_at = previous.session.created_at;
         merge_pin_state(&mut data.session, &previous.session, pin_is_authoritative);
         merge_self_improvements(&mut data, &previous);
+
+        // Preserve previous updated_at if session content is unmodified,
+        // preventing sidebar jump/swap on simple navigation or read.
+        if previous.session.updated_at > 0
+            && data.session.title == previous.session.title
+            && data.session.workspace_cwd == previous.session.workspace_cwd
+            && data.session.pinned == previous.session.pinned
+            && data.messages.len() == previous.messages.len()
+            && data.artifacts.len() == previous.artifacts.len()
+            && data
+                .messages
+                .last()
+                .map(|m| (&m.id, &m.content, &m.run_id, &m.run_status))
+                == previous
+                    .messages
+                    .last()
+                    .map(|m| (&m.id, &m.content, &m.run_id, &m.run_status))
+        {
+            is_substantive_change = false;
+            data.session.updated_at = previous.session.updated_at;
+        }
     }
     if data.session.created_at <= 0 {
         data.session.created_at = now;
     }
-    data.session.updated_at = now;
+    if is_substantive_change {
+        data.session.updated_at = now;
+    }
     data.session.message_count = data.messages.len();
     data.session.title = bounded_title(&data.session.title);
     data.session.preview = session_preview(&data.messages);
+    #[cfg(target_os = "windows")]
+    if let Some(cwd) = &data.session.workspace_cwd {
+        let clean = cwd.strip_prefix(r"\\?\").unwrap_or(cwd).to_string();
+        data.session.workspace_cwd = Some(clean);
+    }
     let content = serde_json::to_vec_pretty(&data).map_err(|error| error.to_string())?;
     atomic_write(&path, &content).await?;
     let _ = super::search::index_session(&data);
@@ -929,7 +965,15 @@ pub async fn save_workspace(cwd: &str) -> Result<(), String> {
     if !canonical.is_dir() {
         return Err("Workspace must be an existing directory".into());
     }
-    let content = serde_json::to_vec_pretty(&serde_json::json!({"cwd":canonical}))
+    #[cfg(target_os = "windows")]
+    let clean_cwd = {
+        let s = canonical.to_string_lossy().to_string();
+        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let clean_cwd = canonical.to_string_lossy().to_string();
+
+    let content = serde_json::to_vec_pretty(&serde_json::json!({"cwd": clean_cwd}))
         .map_err(|error| error.to_string())?;
     atomic_write(&workspace_path(), &content).await
 }

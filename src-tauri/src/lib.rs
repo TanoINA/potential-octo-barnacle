@@ -358,7 +358,14 @@ async fn set_workspace_cwd(state: State<'_, AppState>, new_cwd: String) -> Resul
     if !canonical.is_dir() {
         return Err("Workspace must be an existing directory".into());
     }
+    #[cfg(target_os = "windows")]
+    let cwd = {
+        let s = canonical.to_string_lossy().to_string();
+        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    };
+    #[cfg(not(target_os = "windows"))]
     let cwd = canonical.to_string_lossy().to_string();
+
     storage::save_workspace(&cwd).await?;
     *state
         .workspace_cwd

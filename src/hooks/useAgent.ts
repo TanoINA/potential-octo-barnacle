@@ -985,7 +985,7 @@ export function useAgent() {
       setLastError(null);
       setSubagents([]);
       setActiveSkills([]);
-      const sessCwd = normalized.session.workspaceCwd || '';
+      const sessCwd = (normalized.session.workspaceCwd || '').replace(/^\\\\\?\\/, '');
       setWorkspaceCwd(sessCwd);
       workspaceRef.current = sessCwd;
       await invoke('set_workspace_cwd', { newCwd: sessCwd });

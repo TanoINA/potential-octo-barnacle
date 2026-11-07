@@ -116,6 +116,7 @@ interface ChatCanvasProps {
   sidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   effectiveConfig: EffectiveRunConfig | null;
+  sessionId?: string;
   sessionTitle: string;
   artifactCount: number;
   isArtifactOpen: boolean;
@@ -777,7 +778,18 @@ export function ChatCanvas({
   useEffect(() => {
     setShowJumpBottom(false);
     stickToBottomRef.current = true;
-  }, [sessionTitle]);
+    if (parentRef.current) {
+      parentRef.current.scrollTop = parentRef.current.scrollHeight;
+    }
+    if (messages.length > 0) {
+      requestAnimationFrame(() => {
+        if (parentRef.current) {
+          parentRef.current.scrollTop = parentRef.current.scrollHeight;
+        }
+        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+      });
+    }
+  }, [currentSessionId, sessionTitle]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!stickToBottomRef.current || !parentRef.current || messages.length === 0) return;
@@ -1463,9 +1475,13 @@ export function ChatCanvas({
         </div>
       </header>
 
-      <div
-        ref={parentRef}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        {/* Soft top gradient under header for smooth visual clipping */}
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-3 bg-gradient-to-b from-[#0d1117] to-transparent" />
+
+        <div
+          ref={parentRef}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
         onWheel={(e) => {
           if (e.deltaY < 0) {
             // User intentionally scrolled up with the mouse wheel
@@ -1539,6 +1555,7 @@ export function ChatCanvas({
           </div>
         )}
       </div>
+    </div>
 
       {/* Antigravity Timeline Scrubber */}
       <TimelineScrubber
