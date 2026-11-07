@@ -522,6 +522,73 @@ async fn save_pasted_attachment(
     storage::save_attachment(Some(&cwd), &name, &bytes).await
 }
 
+fn decode_percent(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let input_bytes = input.as_bytes();
+    let mut i = 0;
+    while i < input_bytes.len() {
+        if input_bytes[i] == b'%' && i + 2 < input_bytes.len() {
+            if let Ok(hex_val) = u8::from_str_radix(
+                std::str::from_utf8(&input_bytes[i + 1..=i + 2]).unwrap_or(""),
+                16,
+            ) {
+                bytes.push(hex_val);
+                i += 3;
+                continue;
+            }
+        }
+        bytes.push(input_bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::PathBuf {
+    let clean = if let Some(stripped) = target.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = target.strip_prefix("file://localhost/") {
+        stripped
+    } else if let Some(stripped) = target.strip_prefix("file://") {
+        stripped
+    } else {
+        target
+    };
+
+    let decoded = decode_percent(clean);
+    #[cfg(target_os = "windows")]
+    let decoded = {
+        let trimmed = if decoded.starts_with('/') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
+            &decoded[1..]
+        } else {
+            &decoded
+        };
+        trimmed.replace('/', "\\")
+    };
+    #[cfg(not(target_os = "windows"))]
+    let decoded = decoded;
+
+    let p = std::path::PathBuf::from(&decoded);
+    if p.is_absolute() && p.exists() {
+        p
+    } else if !workspace_cwd.trim().is_empty() {
+        let candidate = std::path::Path::new(workspace_cwd).join(&p);
+        if candidate.exists() {
+            candidate
+        } else {
+            p
+        }
+    } else if let Ok(current_dir) = std::env::current_dir() {
+        let candidate = current_dir.join(&p);
+        if candidate.exists() {
+            candidate
+        } else {
+            p
+        }
+    } else {
+        p
+    }
+}
+
 #[tauri::command]
 async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Result<(), String> {
     let target = path_or_url.trim();
@@ -550,35 +617,13 @@ async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Re
     }
 
     // 2. Local files / directories
-    let clean_target = if let Some(stripped) = target.strip_prefix("file:///") {
-        stripped
-    } else if let Some(stripped) = target.strip_prefix("file://") {
-        stripped
-    } else {
-        target
-    };
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
 
-    let p = std::path::Path::new(clean_target);
-    let resolved = if p.is_absolute() && p.exists() {
-        p.to_path_buf()
-    } else {
-        let cwd = state
-            .workspace_cwd
-            .lock()
-            .map_err(|_| "Workspace lock is unavailable".to_string())?
-            .clone();
-
-        if !cwd.is_empty() {
-            let candidate = std::path::Path::new(&cwd).join(clean_target);
-            if candidate.exists() {
-                candidate
-            } else {
-                p.to_path_buf()
-            }
-        } else {
-            p.to_path_buf()
-        }
-    };
+    let resolved = resolve_open_target(target, &cwd);
 
     #[cfg(target_os = "windows")]
     {
@@ -691,4 +736,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running AetherAgent application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_percent_escapes() {
+        assert_eq!(decode_percent("hello%20world"), "hello world");
+        assert_eq!(decode_percent("D:/My%20Documents/Tugas%201/file.docx"), "D:/My Documents/Tugas 1/file.docx");
+        assert_eq!(decode_percent("plain_text.txt"), "plain_text.txt");
+    }
+
+    #[test]
+    fn test_resolve_open_target_decodes_and_strips_file_scheme() {
+        #[cfg(target_os = "windows")]
+        {
+            let resolved = resolve_open_target("file:///D:/folder%20name/doc.docx", "");
+            assert_eq!(resolved.to_string_lossy(), "D:\\folder name\\doc.docx");
+
+            let resolved2 = resolve_open_target("D:/UNIKOM/file.docx", "");
+            assert_eq!(resolved2.to_string_lossy(), "D:\\UNIKOM\\file.docx");
+        }
+    }
 }

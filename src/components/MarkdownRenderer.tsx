@@ -15,6 +15,14 @@ const stripProseEmojis = (text: string) => {
     .replace(/(```[\s\S]*?```|`[^`]*`)|[\p{Extended_Pictographic}\uFE0F]/gu, (_, code) => code || '');
 };
 
+const safeUrlTransform = (url: string) => {
+  const trimmed = url.trim();
+  if (/^(javascript|vbscript|data):/i.test(trimmed)) {
+    return '';
+  }
+  return url;
+};
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) => {
   const cleanedContent = useMemo(() => stripProseEmojis(content), [content]);
 
@@ -22,6 +30,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
     <div className="markdown-content text-[13px] leading-6 select-text text-[#e6edf3]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={safeUrlTransform}
         components={{
           p({ children }) {
             return <p className="mb-2.5 last:mb-0 leading-6">{children}</p>;
@@ -53,12 +62,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
             const handleClick = (e: React.MouseEvent) => {
               e.preventDefault();
               if (!href) return;
+              let target = href;
+              try {
+                target = decodeURIComponent(href);
+              } catch {
+                try {
+                  target = decodeURI(href);
+                } catch {
+                  // keep original
+                }
+              }
               if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                invoke('open_path_or_url', { pathOrUrl: href }).catch((err) => {
+                invoke('open_path_or_url', { pathOrUrl: target }).catch((err) => {
                   console.error('Failed to open link or file', err);
                 });
               } else {
-                window.open(href, '_blank', 'noopener,noreferrer');
+                window.open(target, '_blank', 'noopener,noreferrer');
               }
             };
 
@@ -67,7 +86,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
                 href={href}
                 onClick={handleClick}
                 className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
-                title={isWeb ? `Open web link: ${href}` : `Open file: ${href}`}
+                title={isWeb ? `Open web link: ${href ?? ''}` : `Open file: ${href ?? ''}`}
               >
                 {children}
                 {isWeb ? (

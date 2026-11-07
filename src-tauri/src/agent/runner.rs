@@ -696,7 +696,7 @@ impl AgentRunner {
 
         let all_skill_paths = workspace_skill_paths(&workspace_cwd, &request.skill_paths);
         let skills = load_skills(&all_skill_paths).await;
-        let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.\n- For long-running commands, dev servers, or background watchers, use run_command with isDaemon: true to run in the background. Use manage_task to inspect logs, send input, or terminate tasks.";
+        let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.\n- For long-running commands, dev servers, or background watchers, use run_command with isDaemon: true to run in the background. Use manage_task to inspect logs, send input, or terminate tasks.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system = match request
             .system_prompt
             .as_deref()
@@ -1180,7 +1180,7 @@ impl AgentRunner {
             session_id: request_a.session_id.clone(),
         };
 
-        let default_prompt = "You are AetherAgent, an expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic.\n- Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Provide a direct, comprehensive, and high-quality response.";
+        let default_prompt = "You are AetherAgent, an expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic.\n- Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Provide a direct, comprehensive, and high-quality response.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system_a = match request_a
             .system_prompt
             .as_deref()
