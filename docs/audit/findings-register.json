@@ -1,9 +1,9 @@
 {
   "scope_note": "88 finding records before cross-layer deduplication; overlapping IDs are not 88 unique bugs. fixed_bounded means scoped repair, not global release approval.",
   "summary": {
-    "fixed_bounded": 53,
-    "partial_or_mitigated": 11,
-    "open": 24
+    "fixed_bounded": 56,
+    "partial_or_mitigated": 14,
+    "open": 18
   },
   "findings": [
     {
@@ -165,8 +165,8 @@
       "title": "Commit/push Git tidak bounded dan tidak dapat dibatalkan",
       "report": "docs/audit/layer-provider-tools-review.md",
       "location": "**Lokasi:** `src-tauri/src/agent/git.rs:123-143`, `162-166`; command factory `mod.rs:17-21`.",
-      "status": "open",
-      "notes": "Git commit/push deadline and bounded subprocess output still residual."
+      "status": "partial_or_mitigated",
+      "notes": "Native commit/push/fetch deadline 30s plus bounded cleanup, noninteractive environment and fail-closed output cap. Reliable descendant ownership after parent exit remains residual. See residual-backlog-fixes.md."
     },
     {
       "id": "P19",
@@ -237,8 +237,8 @@
       "title": "Background task global tidak mempunyai owner; semua session/subagent dapat mengelola proses lain",
       "report": "docs/audit/layer-runtime-review.md",
       "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:17–35,43–46,66–72,292–369`; `runner.rs:330–334,1122–1126`; terkait `agent/tools.rs:977–979,1237–1290`, `src-tauri/src/lib.rs:814–826`.",
-      "status": "open",
-      "notes": "Global task registry still lacks session/run ownership enforcement."
+      "status": "fixed_bounded",
+      "notes": "Task sessionId required on spawn/list/status/stdin/kill and tools/IPC; frontend navigation guards. Same-session runs/subagents share ownership intentionally; run capability isolation remains outside requested scope. See residual-backlog-fixes.md."
     },
     {
       "id": "RT-07",
@@ -435,8 +435,8 @@
       "title": "Buffer RAF tidak dibatasi; Clear tidak menghapus buffer/frame",
       "report": "docs/audit/layer-state-review.md",
       "location": "**Lokasi:** `src/hooks/useAgent.ts:175-178,237-253,279-300,311,403-417,482-484,507-516,999-1015`.",
-      "status": "open",
-      "notes": "Live-session cache/buffers lack total budget and hidden-window flush fallback."
+      "status": "partial_or_mitigated",
+      "notes": "Checkpoint timer flushes pending buffers independently of RAF, including offscreen sessions. Total live-cache/buffer budget remains residual. See residual-backlog-fixes.md."
     },
     {
       "id": "ST-12",
@@ -489,8 +489,8 @@
       "title": "isi run panjang hanya di RAM sampai selesai",
       "report": "docs/audit/layer-storage-ipc-review.md",
       "location": "**Lokasi:** `src/hooks/useAgent.ts:403-475,565-617,831-844,869-882`; `src-tauri/src/lib.rs:33-36`; `agent/runner.rs:1296-1328`.",
-      "status": "open",
-      "notes": "No throttled/native durable mid-run checkpoint; crash before done may lose streaming output."
+      "status": "fixed_bounded",
+      "notes": "Periodic 2s session checkpoints with RAF-independent buffer flush, atomic synced native replacement, serialized final save and cleanup generation guard. See residual-backlog-fixes.md; not a native journal or literal power-cut guarantee."
     },
     {
       "id": "F03",
@@ -732,8 +732,8 @@
       "title": "Artifact baru dapat mengusir pilihan Live Shell",
       "report": "docs/audit/layer-ui-review.md",
       "location": "**Lokasi:** `src/components/ArtifactPane.tsx:42-50,76-80`; `src/hooks/useAgent.ts:472-479`; `src/components/ArtifactPane.test.tsx:15-25`.",
-      "status": "open",
-      "notes": "Artifact-arrival versus explicitly selected Live Shell not fully fixed."
+      "status": "fixed_bounded",
+      "notes": "ArtifactPane preserves explicitly selected Live Shell across new code/diff/terminal artifact IDs; mounted draft regression tests pass. Root cause was not in ChatCanvas."
     },
     {
       "id": "UI-12",
@@ -759,8 +759,8 @@
       "title": "Context menu panjang tidak memiliki scroll; event keyboard dapat sekaligus mengirim composer",
       "report": "docs/audit/layer-ui-review.md",
       "location": "**Lokasi:** `src/components/ContextMenu.tsx:733-735,796-892,896-903,913-930,958-962,1033-1037`; `src/components/ChatCanvas.tsx:1242-1268`.",
-      "status": "open",
-      "notes": "Context menu height/capture keyboard remains residual."
+      "status": "partial_or_mitigated",
+      "notes": "Both panels bounded to 80vh with internal scroll preserved; capture-phase menu keys cannot submit composer. Keyboard selection auto-scroll/accessibility redesign remains residual."
     },
     {
       "id": "UI-15",

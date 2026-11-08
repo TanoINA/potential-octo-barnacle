@@ -408,6 +408,16 @@ pub async fn save_session(data: SessionData) -> Result<(), String> {
     save_session_unlocked(data).await
 }
 
+/// Mid-run snapshots use the same atomic, synced replacement and tombstone /
+/// metadata protections as final saves, without rebuilding FTS on every tick.
+/// The completed save reconciles the index when the run ends.
+pub async fn checkpoint_session(data: SessionData) -> Result<(), String> {
+    let _guard = SESSION_IO_LOCK.lock().await;
+    let path = session_path(&data.session.id)?;
+    save_session_file(&path, data, false).await?;
+    Ok(())
+}
+
 fn merge_self_improvements(data: &mut SessionData, previous: &SessionData) {
     for message in &mut data.messages {
         if let Some(stored) = previous
@@ -1505,6 +1515,39 @@ mod tests {
             assert!(rendered.contains("file.txt"));
         }
         assert!(render_standalone_html(&roundtrip).contains("&lt;safe&gt;"));
+    }
+
+    #[tokio::test]
+    async fn streaming_checkpoint_roundtrips_partial_text_and_final_save_replaces_it() {
+        let root = fixture_dir();
+        let path = root.join("test-session.json");
+        let mut partial = message("assistant", "partial answer");
+        partial.is_streaming = Some(true);
+        partial.run_id = Some("run-checkpoint".into());
+        let data = data_with_messages(vec![partial]);
+        save_session_file(&path, data.clone(), false).await.unwrap();
+        let recovered = read_session_file(&path, "test-session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.messages[0].content, "partial answer");
+        assert_eq!(recovered.messages[0].is_streaming, Some(true));
+        assert_eq!(
+            recovered.messages[0].run_id.as_deref(),
+            Some("run-checkpoint")
+        );
+        let mut completed = data;
+        completed.messages[0].content.push_str(" completed");
+        completed.messages[0].is_streaming = Some(false);
+        save_session_file(&path, completed, false).await.unwrap();
+        let recovered = read_session_file(&path, "test-session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.messages[0].content, "partial answer completed");
+        assert_eq!(recovered.messages[0].is_streaming, Some(false));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).await.unwrap();
     }
 
     #[tokio::test]

@@ -1,5 +1,157 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::process::{Output, Stdio};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::{Child, Command};
+
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
+
+// Keep draining after the capture limit: a verbose hook must not deadlock on a
+// full pipe. The deadline covers both process exit and EOF on inherited pipes.
+async fn read_git_output(mut pipe: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+    let mut captured = Vec::new();
+    let mut overflowed = false;
+    let mut buffer = [0; 8192];
+    loop {
+        let count = pipe.read(&mut buffer).await?;
+        if count == 0 {
+            return if overflowed {
+                Err(std::io::Error::other(
+                    "Git output exceeded 1 MiB capture limit",
+                ))
+            } else {
+                Ok(captured)
+            };
+        }
+        let keep = count.min(MAX_GIT_OUTPUT_BYTES.saturating_sub(captured.len()));
+        overflowed |= keep < count;
+        captured.extend_from_slice(&buffer[..keep]);
+    }
+}
+
+struct GitChild(Option<Child>);
+
+impl Drop for GitChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            // Also clean up when the caller's future is dropped. kill_on_drop
+            // remains the fallback if the runtime is already shutting down.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move { terminate_git_child(&mut child).await });
+            }
+        }
+    }
+}
+
+async fn terminate_git_child(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        #[cfg(windows)]
+        let mut killer = {
+            let mut command = super::create_hidden_command("taskkill");
+            command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut killer = {
+            let mut command = super::create_hidden_command("kill");
+            command.args(["-KILL", "--", &format!("-{pid}")]);
+            command
+        };
+        #[cfg(any(windows, unix))]
+        {
+            killer
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            let _ = tokio::time::timeout(Duration::from_secs(1), killer.status()).await;
+        }
+    }
+    // Child::kill waits as well: explicitly reap even if the tree killer failed
+    // or the child exited between the deadline and cleanup.
+    let _ = tokio::time::timeout(Duration::from_secs(1), child.kill()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+}
+
+// Also applied to shell tools: Git launched inside PowerShell/sh inherits
+// non-interactive authentication while retaining the tool's bounded deadline.
+pub(crate) fn configure_git_environment(command: &mut Command) {
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_EDITOR", "true");
+    // Do not replace core.sshCommand, GIT_SSH_COMMAND or Plink configuration.
+    // The subprocess deadline also bounds custom SSH credential helpers.
+}
+
+async fn run_git_command(
+    command: &mut Command,
+    operation: &str,
+    deadline: Duration,
+) -> Result<Output, String> {
+    configure_git_environment(command);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Failed to execute git {operation}: {error}"))?;
+    let mut owned = GitChild(Some(child));
+    let child = owned.0.as_mut().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let result = tokio::time::timeout(deadline, async {
+        let (status, stdout, stderr) = tokio::try_join!(
+            child.wait(),
+            read_git_output(stdout),
+            read_git_output(stderr)
+        )?;
+        Ok::<_, std::io::Error>(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(output)) => {
+            owned.0.take();
+            Ok(output)
+        }
+        failure => {
+            terminate_git_child(owned.0.as_mut().unwrap()).await;
+            owned.0.take();
+            match failure {
+                Err(_) => Err(format!("git {operation} timed out after {:.3}s; process terminated (authentication and hooks must be non-interactive)", deadline.as_secs_f64())),
+                Ok(Err(error)) => Err(format!("Failed to execute git {operation}: {error}")),
+                Ok(Ok(_)) => unreachable!(),
+            }
+        }
+    }
+}
+
+async fn git_output(cwd: &str, args: &[&str], operation: &str) -> Result<Output, String> {
+    run_git_command(
+        super::create_hidden_command("git")
+            .args(args)
+            .current_dir(cwd),
+        operation,
+        GIT_TIMEOUT,
+    )
+    .await
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitFileChange {
@@ -110,12 +262,7 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
     }
 
     // 1. Check if git repo
-    let check = super::create_hidden_command("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Could not execute git: {e}"))?;
+    let check = git_output(cwd, &["rev-parse", "--is-inside-work-tree"], "command").await?;
 
     match check {
         out if out.status.success() => {}
@@ -134,20 +281,10 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
     }
 
     // 2. Get current branch
-    let branch_out = super::create_hidden_command("git")
-        .args(["branch", "--show-current"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to read git branch: {e}"))?;
+    let branch_out = git_output(cwd, &["branch", "--show-current"], "command").await?;
 
     ensure_success(&branch_out, "branch")?;
-    let prefix_out = super::create_hidden_command("git")
-        .args(["rev-parse", "--show-prefix"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Could not read repository prefix: {e}"))?;
+    let prefix_out = git_output(cwd, &["rev-parse", "--show-prefix"], "command").await?;
     ensure_success(&prefix_out, "rev-parse prefix")?;
     let prefix = String::from_utf8(prefix_out.stdout).map_err(|_| "Git prefix is not UTF-8")?;
     let prefix = prefix.trim_end_matches(['\r', '\n']);
@@ -156,19 +293,19 @@ pub async fn check_git_status(cwd: &str) -> Result<GitRepoStatus, String> {
         .to_string();
 
     // 3. Check status
-    let status_out = super::create_hidden_command("git")
-        .args([
+    let status_out = git_output(
+        cwd,
+        &[
             "--literal-pathspecs",
             "status",
             "--porcelain=v1",
             "-z",
             "--",
             ".",
-        ])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to check git status: {e}"))?;
+        ],
+        "command",
+    )
+    .await?;
 
     ensure_success(&status_out, "status")?;
     let files = parse_porcelain_z(&status_out.stdout, prefix)?;
@@ -203,31 +340,24 @@ pub async fn git_commit(cwd: &str, message: &str) -> Result<String, String> {
 
     // The status UI is workspace-scoped. Inspect the entire index before any
     // staging: a plain commit would also consume hidden, pre-staged siblings.
-    let prefix_out = super::create_hidden_command("git")
-        .args(["rev-parse", "--show-prefix"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Could not read repository prefix: {e}"))?;
+    let prefix_out = git_output(cwd, &["rev-parse", "--show-prefix"], "command").await?;
     ensure_success(&prefix_out, "rev-parse prefix")?;
     let prefix = String::from_utf8(prefix_out.stdout).map_err(|_| "Git prefix is not UTF-8")?;
     let prefix = prefix.trim_end_matches(['\r', '\n']);
     if !prefix.is_empty() {
-        let staged_out = super::create_hidden_command("git")
-            // Disable rename folding so both sides of a cross-boundary rename
-            // are checked. --no-relative overrides a user's diff.relative.
-            .args([
+        let staged_out = git_output(
+            cwd,
+            &[
                 "diff",
                 "--cached",
                 "--name-only",
                 "--no-renames",
                 "--no-relative",
                 "-z",
-            ])
-            .current_dir(cwd)
-            .output()
-            .await
-            .map_err(|e| format!("Could not inspect staged paths: {e}"))?;
+            ],
+            "command",
+        )
+        .await?;
         ensure_success(&staged_out, "diff --cached")?;
         if staged_out
             .stdout
@@ -238,12 +368,12 @@ pub async fn git_commit(cwd: &str, message: &str) -> Result<String, String> {
         }
     }
 
-    let add_out = super::create_hidden_command("git")
-        .args(["--literal-pathspecs", "add", "-A", "--", "."])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute git add: {e}"))?;
+    let add_out = git_output(
+        cwd,
+        &["--literal-pathspecs", "add", "-A", "--", "."],
+        "command",
+    )
+    .await?;
 
     if !add_out.status.success() {
         return Err(format!(
@@ -259,11 +389,8 @@ pub async fn git_commit(cwd: &str, message: &str) -> Result<String, String> {
     if !prefix.is_empty() {
         commit_command.args(["--only", "--", "."]);
     }
-    let commit_out = commit_command
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute git commit: {e}"))?;
+    let commit_out =
+        run_git_command(commit_command.current_dir(cwd), "commit", GIT_TIMEOUT).await?;
 
     if !commit_out.status.success() {
         let err = String::from_utf8_lossy(&commit_out.stderr);
@@ -282,12 +409,7 @@ pub async fn git_push(cwd: &str) -> Result<String, String> {
         return Err("Invalid or missing workspace directory".to_string());
     }
 
-    let push_out = super::create_hidden_command("git")
-        .args(["push"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute git push: {e}"))?;
+    let push_out = git_output(cwd, &["push"], "push").await?;
 
     if !push_out.status.success() {
         let err = String::from_utf8_lossy(&push_out.stderr);
@@ -302,6 +424,22 @@ pub async fn git_push(cwd: &str) -> Result<String, String> {
     } else {
         combined
     })
+}
+
+/// Fetches remotes with the same non-interactive, bounded runner as push.
+pub async fn git_fetch(cwd: &str) -> Result<String, String> {
+    if cwd.trim().is_empty() || !Path::new(cwd).is_dir() {
+        return Err("Invalid or missing workspace directory".into());
+    }
+    let output = git_output(cwd, &["fetch"], "fetch").await?;
+    ensure_success(&output, "fetch")?;
+    Ok(format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
+    .trim()
+    .to_string())
 }
 
 fn validated_file_path(cwd: &str, requested: &str) -> Result<(std::path::PathBuf, String), String> {
@@ -324,19 +462,19 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
     let (full_path, rel_str) = validated_file_path(cwd, file_path)?;
 
     // Check status of this file
-    let status_out = super::create_hidden_command("git")
-        .args([
+    let status_out = git_output(
+        cwd,
+        &[
             "--literal-pathspecs",
             "status",
             "--porcelain=v1",
             "-z",
             "--",
             &rel_str,
-        ])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to inspect file status: {e}"))?;
+        ],
+        "command",
+    )
+    .await?;
     ensure_success(&status_out, "status")?;
     {
         let out = status_out;
@@ -352,21 +490,21 @@ pub async fn git_revert_file(cwd: &str, file_path: &str) -> Result<String, Strin
     }
 
     // Attempt git checkout
-    let checkout_out = super::create_hidden_command("git")
-        .args(["--literal-pathspecs", "checkout", "--", &rel_str])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to revert file changes: {e}"))?;
+    let checkout_out = git_output(
+        cwd,
+        &["--literal-pathspecs", "checkout", "--", &rel_str],
+        "command",
+    )
+    .await?;
 
     if !checkout_out.status.success() {
         // Fallback to git restore
-        let restore_out = super::create_hidden_command("git")
-            .args(["--literal-pathspecs", "restore", "--", &rel_str])
-            .current_dir(cwd)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to restore file: {e}"))?;
+        let restore_out = git_output(
+            cwd,
+            &["--literal-pathspecs", "restore", "--", &rel_str],
+            "command",
+        )
+        .await?;
 
         if !restore_out.status.success() {
             let err = String::from_utf8_lossy(&restore_out.stderr);
@@ -384,12 +522,12 @@ pub async fn git_stage_file(cwd: &str, file_path: &str) -> Result<String, String
     }
     let (_, rel_str) = validated_file_path(cwd, file_path)?;
 
-    let add_out = super::create_hidden_command("git")
-        .args(["--literal-pathspecs", "add", "--", &rel_str])
-        .current_dir(cwd)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to stage file: {e}"))?;
+    let add_out = git_output(
+        cwd,
+        &["--literal-pathspecs", "add", "--", &rel_str],
+        "command",
+    )
+    .await?;
 
     if !add_out.status.success() {
         let err = String::from_utf8_lossy(&add_out.stderr);
@@ -402,6 +540,99 @@ pub async fn git_stage_file(cwd: &str, file_path: &str) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_command(mode: &str) -> tokio::process::Command {
+        let mut command = super::super::create_hidden_command(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "agent::git::tests::git_process_fixture",
+            "--nocapture",
+        ]);
+        command.env("AETHER_GIT_FIXTURE", mode);
+        command
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture invoked explicitly by Git runner regressions"]
+    fn git_process_fixture() {
+        match std::env::var("AETHER_GIT_FIXTURE").unwrap().as_str() {
+            "hang" => std::thread::sleep(std::time::Duration::from_secs(10)),
+            "environment" => {
+                assert_eq!(std::env::var("GIT_TERMINAL_PROMPT").unwrap(), "0");
+                assert_eq!(std::env::var("GCM_INTERACTIVE").unwrap(), "Never");
+                assert_eq!(
+                    std::env::var("GIT_SSH_COMMAND").unwrap(),
+                    "custom-ssh -i identity"
+                );
+                use std::io::Read;
+                assert_eq!(std::io::stdin().read(&mut [0]).unwrap(), 0);
+            }
+            "stdout-overflow" | "stderr-overflow" => {
+                use std::io::Write;
+                let bytes = vec![b'x'; MAX_GIT_OUTPUT_BYTES + 1];
+                if std::env::var("AETHER_GIT_FIXTURE").unwrap() == "stdout-overflow" {
+                    std::io::stdout().write_all(&bytes).unwrap();
+                } else {
+                    std::io::stderr().write_all(&bytes).unwrap();
+                }
+            }
+            mode => panic!("unknown fixture mode {mode}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn git_runner_disables_interactive_authentication() {
+        let output = run_git_command(
+            fixture_command("environment").env("GIT_SSH_COMMAND", "custom-ssh -i identity"),
+            "fetch",
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_git_timeout_is_bounded() {
+        let started = std::time::Instant::now();
+        let result = run_git_command(
+            &mut fixture_command("hang"),
+            "push",
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("git push timed out")),
+            "{result:?}"
+        );
+        // 100 ms deadline plus at most three 1s cleanup waits, with scheduler margin.
+        // The fixture sleeps 10s, so an unbounded runner cannot satisfy this.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn regression_git_output_overflow_fails_closed() {
+        for mode in ["stdout-overflow", "stderr-overflow"] {
+            let result =
+                run_git_command(&mut fixture_command(mode), "status", Duration::from_secs(5)).await;
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("output exceeded")),
+                "{mode} returned partial output instead of an error: {:?}",
+                result
+                    .as_ref()
+                    .map(|output| (output.stdout.len(), output.stderr.len()))
+            );
+        }
+    }
 
     fn repo() -> std::path::PathBuf {
         let root = std::env::var_os("TMPDIR")

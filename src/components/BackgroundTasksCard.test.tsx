@@ -6,6 +6,7 @@ import type { BackgroundTask } from '../types/agent';
 describe('BackgroundTasksCard', () => {
   const sampleTasks: BackgroundTask[] = [
     {
+      sessionId: 'test-session',
       id: 'task_1',
       command: 'npm run dev',
       toolSummary: 'Dev server startup',
@@ -17,6 +18,7 @@ describe('BackgroundTasksCard', () => {
       recentOutput: 'Vite v5 ready on http://localhost:5173',
     },
     {
+      sessionId: 'test-session',
       id: 'task_2',
       command: 'npm run build',
       toolSummary: 'Background build',

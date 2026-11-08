@@ -35,6 +35,7 @@ pub type ToolEventSink = Arc<dyn Fn(ToolEvent) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ToolContext {
+    pub session_id: String,
     pub cwd: String,
     pub cancel: CancellationToken,
     pub sink: Option<ToolEventSink>,
@@ -311,7 +312,7 @@ pub async fn execute_tool(
         "list_directory" => list_directory(args, &context.cwd, &context.cancel).await,
         "search_files" => search_files(args, &context.cwd, &context.cancel).await,
         "run_command" => run_command(args, context).await,
-        "manage_task" => manage_task(args).await,
+        "manage_task" => manage_task(args, context).await,
         "fetch_web_page" => fetch_web_page(args, context).await,
         "learn_skill" => learn_skill(args, context).await,
         _ => Err(format!("Unknown tool: {name}")),
@@ -998,7 +999,13 @@ async fn run_command(
     if is_daemon {
         let mgr = super::tasks::get_task_manager();
         let task_info = mgr
-            .spawn_task(command, &context.cwd, tool_summary, true)
+            .spawn_task(
+                &context.session_id,
+                command,
+                &context.cwd,
+                tool_summary,
+                true,
+            )
             .await?;
         let output_msg = format!(
             "Background task started successfully.\nTaskId: {}\nStatus: {}\nPID: {}\nLog Path: {}\nUse `manage_task` with action 'status' to monitor output or 'kill' to terminate.",
@@ -1032,6 +1039,9 @@ async fn run_command(
         process.args(["-c", command]);
         process
     };
+    // Shell-launched git push/fetch inherits non-interactive credentials; the
+    // foreground command loop below enforces its 1..600 second deadline.
+    super::git::configure_git_environment(&mut process);
     process
         .current_dir(root)
         .stdout(Stdio::piped())
@@ -1257,12 +1267,15 @@ fn append_process_line(
     }
 }
 
-async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, String> {
+async fn manage_task(
+    args: &serde_json::Value,
+    context: &ToolContext,
+) -> Result<ToolExecutionResult, String> {
     let action = required_string(args, "action")?.trim().to_lowercase();
     let mgr = super::tasks::get_task_manager();
     match action.as_str() {
         "list" => {
-            let tasks = mgr.list_tasks().await;
+            let tasks = mgr.list_tasks(&context.session_id).await;
             let formatted = if tasks.is_empty() {
                 "No background tasks currently tracked.".to_string()
             } else {
@@ -1289,7 +1302,9 @@ async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, St
                 .get("tailLines")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
-            let info = mgr.get_status(task_id, tail_lines).await?;
+            let info = mgr
+                .get_status(&context.session_id, task_id, tail_lines)
+                .await?;
             let formatted = format!(
                 "Task: {}\nCommand: {}\nStatus: {}\nPID: {}\nStarted: {}ms\nCompleted: {}\nExit Code: {}\nLog Path: {}\n\n--- Recent Output ---\n{}",
                 info.id,
@@ -1309,14 +1324,14 @@ async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, St
                 "Missing required parameter 'taskId' for action 'send_input'".to_string()
             })?;
             let input = required_string(args, "input")?;
-            let res = mgr.send_input(task_id, input).await?;
+            let res = mgr.send_input(&context.session_id, task_id, input).await?;
             Ok(ToolExecutionResult::success(res, None))
         }
         "kill" => {
             let task_id = optional_string(args, "taskId", "task_id").ok_or_else(|| {
                 "Missing required parameter 'taskId' for action 'kill'".to_string()
             })?;
-            let res = mgr.kill_task(task_id).await?;
+            let res = mgr.kill_task(&context.session_id, task_id).await?;
             Ok(ToolExecutionResult::success(res, None))
         }
         _ => Err(format!(
@@ -1865,6 +1880,7 @@ mod tests {
         let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let captured = events.clone();
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd: root.to_string_lossy().to_string(),
             cancel: CancellationToken::new(),
             sink: Some(Arc::new(move |event| {
@@ -1890,6 +1906,7 @@ mod tests {
     async fn powershell_giant_unbroken_output_is_bounded() {
         let root = workspace();
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd: root.to_string_lossy().to_string(),
             cancel: CancellationToken::new(),
             sink: None,
@@ -1915,6 +1932,7 @@ mod tests {
         let root = workspace();
         let cancel = CancellationToken::new();
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd: root.to_string_lossy().to_string(),
             cancel: cancel.clone(),
             sink: None,
@@ -1989,6 +2007,7 @@ mod tests {
         let root = workspace();
         let cancel = CancellationToken::new();
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd: root.to_string_lossy().to_string(),
             cancel,
             sink: None,
@@ -2025,26 +2044,32 @@ mod tests {
             .expect("task id in output");
 
         // 2. Test manage_task list
-        let list_res = manage_task(&serde_json::json!({"action": "list"}))
+        let list_res = manage_task(&serde_json::json!({"action": "list"}), &context)
             .await
             .expect("list tasks");
         assert!(list_res.output.contains(task_id));
 
         // 3. Test manage_task status
-        let status_res = manage_task(&serde_json::json!({
-            "action": "status",
-            "taskId": task_id
-        }))
+        let status_res = manage_task(
+            &serde_json::json!({
+                "action": "status",
+                "taskId": task_id
+            }),
+            &context,
+        )
         .await
         .expect("status task");
         assert!(status_res.output.contains(task_id));
         assert!(status_res.output.contains("Status: running"));
 
         // 4. Test manage_task kill
-        let kill_res = manage_task(&serde_json::json!({
-            "action": "kill",
-            "taskId": task_id
-        }))
+        let kill_res = manage_task(
+            &serde_json::json!({
+                "action": "kill",
+                "taskId": task_id
+            }),
+            &context,
+        )
         .await
         .expect("kill task");
         assert!(kill_res.output.contains("terminated"));

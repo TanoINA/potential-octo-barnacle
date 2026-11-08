@@ -60,6 +60,76 @@ beforeEach(() => {
 });
 
 describe('useAgent reflection', () => {
+  it('checkpoints buffered streaming output before done even when animation frames are suspended', async () => {
+    const hook = await mounted();
+    await act(async () => { await hook.result.current.sendMessage('Long stream'); });
+    const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 123);
+    vi.useFakeTimers();
+    try {
+      act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'Recover this partial answer' } }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+      const checkpoints = mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session');
+      expect(checkpoints).toHaveLength(1);
+      const snapshot = checkpoints[0][1].data as SessionData;
+      expect(snapshot.session.id).toBe('sess-1');
+      expect(snapshot.messages.at(-1)?.content).toBe('Recover this partial answer');
+      expect(snapshot.messages.at(-1)?.segments?.at(-1)?.text).toBe('Recover this partial answer');
+      expect(snapshot.messages.at(-1)?.isStreaming).toBe(true);
+      expect(hook.result.current.isStreaming).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
+    } finally {
+      hook.unmount();
+      vi.useRealTimers();
+      raf.mockRestore();
+    }
+  });
+  it('does not rearm a pending checkpoint after unmount', async () => {
+    const hook = await mounted();
+    await act(async () => { await hook.result.current.sendMessage('Long stream'); });
+    const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
+    const pending = deferred<void>();
+    const backend = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: unknown) => command === 'checkpoint_session' ? pending.promise : backend(command, args));
+    vi.useFakeTimers();
+    try {
+      act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'first' } }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+      act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'second' } }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+      hook.unmount();
+      await act(async () => { pending.resolve(); await vi.advanceTimersByTimeAsync(5000); });
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('checkpoints an offscreen origin and never overwrites its final save with a timer', async () => {
+    const hook = await mounted();
+    await act(async () => { await hook.result.current.sendMessage('Background stream'); });
+    const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
+    act(() => hook.result.current.newSession());
+    const viewed = hook.result.current.currentSessionId;
+    vi.useFakeTimers();
+    try {
+      act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'Offscreen partial' } }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+      const checkpoint = mocks.invoke.mock.calls.find(([name]) => name === 'checkpoint_session')?.[1].data as SessionData;
+      expect(checkpoint.session.id).toBe('sess-1');
+      expect(checkpoint.messages.at(-1)?.content).toBe('Offscreen partial');
+      expect(hook.result.current.currentSessionId).toBe(viewed);
+      act(() => {
+        event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: ' finished' } });
+        event({ type: 'done', data: { runId: request.runId, sessionId: 'sess-1', cancelled: false } });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
+      const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session').at(-1)?.[1].data as SessionData;
+      expect(saved.messages.at(-1)?.content).toBe('Offscreen partial finished');
+      expect(saved.messages.at(-1)?.runStatus).toBe('completed');
+    } finally { hook.unmount(); vi.useRealTimers(); }
+  });
+
   it.each(['/review', '/reflect'])('routes %s without adding chat messages and uses the session provider', async (command) => {
     const hook = await mounted();
     await act(async () => { await hook.result.current.sendMessage(command); });

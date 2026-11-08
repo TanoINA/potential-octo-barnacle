@@ -92,6 +92,64 @@ describe('ContextMenu Component', () => {
     expect(screen.getByText('Open Terminal in Workspace')).toBeTruthy();
   });
 
+  it.each(['aether-context-menu', 'aether-context-submenu'])('bounds %s to the viewport and enables vertical scrolling', (testId) => {
+    render(<ContextMenu currentSessionId="session-1" onExportSession={vi.fn()} />);
+    fireEvent.contextMenu(document.body, { clientX: 100, clientY: 100 });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Export Session' }));
+
+    const panel = screen.getByTestId(testId);
+    expect(panel.classList.contains('max-h-[80vh]')).toBe(true);
+    expect(panel.classList.contains('overflow-y-auto')).toBe(true);
+  });
+
+  it.each(['aether-context-menu', 'aether-context-submenu'])('keeps both panels open when scrolling inside %s', (testId) => {
+    render(<ContextMenu currentSessionId="session-1" onExportSession={vi.fn()} />);
+    fireEvent.contextMenu(document.body, { clientX: 100, clientY: 100 });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Export Session' }));
+
+    const panel = screen.getByTestId(testId);
+    fireEvent.scroll(panel);
+    expect(screen.queryByTestId('aether-context-menu')).not.toBeNull();
+    expect(screen.queryByTestId('aether-context-submenu')).not.toBeNull();
+
+    // Descendant scroll events also travel through the window capture listener.
+    fireEvent.scroll(panel.querySelector('button')!);
+    expect(screen.queryByTestId('aether-context-menu')).not.toBeNull();
+    expect(screen.queryByTestId('aether-context-submenu')).not.toBeNull();
+  });
+
+  it.each(['window', 'outside container'])('still dismisses both panels when scrolling the %s', (target) => {
+    render(<><div data-testid="outside-scroll" /><ContextMenu currentSessionId="session-1" onExportSession={vi.fn()} /></>);
+    fireEvent.contextMenu(document.body, { clientX: 100, clientY: 100 });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Export Session' }));
+    expect(screen.getByTestId('aether-context-submenu')).toBeTruthy();
+
+    fireEvent.scroll(target === 'window' ? window : screen.getByTestId('outside-scroll'));
+    expect(screen.queryByTestId('aether-context-menu')).toBeNull();
+    expect(screen.queryByTestId('aether-context-submenu')).toBeNull();
+  });
+
+  it('handles menu keys before composer handlers without submitting the composer', () => {
+    const composerKeyDown = vi.fn();
+    const openSettings = vi.fn();
+    render(<><textarea aria-label="Composer" onKeyDown={composerKeyDown} /><ContextMenu onOpenSettings={openSettings} /></>);
+    const composer = screen.getByLabelText('Composer');
+    composer.focus();
+    fireEvent.contextMenu(composer, { clientX: 100, clientY: 100 });
+
+    // Hover chooses an action while keyboard focus remains in the composer.
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Settings Ctrl+,' }));
+    expect(document.activeElement).toBe(composer);
+    expect(fireEvent.keyDown(composer, { key: 'Enter' })).toBe(false);
+    expect(composerKeyDown).not.toHaveBeenCalled();
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('aether-context-menu')).toBeNull();
+
+    // Closing the menu must remove its capturing keyboard listener.
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    expect(composerKeyDown).toHaveBeenCalledTimes(1);
+  });
+
   it('closes on Escape key press', () => {
     render(
       <div>

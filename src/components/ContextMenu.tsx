@@ -796,6 +796,12 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // The composer can retain focus after right-clicking. Intercept menu keys
+      // in capture before its React handlers can submit or edit the draft.
+      if (['Escape', 'ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Enter'].includes(e.key)) {
+        e.stopPropagation();
+      }
+
       if (e.key === 'Escape') {
         e.preventDefault();
         if (activeSubmenuId) {
@@ -895,18 +901,25 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       }
     };
 
-    const handleScroll = () => {
+    const handleScroll = (e: Event) => {
+      const target = e.target;
+      if (
+        target instanceof Node &&
+        (menuRef.current?.contains(target) || submenuRef.current?.contains(target))
+      ) {
+        return;
+      }
       closeMenu();
     };
 
     window.addEventListener('mousedown', handleClickOutside);
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('scroll', handleScroll, true);
     window.addEventListener('blur', closeMenu);
 
     return () => {
       window.removeEventListener('mousedown', handleClickOutside);
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('blur', closeMenu);
     };
@@ -961,7 +974,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         ref={menuRef}
         data-testid="aether-context-menu"
         style={{ top: `${menu.y}px`, left: `${menu.x}px` }}
-        className="fixed z-50 min-w-[210px] max-w-[280px] rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
+        className="fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
       >
         {menu.sections.map((section, sIdx) => (
           <div key={section.id}>
@@ -1036,7 +1049,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           ref={submenuRef}
           data-testid="aether-context-submenu"
           style={{ top: `${submenuPos.y}px`, left: `${submenuPos.x}px` }}
-          className="fixed z-50 min-w-[210px] max-w-[280px] rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
+          className="fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
         >
           <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e7681]">
             {activeSubmenuItem.label}

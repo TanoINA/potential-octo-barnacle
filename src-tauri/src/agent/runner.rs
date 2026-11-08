@@ -508,6 +508,7 @@ async fn run_subagent(
             },
         );
     let sub_context = ToolContext {
+        session_id: emitter.session_id.clone(),
         cwd: cwd_str,
         cancel: parent_cancel.clone(),
         sink: Some(sink),
@@ -1381,6 +1382,7 @@ impl AgentRunner {
                         } => sink_emitter.terminal(artifact_id, delta, stream),
                     });
                     let context = ToolContext {
+                        session_id: emitter.session_id.clone(),
                         cwd: workspace_cwd.clone(),
                         cancel: cancel.clone(),
                         sink: Some(sink),
@@ -2604,6 +2606,7 @@ mod tests {
     async fn request_review_blocks_child_write_and_exec_before_side_effects() {
         let (cwd, root) = workspace_with_skill("deny-fixture", "fixture");
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd,
             cancel: CancellationToken::new(),
             sink: None,
@@ -2947,6 +2950,7 @@ mod tests {
             "fixture skill must be discoverable from the workspace catalog"
         );
         let context = ToolContext {
+            session_id: "test-session".into(),
             cwd: cwd.clone(),
             cancel: CancellationToken::new(),
             sink: None,

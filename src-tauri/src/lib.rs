@@ -159,6 +159,11 @@ async fn save_session(data: SessionData) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn checkpoint_session(data: SessionData) -> Result<(), String> {
+    storage::checkpoint_session(data).await
+}
+
+#[tauri::command]
 async fn rename_session(session_id: String, title: String) -> Result<SessionData, String> {
     storage::rename_session(&session_id, &title).await
 }
@@ -518,6 +523,16 @@ async fn git_push(state: State<'_, AppState>) -> Result<String, String> {
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
     agent::git::git_push(&cwd).await
+}
+
+#[tauri::command]
+async fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
+    let cwd = state
+        .workspace_cwd
+        .lock()
+        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .clone();
+    agent::git::git_fetch(&cwd).await
 }
 
 #[tauri::command]
@@ -947,22 +962,27 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
 }
 
 #[tauri::command]
-async fn list_background_tasks() -> Result<Vec<agent::tasks::TaskInfo>, String> {
-    Ok(agent::tasks::get_task_manager().list_tasks().await)
+async fn list_background_tasks(session_id: String) -> Result<Vec<agent::tasks::TaskInfo>, String> {
+    Ok(agent::tasks::get_task_manager()
+        .list_tasks(&session_id)
+        .await)
 }
 
 #[tauri::command]
-async fn kill_background_task(task_id: String) -> Result<String, String> {
-    agent::tasks::get_task_manager().kill_task(&task_id).await
+async fn kill_background_task(session_id: String, task_id: String) -> Result<String, String> {
+    agent::tasks::get_task_manager()
+        .kill_task(&session_id, &task_id)
+        .await
 }
 
 #[tauri::command]
 async fn get_background_task_output(
+    session_id: String,
     task_id: String,
     tail_lines: Option<usize>,
 ) -> Result<agent::tasks::TaskInfo, String> {
     agent::tasks::get_task_manager()
-        .get_status(&task_id, tail_lines)
+        .get_status(&session_id, &task_id, tail_lines)
         .await
 }
 
@@ -1009,6 +1029,7 @@ pub fn run() {
             list_sessions,
             load_session,
             save_session,
+            checkpoint_session,
             rename_session,
             toggle_pin_session,
             list_all_artifacts,
@@ -1027,6 +1048,7 @@ pub fn run() {
             git_status,
             git_commit,
             git_push,
+            git_fetch,
             revert_file_changes,
             stage_file_changes,
             run_shell_command,

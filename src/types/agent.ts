@@ -242,6 +242,7 @@ export interface SubagentProgress {
 }
 
 export interface BackgroundTask {
+  sessionId: string;
   id: string;
   command: string;
   toolSummary?: string;

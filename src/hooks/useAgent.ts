@@ -231,27 +231,34 @@ export function useAgent() {
 
   const refreshBackgroundTasks = useCallback(async () => {
     try {
-      const list = await invoke<BackgroundTask[]>('list_background_tasks');
-      setBackgroundTasks(list || []);
+      const sessionId = sessionIdRef.current;
+      const navigation = navigationRef.current;
+      const list = await invoke<BackgroundTask[]>('list_background_tasks', { sessionId });
+      if (sessionIdRef.current === sessionId && navigationRef.current === navigation) {
+        setBackgroundTasks((list || []).filter((task) => task.sessionId === sessionId));
+      }
     } catch {
       // background tasks not available or desktop mock
     }
   }, []);
 
   const killBackgroundTask = useCallback(async (taskId: string) => {
+    const sessionId = sessionIdRef.current;
+    const navigation = navigationRef.current;
+    const stillViewed = () => sessionIdRef.current === sessionId && navigationRef.current === navigation;
     try {
-      await invoke('kill_background_task', { taskId });
-      await refreshBackgroundTasks();
+      await invoke('kill_background_task', { sessionId, taskId });
+      if (stillViewed()) await refreshBackgroundTasks();
     } catch (err) {
-      setLastError(`Failed to kill background task: ${String(err)}`);
+      if (stillViewed()) setLastError(`Failed to kill background task: ${String(err)}`);
     }
   }, [refreshBackgroundTasks]);
 
-  const persistData = useCallback((value: SessionData): Promise<void> => {
+  const persistData = useCallback((value: SessionData, checkpoint = false): Promise<void> => {
     const queued = persistenceQueueRef.current.then(async () => {
       try {
-        await invoke('save_session', { data: value });
-        await refreshSessions();
+        await invoke(checkpoint ? 'checkpoint_session' : 'save_session', { data: value });
+        if (!checkpoint) await refreshSessions();
       } catch (error) {
         setLastError(`Could not save session: ${String(error)}`);
         throw error;
@@ -349,6 +356,28 @@ export function useAgent() {
     });
   }, [mutateData, viewedLive]);
 
+  // One delayed snapshot per live session. Flush independently of RAF so hidden
+  // windows also reach disk. A slow disk never queues an unbounded snapshot list.
+  const scheduleCheckpoint = useCallback((live: LiveSession) => {
+    const generation = live.checkpointGeneration;
+    const arm = () => {
+      if (live.checkpointGeneration !== generation || !live.runId || live.checkpointTimer !== null) return;
+      live.checkpointTimer = setTimeout(() => {
+        live.checkpointTimer = null;
+        if (live.checkpointGeneration !== generation || !live.runId) return;
+        if (live.checkpointBusy) { arm(); return; }
+        flushPending(live);
+        const snapshot = live.data;
+        live.checkpointBusy = true;
+        void persistData(snapshot, true).catch(() => undefined).finally(() => {
+          live.checkpointBusy = false;
+          if (live.runId && live.data !== snapshot) arm();
+        });
+      }, 2000);
+    };
+    arm();
+  }, [flushPending, persistData]);
+
   const scheduleFlush = useCallback((live: LiveSession) => {
     if (live.frame === null) live.frame = requestAnimationFrame(() => flushPending(live));
   }, [flushPending]);
@@ -360,8 +389,7 @@ export function useAgent() {
     void Promise.allSettled([
       invoke<AgentSettings>('get_settings'),
       invoke<Session[]>('list_sessions'),
-      invoke<BackgroundTask[]>('list_background_tasks'),
-    ]).then(async ([settingsResult, sessionsResult, tasksResult]) => {
+    ]).then(async ([settingsResult, sessionsResult]) => {
       if (!active) return;
       if (settingsResult.status === 'fulfilled') {
         settingsRef.current = settingsResult.value;
@@ -369,9 +397,6 @@ export function useAgent() {
         setSettings(settingsResult.value);
       } else {
         setLastError(`Backend settings unavailable: ${String(settingsResult.reason)}`);
-      }
-      if (tasksResult.status === 'fulfilled') {
-        setBackgroundTasks(tasksResult.value || []);
       }
       if (sessionsResult.status === 'fulfilled') {
         const sessionList = sessionsResult.value;
@@ -612,6 +637,7 @@ export function useAgent() {
           }));
           break;
         case 'done': {
+          if (live.checkpointTimer !== null) { clearTimeout(live.checkpointTimer); live.checkpointTimer = null; }
           flushPending(live);
           const elapsedMs = live.startedAt ? Date.now() - live.startedAt : 0;
           live.startedAt = null;
@@ -668,15 +694,18 @@ export function useAgent() {
           break;
         }
       }
+      if (live.runId) scheduleCheckpoint(live);
       publishLive(live);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
       for (const live of liveSessionsRef.current.values()) {
+        live.checkpointGeneration += 1;
         if (live.frame !== null) { cancelAnimationFrame(live.frame); live.frame = null; }
+        if (live.checkpointTimer !== null) { clearTimeout(live.checkpointTimer); live.checkpointTimer = null; }
       }
     };
-  }, [flushPending, mutateData, persistData, scheduleFlush, publishLive]);
+  }, [flushPending, mutateData, persistData, scheduleFlush, scheduleCheckpoint, publishLive]);
 
   useEffect(() => {
     const unlisten = listen<SelfImprovementEvent>('agent:self-improvement', ({ payload }) => {
@@ -1353,6 +1382,11 @@ export function useAgent() {
       setGitStatus(null);
     }
   }, [workspaceCwd, refreshGitStatus]);
+
+  useEffect(() => {
+    setBackgroundTasks([]);
+    if (!isLoading) void refreshBackgroundTasks();
+  }, [data.session.id, isLoading, refreshBackgroundTasks]);
 
   useEffect(() => {
     const hasRunning = backgroundTasks.some((t) => t.status === 'running');

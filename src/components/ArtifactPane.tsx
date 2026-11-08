@@ -45,7 +45,8 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
     if (active) {
       previousActiveIdRef.current = activeArtifactId;
       stickTerminalToBottomRef.current = true;
-      setTab(active.type === 'diff' || active.type === 'terminal' ? active.type : 'code');
+      // Artifact arrival must not unmount a user-active shell and lose its state.
+      setTab((current) => current === 'shell' ? current : active.type === 'diff' || active.type === 'terminal' ? active.type : 'code');
     }
   }, [activeArtifactId, artifacts]);
 

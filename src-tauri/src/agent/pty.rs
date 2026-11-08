@@ -23,6 +23,8 @@ pub async fn run_shell_command(cwd: &str, command_str: &str) -> Result<ShellComm
     }
     let started = Instant::now();
     let context = ToolContext {
+        // This bounded foreground-only shell has no agent session.
+        session_id: String::new(),
         cwd: cwd.to_string(),
         cancel: CancellationToken::new(),
         sink: None,

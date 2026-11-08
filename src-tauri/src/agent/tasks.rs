@@ -25,6 +25,7 @@ const LOG_TRUNCATED: &str = "\n[task log quota reached; further output omitted]\
 #[serde(rename_all = "camelCase")]
 pub struct TaskInfo {
     pub id: String,
+    pub session_id: String,
     pub command: String,
     pub tool_summary: Option<String>,
     pub is_daemon: bool,
@@ -389,6 +390,7 @@ impl TaskManager {
 
     pub async fn spawn_task(
         &self,
+        session_id: &str,
         command: &str,
         cwd: &str,
         tool_summary: Option<String>,
@@ -411,21 +413,27 @@ impl TaskManager {
             cmd.args(["-c", command]);
             cmd
         };
+        super::git::configure_git_environment(&mut cmd);
         cmd.current_dir(if cwd.trim().is_empty() {
             std::env::temp_dir()
         } else {
             PathBuf::from(cwd)
         });
-        self.start_task(cmd, command, tool_summary, is_daemon).await
+        self.start_task(session_id, cmd, command, tool_summary, is_daemon)
+            .await
     }
 
     async fn start_task(
         &self,
+        session_id: &str,
         mut cmd: Command,
         command: &str,
         tool_summary: Option<String>,
         is_daemon: bool,
     ) -> Result<TaskInfo, String> {
+        if session_id.trim().is_empty() {
+            return Err("Task session id must not be empty".into());
+        }
         let task_id = format!("task_{}", uuid::Uuid::new_v4());
         // Validate/open exclusively BEFORE spawning; never advertise an unavailable log.
         let (path, file) = create_log(&self.log_dir, &task_id).await?;
@@ -450,6 +458,7 @@ impl TaskManager {
         let cancel = CancellationToken::new(); // intentionally NOT tied to parent run
         let info = TaskInfo {
             id: task_id.clone(),
+            session_id: session_id.into(),
             command: command.into(),
             tool_summary,
             is_daemon,
@@ -506,11 +515,14 @@ impl TaskManager {
         Ok(info)
     }
 
-    pub async fn list_tasks(&self) -> Vec<TaskInfo> {
+    pub async fn list_tasks(&self, session_id: &str) -> Vec<TaskInfo> {
         let entries: Vec<_> = self.tasks.read().await.values().cloned().collect();
         let mut list = Vec::new();
         for entry in entries {
             let guard = entry.read().await;
+            if guard.info.session_id != session_id {
+                continue;
+            }
             let mut info = guard.info.clone();
             info.recent_output = guard.output(MAX_OUTPUT_LINES);
             list.push(info);
@@ -521,30 +533,46 @@ impl TaskManager {
 
     pub async fn get_status(
         &self,
+        session_id: &str,
         task_id: &str,
         tail_lines: Option<usize>,
     ) -> Result<TaskInfo, String> {
-        let entry = self.entry(task_id).await?;
+        let entry = self.entry(session_id, task_id).await?;
         let guard = entry.read().await;
         let mut info = guard.info.clone();
         info.recent_output = guard.output(tail_lines.unwrap_or(50).clamp(1, MAX_OUTPUT_LINES));
         Ok(info)
     }
 
-    async fn entry(&self, task_id: &str) -> Result<Arc<RwLock<TaskEntry>>, String> {
-        self.tasks
+    async fn entry(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Arc<RwLock<TaskEntry>>, String> {
+        let missing = || format!("Task '{task_id}' not found");
+        let entry = self
+            .tasks
             .read()
             .await
             .get(task_id)
             .cloned()
-            .ok_or_else(|| format!("Task '{task_id}' not found"))
+            .ok_or_else(missing)?;
+        if entry.read().await.info.session_id != session_id {
+            return Err(missing());
+        }
+        Ok(entry)
     }
 
-    pub async fn send_input(&self, task_id: &str, input: &str) -> Result<String, String> {
+    pub async fn send_input(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        input: &str,
+    ) -> Result<String, String> {
+        let entry = self.entry(session_id, task_id).await?;
         if input.len() > MAX_INPUT_BYTES {
             return Err(format!("Task input exceeds {MAX_INPUT_BYTES} bytes"));
         }
-        let entry = self.entry(task_id).await?;
         let (tx, cancel) = {
             let guard = entry.read().await;
             if guard.info.status != "running"
@@ -574,8 +602,8 @@ impl TaskManager {
         }
     }
 
-    pub async fn kill_task(&self, task_id: &str) -> Result<String, String> {
-        let entry = self.entry(task_id).await?;
+    pub async fn kill_task(&self, session_id: &str, task_id: &str) -> Result<String, String> {
+        let entry = self.entry(session_id, task_id).await?;
         {
             let guard = entry.read().await;
             if guard.info.completed_at.is_some() {
@@ -612,6 +640,119 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn foreign_task_id_is_indistinguishable_from_missing() {
+        let mgr = TaskManager::new();
+        let info = mgr
+            .start_task(
+                "other-session",
+                fixture_command("sleep"),
+                "private command",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let status = mgr.get_status("test-session", &info.id, None).await;
+        let input = mgr
+            .send_input("test-session", &info.id, "must not reach stdin")
+            .await;
+        let kill = mgr.kill_task("test-session", &info.id).await;
+        let hidden = |result: Result<String, String>| {
+            assert_eq!(result.unwrap_err(), format!("Task '{}' not found", info.id));
+        };
+        // Ensure RED also cleans up its owned child before asserting.
+        mgr.tasks
+            .read()
+            .await
+            .get(&info.id)
+            .unwrap()
+            .read()
+            .await
+            .cancel
+            .cancel();
+        hidden(status.map(|_| "status leaked".into()));
+        hidden(input);
+        hidden(kill);
+    }
+
+    #[tokio::test]
+    async fn empty_owner_is_rejected_before_spawn_or_log_creation() {
+        let mgr = TaskManager::new();
+        for owner in ["", " \t\n"] {
+            let result = mgr
+                .spawn_task(owner, "echo must-not-spawn", "", None, true)
+                .await;
+            if let Ok(info) = &result {
+                mgr.tasks
+                    .read()
+                    .await
+                    .get(&info.id)
+                    .unwrap()
+                    .read()
+                    .await
+                    .cancel
+                    .cancel();
+            }
+            assert_eq!(result.unwrap_err(), "Task session id must not be empty");
+        }
+        assert!(mgr.tasks.read().await.is_empty());
+        assert!(
+            !mgr.log_dir.exists(),
+            "owner validation must precede log creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tasks_is_scoped_to_owner() {
+        let mgr = TaskManager::new();
+        let mine = mgr
+            .start_task(
+                "test-session",
+                fixture_command("unique"),
+                "mine",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let foreign = mgr
+            .start_task(
+                "other-session",
+                fixture_command("unique"),
+                "foreign",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        finished(&mgr, "test-session", &mine.id).await;
+        finished(&mgr, "other-session", &foreign.id).await;
+        let tasks = mgr.list_tasks("test-session").await;
+        assert_eq!(tasks.len(), 1, "foreign tasks must not be listed");
+        assert_eq!(tasks[0].id, mine.id);
+    }
+
+    #[tokio::test]
+    async fn task_info_serializes_owning_session() {
+        let mgr = TaskManager::new();
+        let info = mgr
+            .start_task(
+                "test-session",
+                fixture_command("unique"),
+                "session fixture",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let done = finished(&mgr, "test-session", &info.id).await;
+        assert_eq!(
+            serde_json::to_value(done).unwrap()["sessionId"],
+            "test-session"
+        );
+    }
+
+    #[tokio::test]
     async fn test_spawn_and_complete_task() {
         let mgr = TaskManager::new();
         let cmd = if cfg!(windows) {
@@ -621,7 +762,7 @@ mod tests {
         };
 
         let info = mgr
-            .spawn_task(cmd, "", Some("Test task".into()), false)
+            .spawn_task("test-session", cmd, "", Some("Test task".into()), false)
             .await
             .expect("spawn task");
 
@@ -633,7 +774,7 @@ mod tests {
         for _ in 0..450 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let status = mgr
-                .get_status(&info.id, Some(10))
+                .get_status("test-session", &info.id, Some(10))
                 .await
                 .expect("get status");
             if status.status == "completed" {
@@ -655,7 +796,7 @@ mod tests {
         };
 
         let info = mgr
-            .spawn_task(cmd, "", Some("Sleep task".into()), true)
+            .spawn_task("test-session", cmd, "", Some("Sleep task".into()), true)
             .await
             .expect("spawn sleep task");
 
@@ -663,21 +804,24 @@ mod tests {
         assert!(info.is_daemon);
 
         // Kill the task
-        let kill_res = mgr.kill_task(&info.id).await.expect("kill task");
+        let kill_res = mgr
+            .kill_task("test-session", &info.id)
+            .await
+            .expect("kill task");
         assert!(kill_res.contains("terminated"));
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let status = mgr
-            .get_status(&info.id, None)
+            .get_status("test-session", &info.id, None)
             .await
             .expect("status after kill");
         assert_eq!(status.status, "killed");
     }
 
-    async fn finished(mgr: &TaskManager, id: &str) -> TaskInfo {
+    async fn finished(mgr: &TaskManager, session_id: &str, id: &str) -> TaskInfo {
         tokio::time::timeout(std::time::Duration::from_secs(45), async {
             loop {
-                let info = mgr.get_status(id, Some(500)).await.unwrap();
+                let info = mgr.get_status(session_id, id, Some(500)).await.unwrap();
                 if info.completed_at.is_some() {
                     return info;
                 }
@@ -762,6 +906,7 @@ mod tests {
         let entry = Arc::new(RwLock::new(TaskEntry {
             info: TaskInfo {
                 id: "task_saturated".into(),
+                session_id: "test-session".into(),
                 command: String::new(),
                 tool_summary: None,
                 is_daemon: true,
@@ -783,7 +928,7 @@ mod tests {
             .write()
             .await
             .insert("task_saturated".into(), entry.clone());
-        let send = mgr.send_input("task_saturated", "blocked");
+        let send = mgr.send_input("test-session", "task_saturated", "blocked");
         tokio::pin!(send);
         tokio::select! {
             _ = &mut send => panic!("queue should be full"),
@@ -814,15 +959,15 @@ mod tests {
             "echo unique"
         };
         let first = a
-            .start_task(fixture_command("unique"), cmd, None, false)
+            .start_task("test-session", fixture_command("unique"), cmd, None, false)
             .await
             .unwrap();
         let second = b
-            .start_task(fixture_command("unique"), cmd, None, false)
+            .start_task("test-session", fixture_command("unique"), cmd, None, false)
             .await
             .unwrap();
-        finished(&a, &first.id).await;
-        finished(&b, &second.id).await;
+        finished(&a, "test-session", &first.id).await;
+        finished(&b, "test-session", &second.id).await;
         assert_ne!(
             first.id, second.id,
             "restart must not reuse task identities"
@@ -835,12 +980,18 @@ mod tests {
     async fn newline_free_output_and_log_have_byte_quotas() {
         let mgr = TaskManager::new();
         let info = mgr
-            .start_task(fixture_command("flood"), "fixture flood", None, false)
+            .start_task(
+                "test-session",
+                fixture_command("flood"),
+                "fixture flood",
+                None,
+                false,
+            )
             .await
             .unwrap();
-        let done = finished(&mgr, &info.id).await;
+        let done = finished(&mgr, "test-session", &info.id).await;
         assert_eq!(done.status, "completed");
-        let listed = mgr.list_tasks().await;
+        let listed = mgr.list_tasks("test-session").await;
         assert!(
             listed[0].recent_output.len() <= 64 * 1024,
             "retained output exceeds byte quota"
@@ -861,7 +1012,13 @@ mod tests {
         let mgr = TaskManager::new();
         // Direct child: no shell can retain pipes after the fixture closes them.
         let info = mgr
-            .start_task(fixture_command("eof"), "fixture eof", None, true)
+            .start_task(
+                "test-session",
+                fixture_command("eof"),
+                "fixture eof",
+                None,
+                true,
+            )
             .await
             .unwrap();
         let entry = mgr.tasks.read().await.get(&info.id).unwrap().clone();
@@ -876,7 +1033,7 @@ mod tests {
         .await
         .expect("fixture must close both output pipes before cancellation");
         entry.read().await.cancel.cancel();
-        let done = tokio::time::timeout(KILL_TIMEOUT, finished(&mgr, &info.id))
+        let done = tokio::time::timeout(KILL_TIMEOUT, finished(&mgr, "test-session", &info.id))
             .await
             .unwrap();
         assert!(done.completed_at.is_some());
@@ -889,7 +1046,10 @@ mod tests {
     #[tokio::test]
     async fn test_task_not_found() {
         let mgr = TaskManager::new();
-        let err = mgr.get_status("nonexistent_task", None).await.unwrap_err();
+        let err = mgr
+            .get_status("test-session", "nonexistent_task", None)
+            .await
+            .unwrap_err();
         assert!(err.contains("not found"));
     }
 
@@ -919,11 +1079,17 @@ mod tests {
             log_dir: path,
         };
         let error = blocked
-            .start_task(fixture_command("unique"), "must not spawn", None, false)
+            .start_task(
+                "test-session",
+                fixture_command("unique"),
+                "must not spawn",
+                None,
+                false,
+            )
             .await
             .unwrap_err();
         assert!(error.contains("log directory"));
-        assert!(blocked.list_tasks().await.is_empty());
+        assert!(blocked.list_tasks("test-session").await.is_empty());
     }
 
     #[tokio::test]
@@ -979,13 +1145,23 @@ mod tests {
     async fn real_stdin_backpressure_is_bounded_and_kill_completes() {
         let mgr = TaskManager::new();
         let info = mgr
-            .start_task(fixture_command("sleep"), "no stdin reader", None, true)
+            .start_task(
+                "test-session",
+                fixture_command("sleep"),
+                "no stdin reader",
+                None,
+                true,
+            )
             .await
             .unwrap();
         let input = "x".repeat(MAX_INPUT_BYTES);
         let mut blocked = false;
         for _ in 0..40 {
-            if mgr.send_input(&info.id, &input).await.is_err() {
+            if mgr
+                .send_input("test-session", &info.id, &input)
+                .await
+                .is_err()
+            {
                 blocked = true;
                 break;
             }
@@ -995,11 +1171,11 @@ mod tests {
             "full pipe/channel must time out, not grow unbounded"
         );
         assert!(mgr
-            .send_input(&info.id, &"x".repeat(MAX_INPUT_BYTES + 1))
+            .send_input("test-session", &info.id, &"x".repeat(MAX_INPUT_BYTES + 1))
             .await
             .is_err());
-        let sending = mgr.send_input(&info.id, &input);
-        let killing = mgr.kill_task(&info.id);
+        let sending = mgr.send_input("test-session", &info.id, &input);
+        let killing = mgr.kill_task("test-session", &info.id);
         let (send_result, kill_result) = tokio::join!(sending, killing);
         assert!(send_result.is_err());
         // Some Windows hosts cannot start taskkill before its deadline. That MUST
@@ -1007,7 +1183,7 @@ mod tests {
         if let Err(error) = kill_result {
             assert!(error.contains("termination"));
         }
-        let done = finished(&mgr, &info.id).await;
+        let done = finished(&mgr, "test-session", &info.id).await;
         assert!(done.pid.is_none());
         assert!(done.completed_at.is_some());
     }
@@ -1017,10 +1193,16 @@ mod tests {
         let entry = {
             let mgr = TaskManager::new();
             let info = mgr
-                .start_task(fixture_command("sleep"), "detached daemon", None, true)
+                .start_task(
+                    "test-session",
+                    fixture_command("sleep"),
+                    "detached daemon",
+                    None,
+                    true,
+                )
                 .await
                 .unwrap();
-            mgr.entry(&info.id).await.unwrap()
+            mgr.entry("test-session", &info.id).await.unwrap()
         };
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(entry.read().await.info.status, "running");
@@ -1042,6 +1224,7 @@ mod tests {
         let mgr = TaskManager::new();
         let info = mgr
             .start_task(
+                "test-session",
                 fixture_command("descendant"),
                 "inherited pipes",
                 None,
@@ -1049,7 +1232,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let done = finished(&mgr, &info.id).await;
+        let done = finished(&mgr, "test-session", &info.id).await;
         assert_eq!(done.status, "completed");
         assert!(done.pid.is_none());
         assert!(done.recent_output.contains("output drain deadline reached"));

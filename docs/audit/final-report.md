@@ -106,3 +106,13 @@ Detail: `runner-fixes.md`, `task-fixes.md`, `tools-fixes.md`, `storage-fixes.md`
 33 tracked files berubah; 8 source/test files baru; laporan/evidence terpisah. Tidak commit/push.
 
 Evaluasi: akurasi 4/5 (gate nyata, belum live upstream/packaged); kelengkapan 3/5 (24 open+11 partial); kejelasan 4/5 (historical/fix/mitigasi dipisah); actionability 4/5 (source/tests/log/register tersedia); keringkasan 3/5 (laporan panjang untuk handoff). Rata-rata 3,6/5. Follow-up paling bernilai: durable run journal, task ownership, retry-attempt transaction. Pengguna wajar menolak label seluruh bug selesai sebelum residual ditutup.
+
+## Residual follow-up: requested checkpoint, task, Git and UI slices
+
+See [residual-backlog-fixes.md](residual-backlog-fixes.md) for current implementation and explicit remaining boundaries. The original audit and quality gates above remain historical.
+
+- F02 checkpoint and RT-06 session boundary implemented; UI-11 preserves the active Live Shell.
+- ST-11 remains partial (total cache/buffer budget); P18 remains partial (descendant ownership); UI-14 bounded scroll and composer-key isolation implemented, broader keyboard auto-scroll/accessibility remains residual.
+- Current register: 56 fixed_bounded, 14 partial_or_mitigated, 18 open (88 records). This is not closure of all audit findings.
+- Required verification: cargo test --manifest-path src-tauri/Cargo.toml: 202 passed, 0 failed, 2 ignored subprocess fixtures. npm test -- --fileParallelism=false: 26 files, 183 passed, 0 failed.
+- TypeScript noEmit and git diff --check passed. Logs: verification/residual-rust-tests.log and verification/residual-frontend-tests.log. No commit/push or executable rebuild.

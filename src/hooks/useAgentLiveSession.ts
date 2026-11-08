@@ -12,6 +12,9 @@ export interface LiveSession {
   council: { contentA: string; reasoningA: string; contentB: string; reasoningB: string };
   terminal: Record<string, string>;
   frame: number | null;
+  checkpointTimer: ReturnType<typeof setTimeout> | null;
+  checkpointBusy: boolean;
+  checkpointGeneration: number;
   subagents: SubagentProgress[];
   skills: SkillInfo[];
   artifactId: string | null;
@@ -25,7 +28,8 @@ export function liveSession(data: SessionData): LiveSession {
     data, runId: null, messageId: null, failed: false, stopRequested: false,
     startedAt: null, text: { content: '', reasoning: '' },
     council: { contentA: '', reasoningA: '', contentB: '', reasoningB: '' },
-    terminal: {}, frame: null, subagents: [], skills: [], artifactId: data.artifacts[0]?.id ?? null,
+    terminal: {}, frame: null, checkpointTimer: null, checkpointBusy: false, checkpointGeneration: 0,
+    subagents: [], skills: [], artifactId: data.artifacts[0]?.id ?? null,
     authoritative: false, starting: false, cancelledBeforeStart: false,
   };
 }
