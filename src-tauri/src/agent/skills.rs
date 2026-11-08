@@ -3,6 +3,7 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
@@ -139,15 +140,7 @@ pub async fn load_skills(configured_paths: &[String]) -> Vec<SkillInfo> {
 }
 
 async fn read_skill(path: &Path, source: &Path) -> Result<SkillInfo, String> {
-    let metadata = tokio::fs::metadata(path)
-        .await
-        .map_err(|error| error.to_string())?;
-    if metadata.len() > 256 * 1024 {
-        return Err("SKILL.md exceeds the 256 KiB metadata/read limit".into());
-    }
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|error| error.to_string())?;
+    let content = read_bounded_skill(path).await?;
     let frontmatter = parse_frontmatter(&content)?;
     let name = frontmatter
         .name
@@ -237,14 +230,80 @@ pub fn normalize_skill_instructions(content: &str) -> String {
         .replace("`web_extract`", "`fetch_web_page`")
 }
 
-pub async fn read_skill_content(skill: &SkillInfo) -> Result<String, String> {
-    let raw = tokio::fs::read_to_string(&skill.path)
+const MAX_SKILL_BYTES: u64 = 256 * 1024;
+
+async fn read_bounded_skill(path: &Path) -> Result<String, String> {
+    let metadata = tokio::fs::symlink_metadata(path)
         .await
-        .map_err(|e| format!("Failed to read skill at {}: {}", skill.path, e))?;
+        .map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_SKILL_BYTES
+    {
+        return Err("Skill must be a regular file no larger than 256 KiB".into());
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let opened = file.metadata().await.map_err(|e| e.to_string())?;
+    if !opened.is_file() || opened.len() > MAX_SKILL_BYTES {
+        return Err("Skill changed or exceeds 256 KiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SKILL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_SKILL_BYTES {
+        return Err("Skill exceeds 256 KiB".into());
+    }
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+pub async fn read_skill_content(skill: &SkillInfo) -> Result<String, String> {
+    let source = Path::new(&skill.source);
+    let root = if source.is_file() {
+        source.parent().ok_or("Skill source has no parent")?
+    } else {
+        source
+    };
+    let path = std::fs::canonicalize(&skill.path).map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    if !path.starts_with(&root) {
+        return Err("Skill target escaped its discovered root".into());
+    }
+    let raw = read_bounded_skill(Path::new(&skill.path)).await?;
+    let metadata = parse_frontmatter(&raw)?;
+    let current_name = metadata
+        .name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .or_else(|| path.parent()?.file_name()?.to_str().map(str::to_string));
+    if current_name.as_deref() != Some(skill.name.as_str())
+        || metadata.description.unwrap_or_default().trim() != skill.description.trim()
+    {
+        return Err("Skill metadata changed since discovery; rediscover before activation".into());
+    }
     Ok(normalize_skill_instructions(&raw))
 }
 
 pub async fn save_skill_markdown(
+    name: &str,
+    description: &str,
+    instructions: &str,
+    overwrite: bool,
+) -> Result<SkillInfo, String> {
+    let home = dirs::home_dir().ok_or("Cannot resolve user home directory")?;
+    save_skill_markdown_at(
+        &home.join(".aether-agent"),
+        name,
+        description,
+        instructions,
+        overwrite,
+    )
+    .await
+}
+
+async fn save_skill_markdown_at(
+    config_root: &Path,
     name: &str,
     description: &str,
     instructions: &str,
@@ -291,9 +350,16 @@ pub async fn save_skill_markdown(
         ));
     }
 
-    let home = dirs::home_dir().ok_or("Cannot resolve user home directory")?;
-    let target_dir = home.join(".aether-agent").join("skills").join(&clean_name);
-    let file_path = target_dir.join("SKILL.md");
+    tokio::fs::create_dir_all(config_root)
+        .await
+        .map_err(|e| e.to_string())?;
+    let root = config_root.to_string_lossy();
+    let relative = format!("skills/{clean_name}/SKILL.md");
+    let file_path = super::tools::resolve_workspace_path(&root, &relative)?;
+    let target_dir = file_path
+        .parent()
+        .ok_or("Skill path has no parent")?
+        .to_path_buf();
     if file_path.exists() && !overwrite {
         return Err(format!(
             "Skill '{clean_name}' already exists at {}. To overwrite it, call learn_skill with overwrite: true.",
@@ -304,7 +370,7 @@ pub async fn save_skill_markdown(
         .await
         .map_err(|e| format!("Failed to create skill directory: {e}"))?;
 
-    let file_path = target_dir.join("SKILL.md");
+    let file_path = super::tools::resolve_workspace_path(&root, &relative)?;
     let frontmatter = serde_yaml::to_string(&serde_json::json!({
         "name": clean_name,
         "description": description.trim(),
@@ -316,9 +382,7 @@ pub async fn save_skill_markdown(
     } else {
         format!(
             "---\n{}---\n# {}\n\n{}\n",
-            frontmatter,
-            clean_name,
-            trimmed_instructions
+            frontmatter, clean_name, trimmed_instructions
         )
     };
 
@@ -335,6 +399,74 @@ pub async fn save_skill_markdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_root() -> PathBuf {
+        let root = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("aether-skills-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn regression_skill_save_rejects_external_parent_link() {
+        let root = fixture_root();
+        let config = root.join("config");
+        let outside = root.join("outside");
+        tokio::fs::create_dir(&config).await.unwrap();
+        tokio::fs::create_dir(&outside).await.unwrap();
+        let link = config.join("skills");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(outside.to_string_lossy().replace('/', "\\"))
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "Could not create isolated junction fixture"
+            );
+        }
+        assert!(
+            save_skill_markdown_at(&config, "safe-name", "description", "body", false)
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        #[cfg(windows)]
+        tokio::fs::remove_dir(&link).await.unwrap();
+        #[cfg(unix)]
+        tokio::fs::remove_file(&link).await.unwrap();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn regression_activation_rechecks_size_type_and_identity() {
+        let root = fixture_root();
+        let path = root.join("SKILL.md");
+        tokio::fs::write(&path, "---\nname: safe-skill\ndescription: safe\n---\nbody")
+            .await
+            .unwrap();
+        let skill = read_skill(&path, &root).await.unwrap();
+        tokio::fs::write(&path, "a".repeat(256 * 1024 + 1))
+            .await
+            .unwrap();
+        assert!(read_skill_content(&skill).await.is_err());
+        tokio::fs::write(&path, "---\nname: swapped-skill\n---\nother")
+            .await
+            .unwrap();
+        assert!(read_skill_content(&skill).await.is_err());
+        tokio::fs::remove_file(&path).await.unwrap();
+        tokio::fs::create_dir(&path).await.unwrap();
+        assert!(read_skill_content(&skill).await.is_err());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[test]
     fn discovers_workspace_skills_before_global_namesakes() {
@@ -366,6 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_skill_markdown() {
+        let root = fixture_root();
         let unique = format!(
             "test-skill-{}",
             std::time::SystemTime::now()
@@ -373,8 +506,14 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let res =
-            save_skill_markdown(&unique, "Test description", "Test instructions", false).await;
+        let res = save_skill_markdown_at(
+            &root,
+            &unique,
+            "Test description",
+            "Test instructions",
+            false,
+        )
+        .await;
         assert!(res.is_ok());
         let skill = res.unwrap();
         assert_eq!(skill.name, unique);
@@ -384,12 +523,12 @@ mod tests {
         assert!(content.contains("Test description"));
         assert!(content.contains("Test instructions"));
         // clean up
-        let _ =
-            tokio::fs::remove_dir_all(std::path::Path::new(&skill.path).parent().unwrap()).await;
+        tokio::fs::remove_dir_all(&root).await.unwrap();
     }
 
     #[tokio::test]
     async fn save_skill_markdown_guards_against_accidental_overwrite() {
+        let root = fixture_root();
         let unique = format!(
             "guard-skill-{}",
             std::time::SystemTime::now()
@@ -397,26 +536,26 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let res = save_skill_markdown(&unique, "Initial", "Initial instructions", false).await;
+        let res =
+            save_skill_markdown_at(&root, &unique, "Initial", "Initial instructions", false).await;
         assert!(res.is_ok());
 
         // Attempting to overwrite without overwrite: true must fail
-        let duplicate = save_skill_markdown(&unique, "Second", "Second instructions", false).await;
+        let duplicate =
+            save_skill_markdown_at(&root, &unique, "Second", "Second instructions", false).await;
         assert!(duplicate.is_err());
         assert!(duplicate.unwrap_err().contains("already exists"));
 
         // Overwrite with overwrite: true must succeed
         let overwritten =
-            save_skill_markdown(&unique, "Second", "Updated instructions", true).await;
+            save_skill_markdown_at(&root, &unique, "Second", "Updated instructions", true).await;
         assert!(overwritten.is_ok());
         let content = tokio::fs::read_to_string(&overwritten.unwrap().path)
             .await
             .unwrap();
         assert!(content.contains("Updated instructions"));
 
-        let home = dirs::home_dir().expect("home dir");
-        let _ = tokio::fs::remove_dir_all(home.join(".aether-agent").join("skills").join(&unique))
-            .await;
+        tokio::fs::remove_dir_all(&root).await.unwrap();
     }
 
     #[test]
@@ -428,7 +567,10 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let temp = std::env::temp_dir().join(unique_name);
+        let temp = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(unique_name);
         ensure_starter_skills(&temp);
         assert!(temp.join("systematic-debugging").join("SKILL.md").exists());
         assert!(temp.join("codebase-inspection").join("SKILL.md").exists());
@@ -456,42 +598,47 @@ mod tests {
 
     #[tokio::test]
     async fn save_skill_markdown_rejects_unsafe_or_oversized_names() {
+        let root = fixture_root();
         // Windows-reserved device names must be refused before touching disk.
         for reserved in ["nul", "con", "prn", "aux", "com1", "lpt9"] {
-            let error = save_skill_markdown(reserved, "d", "instructions", false)
+            let error = save_skill_markdown_at(&root, reserved, "d", "instructions", false)
                 .await
                 .expect_err("reserved device name must be rejected");
             assert!(error.contains("reserved"), "{error}");
         }
         // Empty or oversized slugs are rejected as well.
-        assert!(save_skill_markdown("", "d", "instructions", false)
-            .await
-            .is_err());
-        assert!(save_skill_markdown("   ", "d", "instructions", false)
-            .await
-            .is_err());
-        let long = "a".repeat(65);
-        assert!(save_skill_markdown(&long, "d", "instructions", false)
-            .await
-            .is_err());
-        // Oversized description / instruction bodies are rejected.
         assert!(
-            save_skill_markdown("ok-name", &"d".repeat(1025), "instructions", false)
+            save_skill_markdown_at(&root, "", "d", "instructions", false)
                 .await
                 .is_err()
         );
         assert!(
-            save_skill_markdown("ok-name", "d", &"i".repeat(32769), false)
+            save_skill_markdown_at(&root, "   ", "d", "instructions", false)
+                .await
+                .is_err()
+        );
+        let long = "a".repeat(65);
+        assert!(
+            save_skill_markdown_at(&root, &long, "d", "instructions", false)
+                .await
+                .is_err()
+        );
+        // Oversized description / instruction bodies are rejected.
+        assert!(
+            save_skill_markdown_at(&root, "ok-name", &"d".repeat(1025), "instructions", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            save_skill_markdown_at(&root, "ok-name", "d", &"i".repeat(32769), false)
                 .await
                 .is_err()
         );
         // A normal, normalized name still works.
-        let info = save_skill_markdown("Test Skill!", "desc", "do the thing", false)
+        let info = save_skill_markdown_at(&root, "Test Skill!", "desc", "do the thing", false)
             .await
             .expect("valid skill name must be accepted");
         assert_eq!(info.name, "test-skill");
-        let home = dirs::home_dir().expect("home dir");
-        let _ =
-            std::fs::remove_dir_all(home.join(".aether-agent").join("skills").join("test-skill"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

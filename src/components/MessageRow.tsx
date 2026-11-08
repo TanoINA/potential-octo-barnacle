@@ -47,6 +47,7 @@ export const MessageRow = memo(function MessageRow({
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const hasRenderableSegments = Boolean(message.segments?.some((segment) => segment.text?.trim() || segment.toolCalls?.length));
 
   const handleCopy = useCallback(() => {
     let fullText = '';
@@ -155,9 +156,9 @@ export const MessageRow = memo(function MessageRow({
       )}
 
       {/* Interleaved Segments (Hermes style per-turn flow: text -> tools -> text -> tools) */}
-      {!isUser && message.segments && message.segments.length > 0 ? (
+      {!isUser && hasRenderableSegments ? (
         <div className="w-full space-y-3">
-          {message.segments.map((seg, idx) => {
+          {message.segments?.map((seg, idx) => {
             const hasText = Boolean(seg.text && seg.text.trim().length > 0);
             const hasTools = Boolean(seg.toolCalls && seg.toolCalls.length > 0);
             if (!hasText && !hasTools) return null;
@@ -261,7 +262,7 @@ export const MessageRow = memo(function MessageRow({
               {message.content}
             </div>
           )
-        ) : (!message.segments || message.segments.length === 0) ? (
+        ) : !hasRenderableSegments ? (
           message.content && (
             <div className="max-w-full select-text break-words rounded-xl px-4 py-3 text-[13px] leading-6 border border-[#30363d] bg-[#161b22] text-[#e6edf3]">
               <MarkdownRenderer content={message.content} />

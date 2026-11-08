@@ -203,6 +203,27 @@ describe('App modal & panel wiring', () => {
     setNarrowViewport(false);
   });
 
+  it('keeps navigation shortcuts out of an open memory dialog', async () => {
+    const agent = makeAgent();
+    mocks.agent.current = agent;
+    const { default: App } = await import('./App');
+    render(<App />);
+    await runSlashCommand('/memory');
+    const dialog = await screen.findByRole('dialog', { name: 'Workspace memory and instructions' });
+    fireEvent.keyDown(dialog, { key: 'n', ctrlKey: true });
+    fireEvent.keyDown(dialog, { key: 'k', ctrlKey: true });
+    expect(agent.newSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: /model picker/i })).toBeNull();
+  }, 20000);
+
+  it('exposes native errors as an accessible alert', async () => {
+    mocks.agent.current = makeAgent({ lastError: 'Could not save session' });
+    const { default: App } = await import('./App');
+    render(<App />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not save session');
+    expect(screen.getByRole('button', { name: 'Dismiss error' })).toBeTruthy();
+  });
+
   it('opens the session history modal for /history', async () => {
     mocks.agent.current = makeAgent();
     const { default: App } = await import('./App');
@@ -234,6 +255,16 @@ describe('App modal & panel wiring', () => {
     fireEvent.click(screen.getByTitle('More actions (Search, Export, Settings)'));
     fireEvent.click(await screen.findByRole('button', { name: /^Search/ }));
     expect(await screen.findByRole('dialog', { name: 'Spotlight command prompt' })).toBeTruthy();
+  }, 20000);
+
+  it('opens the live shell as an overlay without shrinking the chat column', async () => {
+    mocks.agent.current = makeAgent();
+    const { default: App } = await import('./App');
+    render(<App />);
+    fireEvent.click(screen.getByTitle('Open Live Shell terminal'));
+    const close = await screen.findByRole('button', { name: 'Close live shell' });
+    expect(close.parentElement?.className).toContain('fixed');
+    expect(close.parentElement?.className).not.toContain('shrink-0');
   }, 20000);
 
   it('opens the live shell panel from the header', async () => {

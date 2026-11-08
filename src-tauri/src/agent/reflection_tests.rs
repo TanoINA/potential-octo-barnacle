@@ -258,6 +258,7 @@ async fn anthropic_uses_selected_model_and_low_effort_without_tools() {
     let workspace = TestWorkspace::new();
     let (mut provider, server) = http_mock("NO_OP".into(), 200, std::time::Duration::ZERO).await;
     provider.kind = crate::agent::types::ProviderKind::Anthropic;
+    provider.model = "claude-opus-4-5".into();
     provider.extra_body = json!({"system":"override", "messages":[], "model":"wrong", "tools":[{}], "max_tokens":9999999, "thinking":{"type":"enabled"}, "output_config":{"effort":"high"}, "stream":true}).as_object().unwrap().clone();
     let event = reflect(
         workspace.cwd(),
@@ -276,7 +277,7 @@ async fn anthropic_uses_selected_model_and_low_effort_without_tools() {
         .headers
         .to_ascii_lowercase()
         .contains("x-api-key: mock-key-not-a-secret"));
-    assert_eq!(request.body["model"], "session-specific-model");
+    assert_eq!(request.body["model"], "claude-opus-4-5");
     assert_eq!(request.body["stream"], false);
     assert_eq!(request.body["thinking"]["type"], "disabled");
     assert_eq!(request.body["output_config"]["effort"], "low");
@@ -287,6 +288,35 @@ async fn anthropic_uses_selected_model_and_low_effort_without_tools() {
         .contains("UNTRUSTED DATA"));
     assert!(request.body.get("tools").is_none());
     assert!(request.body.get("tool_choice").is_none());
+}
+
+#[tokio::test]
+async fn reflection_supports_required_thinking_without_enabling_tools() {
+    let workspace = TestWorkspace::new();
+    let (mut provider, server) = http_mock("NO_OP".into(), 200, std::time::Duration::ZERO).await;
+    provider.kind = crate::agent::types::ProviderKind::Anthropic;
+    provider.model = "claude-opus-5-5".into();
+    let result = reflect(
+        workspace.cwd(),
+        &provider,
+        &[],
+        "run",
+        "session",
+        CancellationToken::new(),
+    )
+    .await;
+    if result.is_err() {
+        server.abort();
+    }
+    assert!(
+        result.is_ok(),
+        "reflection must support always-thinking models: {result:?}"
+    );
+    let request = server.await.unwrap();
+    assert_eq!(request.body["thinking"]["type"], "adaptive");
+    assert_eq!(request.body["output_config"]["effort"], "low");
+    assert!(request.body.get("tools").is_none());
+    assert!(request.body.get("temperature").is_none());
 }
 
 #[tokio::test]

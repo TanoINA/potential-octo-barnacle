@@ -6,9 +6,9 @@ interface MemoryModalProps {
   open: boolean;
   onClose: () => void;
   workspaceCwd?: string;
-  onReadMemory: () => Promise<string | null>;
-  onSaveMemory: (content: string) => Promise<void>;
-  onInitMemory: () => Promise<string>;
+  onReadMemory: (expectedWorkspace?: string) => Promise<string | null>;
+  onSaveMemory: (content: string, expectedWorkspace?: string) => Promise<void>;
+  onInitMemory: (expectedWorkspace?: string) => Promise<string>;
 }
 
 export const MemoryModal: React.FC<MemoryModalProps> = ({
@@ -26,14 +26,19 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
+  const workspaceEpochRef = useRef(0);
 
   useEffect(() => {
+    ++workspaceEpochRef.current;
     if (!open) return;
     let active = true;
+    setSaving(false);
     setLoading(true);
     setSavedSuccess(false);
     setError(null);
-    onReadMemory()
+    setContent(null);
+    setOriginalContent(null);
+    onReadMemory(workspaceCwd ?? '')
       .then((data) => {
         if (!active) return;
         setContent(data);
@@ -47,7 +52,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [open, onReadMemory]);
+  }, [open, onReadMemory, workspaceCwd]);
 
   useEffect(() => () => {
     if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
@@ -64,33 +69,37 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
 
   const handleSave = async () => {
     if (content === null) return;
+    const epoch = workspaceEpochRef.current;
     setSaving(true);
     setError(null);
     try {
-      await onSaveMemory(content);
+      await onSaveMemory(content, workspaceCwd ?? '');
+      if (workspaceEpochRef.current !== epoch) return;
       setOriginalContent(content);
       setSavedSuccess(true);
       if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
       savedTimerRef.current = window.setTimeout(() => setSavedSuccess(false), 2000);
     } catch (reason) {
-      setError(`Could not save AGENTS.md: ${String(reason)}`);
+      if (workspaceEpochRef.current === epoch) setError(`Could not save AGENTS.md: ${String(reason)}`);
     } finally {
-      setSaving(false);
+      if (workspaceEpochRef.current === epoch) setSaving(false);
     }
   };
 
   const handleInit = async () => {
+    const epoch = workspaceEpochRef.current;
     setLoading(true);
     setError(null);
     try {
-      await onInitMemory();
-      const updated = await onReadMemory();
+      await onInitMemory(workspaceCwd ?? '');
+      const updated = await onReadMemory(workspaceCwd ?? '');
+      if (workspaceEpochRef.current !== epoch) return;
       setContent(updated);
       setOriginalContent(updated);
     } catch (reason) {
-      setError(`Could not initialize AGENTS.md: ${String(reason)}`);
+      if (workspaceEpochRef.current === epoch) setError(`Could not initialize AGENTS.md: ${String(reason)}`);
     } finally {
-      setLoading(false);
+      if (workspaceEpochRef.current === epoch) setLoading(false);
     }
   };
 

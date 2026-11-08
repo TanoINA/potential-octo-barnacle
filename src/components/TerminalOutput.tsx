@@ -22,6 +22,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const jumpedRef = useRef(false);
+  const stickToBottomRef = useRef(true);
 
   // Jump to bottom initially
   useEffect(() => {
@@ -35,7 +36,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
   // Smart auto-tail: scroll to bottom only when user is already near bottom
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX) {
+    if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
   }, [output]);
@@ -123,6 +124,10 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
       {/* Terminal Body */}
       <div
         ref={scrollRef}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < NEAR_BOTTOM_PX;
+        }}
         className="max-h-72 overflow-x-auto overflow-y-auto select-text p-3 font-mono text-[11px] leading-5 text-[#8b949e] bg-[#0a0d12]"
         data-selectable-text="true"
       >

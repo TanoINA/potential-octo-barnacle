@@ -44,6 +44,7 @@ export function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if (event.key === 'Escape' && isNarrowViewport && sidebarOpen) {
         setSidebarOpen(false);
         return;
@@ -244,7 +245,7 @@ export function App() {
       )}
 
       {liveShellOpen && (
-        <div className="relative h-full w-full max-w-sm shrink-0 border-l border-[#30363d]">
+        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-[#30363d] bg-[#0d1117] shadow-2xl">
           <button
             type="button"
             aria-label="Close live shell"
@@ -258,10 +259,11 @@ export function App() {
       )}
 
       {agent.lastError && (
-        <div className="fixed bottom-4 right-4 z-50 flex max-w-md items-center gap-3 rounded-lg border border-[#f85149]/40 bg-[#161b22] px-4 py-3 text-sm text-[#f85149] shadow-xl">
+        <div role="alert" className="fixed bottom-4 right-4 z-50 flex max-w-md items-center gap-3 rounded-lg border border-[#f85149]/40 bg-[#161b22] px-4 py-3 text-sm text-[#f85149] shadow-xl">
           <AlertCircle size={18} className="shrink-0" />
           <p className="flex-1 text-xs leading-relaxed">{agent.lastError}</p>
           <button
+            aria-label="Dismiss error"
             onClick={agent.clearError}
             className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#f85149]"
           >

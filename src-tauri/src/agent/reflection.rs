@@ -179,7 +179,7 @@ async fn reflect_with_timeout(
         {"role":"user", "content":context},
     ]);
     let options = CompletionOptions {
-        thinking: false,
+        thinking: !super::provider::supports_thinking_off(&safe_provider, ReasoningEffort::Low),
         reasoning_effort: ReasoningEffort::Low,
         temperature: 0.0,
         max_tokens: Some(4096),

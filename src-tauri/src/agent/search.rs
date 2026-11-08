@@ -273,6 +273,7 @@ mod tests {
                 role: "assistant".into(),
                 content: msg.into(),
                 timestamp: 150,
+                provider_messages: None,
                 reasoning: None,
                 tool_calls: None,
                 is_streaming: None,
@@ -415,6 +416,7 @@ mod tests {
                 role: "assistant".into(),
                 content: "zebra".into(),
                 timestamp: 150,
+                provider_messages: None,
                 reasoning: None,
                 tool_calls: None,
                 is_streaming: None,
@@ -456,7 +458,11 @@ mod tests {
 
         // Search using partial prefix "fact"
         let results = search_query_with(&conn, "fact", 10).unwrap();
-        assert_eq!(results.len(), 1, "prefix query 'fact' must match 'factorial'");
+        assert_eq!(
+            results.len(),
+            1,
+            "prefix query 'fact' must match 'factorial'"
+        );
         assert_eq!(results[0].session_id, "s1");
 
         // Search using full word "factorial"

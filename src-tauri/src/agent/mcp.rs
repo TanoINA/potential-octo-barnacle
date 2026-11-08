@@ -4,20 +4,83 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex};
+
+const MAX_MCP_FRAME_BYTES: usize = 1024 * 1024;
+const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn read_frame(
+    reader: &mut (impl AsyncRead + Unpin),
+    buffer: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>, String> {
+    loop {
+        if let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+            if end > MAX_MCP_FRAME_BYTES {
+                return Err("MCP frame exceeds 1 MiB".into());
+            }
+            return Ok(Some(buffer.drain(..=end).collect()));
+        }
+        if buffer.len() > MAX_MCP_FRAME_BYTES {
+            return Err("MCP frame exceeds 1 MiB".into());
+        }
+        let mut chunk = [0u8; 8192];
+        let count = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|e| format!("MCP frame read failed: {e}"))?;
+        if count == 0 {
+            return if buffer.is_empty() {
+                Ok(None)
+            } else {
+                Err("MCP frame truncated at EOF".into())
+            };
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+    }
+}
 
 struct Shared {
     stdin: Mutex<ChildStdin>,
     pending: StdMutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>>,
     next_id: AtomicU64,
+    failure: StdMutex<Option<String>>,
 }
 
 #[derive(Clone)]
 pub struct McpClient {
     shared: Arc<Shared>,
     child: Arc<Mutex<Child>>,
+    reader: Arc<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.reader) == 1 {
+            self.reader.abort();
+            if let Ok(mut child) = self.child.try_lock() {
+                let _ = child.start_kill();
+            } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let child = self.child.clone();
+                runtime.spawn(async move {
+                    let _ = child.lock().await.kill().await;
+                });
+            }
+        }
+    }
+}
+
+struct PendingRequest {
+    shared: Arc<Shared>,
+    id: u64,
+}
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.shared.pending.lock() {
+            pending.remove(&self.id);
+        }
+    }
 }
 
 impl McpClient {
@@ -49,12 +112,21 @@ impl McpClient {
             stdin: Mutex::new(stdin),
             pending: StdMutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            failure: StdMutex::new(None),
         });
         let reader_shared = shared.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+        let child = Arc::new(Mutex::new(child));
+        let reader_child = child.clone();
+        let reader = tokio::spawn(async move {
+            let mut stdout = stdout;
+            let mut buffer = Vec::new();
+            let failure = loop {
+                let line = match read_frame(&mut stdout, &mut buffer).await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break "MCP server closed stdio".to_string(),
+                    Err(error) => break error,
+                };
+                let Ok(message) = serde_json::from_slice::<serde_json::Value>(&line) else {
                     continue;
                 };
                 let Some(id) = message.get("id").and_then(|value| value.as_u64()) else {
@@ -79,16 +151,21 @@ impl McpClient {
                             .unwrap_or(serde_json::Value::Null)));
                     }
                 }
+            };
+            if let Ok(mut state) = reader_shared.failure.lock() {
+                *state = Some(failure.clone());
             }
             if let Ok(mut pending) = reader_shared.pending.lock() {
                 for (_, sender) in pending.drain() {
-                    let _ = sender.send(Err("MCP server closed stdio".into()));
+                    let _ = sender.send(Err(failure.clone()));
                 }
             }
+            let _ = reader_child.lock().await.kill().await;
         });
         let client = Self {
             shared,
-            child: Arc::new(Mutex::new(child)),
+            child,
+            reader: Arc::new(reader),
         };
         client
             .request(
@@ -107,8 +184,20 @@ impl McpClient {
     }
 
     async fn write(&self, mut value: serde_json::Value) -> Result<(), String> {
+        if let Some(error) = self
+            .shared
+            .failure
+            .lock()
+            .map_err(|_| "MCP failure lock poisoned")?
+            .clone()
+        {
+            return Err(error);
+        }
         value["jsonrpc"] = "2.0".into();
         let mut encoded = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+        if encoded.len() > MAX_MCP_FRAME_BYTES {
+            return Err("MCP request frame exceeds 1 MiB".into());
+        }
         encoded.push(b'\n');
         let mut stdin = self.shared.stdin.lock().await;
         stdin
@@ -122,14 +211,28 @@ impl McpClient {
     }
 
     pub async fn notify(&self, method: &str, params: serde_json::Value) -> Result<(), String> {
-        self.write(serde_json::json!({ "method": method, "params": params }))
-            .await
+        tokio::time::timeout(
+            MCP_REQUEST_TIMEOUT,
+            self.write(serde_json::json!({ "method": method, "params": params })),
+        )
+        .await
+        .map_err(|_| "MCP notification timed out".to_string())?
     }
 
     pub async fn request(
         &self,
         method: &str,
         params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.request_with_timeout(method, params, MCP_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
     ) -> Result<serde_json::Value, String> {
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
@@ -138,39 +241,59 @@ impl McpClient {
             .lock()
             .map_err(|_| "MCP pending-request lock was poisoned".to_string())?
             .insert(id, sender);
-        if let Err(error) = self
-            .write(serde_json::json!({ "id": id, "method": method, "params": params }))
-            .await
+        let _pending = PendingRequest {
+            shared: self.shared.clone(),
+            id,
+        };
+        match tokio::time::timeout(timeout, async {
+            self.write(serde_json::json!({ "id": id, "method": method, "params": params }))
+                .await?;
+            receiver
+                .await
+                .map_err(|_| "MCP response channel closed".to_string())?
+        })
+        .await
         {
-            if let Ok(mut pending) = self.shared.pending.lock() {
-                pending.remove(&id);
-            }
-            return Err(error);
-        }
-        match tokio::time::timeout(Duration::from_secs(20), receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                if let Ok(mut pending) = self.shared.pending.lock() {
-                    pending.remove(&id);
-                }
-                Err("MCP response channel closed".into())
-            }
+            Ok(result) => result,
             Err(_) => {
-                if let Ok(mut pending) = self.shared.pending.lock() {
-                    pending.remove(&id);
-                }
-                Err(format!("MCP request '{method}' timed out after 20s"))
+                self.shutdown().await;
+                Err(format!(
+                    "MCP request '{method}' timed out; server side effects are indeterminate"
+                ))
             }
         }
     }
 
     pub async fn list_tools(&self) -> Result<Vec<serde_json::Value>, String> {
-        let result = self.request("tools/list", serde_json::json!({})).await?;
-        Ok(result
-            .get("tools")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default())
+        let mut tools = Vec::new();
+        let mut params = serde_json::json!({});
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes = 0;
+        for _ in 0..64 {
+            let result = self.request("tools/list", params).await?;
+            let page = result
+                .get("tools")
+                .and_then(|value| value.as_array())
+                .ok_or("MCP tools/list missing tools array")?;
+            bytes += serde_json::to_vec(&result)
+                .map_err(|e| e.to_string())?
+                .len();
+            if tools.len() + page.len() > 4096 || bytes > 8 * MAX_MCP_FRAME_BYTES {
+                return Err("MCP tool catalog exceeds limit".into());
+            }
+            tools.extend(page.iter().cloned());
+            match result.get("nextCursor") {
+                None | Some(serde_json::Value::Null) => return Ok(tools),
+                Some(cursor) => {
+                    let cursor = cursor.as_str().ok_or("MCP next cursor must be a string")?;
+                    if !seen.insert(cursor.to_string()) {
+                        return Err("MCP tools/list repeated cursor".into());
+                    }
+                    params = serde_json::json!({"cursor":cursor});
+                }
+            }
+        }
+        Err("MCP tool pagination exceeds 64 pages".into())
     }
 
     pub async fn call_tool(
@@ -187,21 +310,34 @@ impl McpClient {
 
     pub async fn shutdown(&self) {
         let mut child = self.child.lock().await;
+        self.reader.abort();
+        if let Ok(mut state) = self.shared.failure.lock() {
+            *state = Some("MCP transport closed".into());
+        }
+        if let Ok(mut pending) = self.shared.pending.lock() {
+            for (_, sender) in pending.drain() {
+                let _ = sender.send(Err("MCP transport closed".into()));
+            }
+        }
         if let Some(id) = child.id() {
             #[cfg(windows)]
             {
-                let _ = super::create_hidden_command("taskkill")
-                    .arg("/PID")
-                    .arg(id.to_string())
-                    .arg("/T")
-                    .arg("/F")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    super::create_hidden_command("taskkill")
+                        .arg("/PID")
+                        .arg(id.to_string())
+                        .arg("/T")
+                        .arg("/F")
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .kill_on_drop(true)
+                        .status(),
+                )
+                .await;
             }
-            let _ = child.kill().await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.kill()).await;
         }
     }
 }
@@ -300,6 +436,19 @@ impl McpManager {
 }
 
 pub fn result_text(value: &serde_json::Value) -> String {
+    let mut text = unbounded_result_text(value);
+    if text.len() > 200_000 {
+        let mut end = 200_000;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n[MCP result truncated at 200000 bytes]");
+    }
+    text
+}
+
+fn unbounded_result_text(value: &serde_json::Value) -> String {
     if let Some(content) = value.get("content").and_then(|value| value.as_array()) {
         let text = content
             .iter()
@@ -388,6 +537,136 @@ pub async fn call_server_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server_config(script: &str) -> McpServerConfig {
+        let mut config = audit_server_config();
+        config.args = vec!["-e".into(), script.into()];
+        config
+    }
+
+    #[tokio::test]
+    async fn discovery_follows_pages_and_rejects_cursor_cycles() {
+        let script = r#"
+const rl = require('readline').createInterface({input:process.stdin});
+rl.on('line', line => {
+ const m=JSON.parse(line), send=result=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');
+ if(m.method==='initialize') send({});
+ if(m.method==='tools/list') send(m.params.cursor ? {tools:[{name:'second',inputSchema:{type:'object'}}]} : {tools:[{name:'first'}],nextCursor:'page2'});
+ if(m.method==='tools/call') send({content:[{text:m.params.name}]});
+});"#;
+        let manager = McpManager::connect(&[server_config(script)], &audit_cwd()).await;
+        assert!(manager.warnings.is_empty(), "{:?}", manager.warnings);
+        assert_eq!(manager.tools.len(), 2);
+        assert!(manager.contains("mcp__mock__second"));
+        assert_eq!(
+            result_text(
+                &manager
+                    .call("mcp__mock__second", serde_json::json!({}))
+                    .await
+                    .unwrap()
+            ),
+            "second"
+        );
+        manager.shutdown().await;
+        let cycle = script.replace(
+            "m.params.cursor ? {tools:[{name:'second',inputSchema:{type:'object'}}]} : ",
+            "",
+        );
+        let client = McpClient::connect(&server_config(&cycle), &audit_cwd())
+            .await
+            .unwrap();
+        assert!(client.list_tools().await.unwrap_err().contains("cursor"));
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn oversized_frames_fail_and_transport_is_closed() {
+        let script = r#"
+const rl=require('readline').createInterface({input:process.stdin});
+rl.on('line',line=>{
+ const m=JSON.parse(line);
+ if(m.method==='initialize') process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
+ if(m.method==='tools/list') process.stdout.write('x'.repeat(2*1024*1024));
+});"#;
+        let client = McpClient::connect(&server_config(script), &audit_cwd())
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), client.list_tools()).await;
+        client.shutdown().await;
+        let error = result
+            .expect("oversized frame must fail before request timeout")
+            .unwrap_err();
+        assert!(error.contains("frame"), "{error}");
+        assert!(client.shared.pending.lock().unwrap().is_empty());
+        assert!(client.child.lock().await.try_wait().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn full_request_deadline_covers_blocked_stdin_and_pending_cleanup() {
+        let script = r#"
+const rl=require('readline').createInterface({input:process.stdin});
+rl.on('line',line=>{
+ const m=JSON.parse(line);
+ if(m.method==='initialize') process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
+ if(m.method==='notifications/initialized') { process.stdin.pause(); rl.pause(); setInterval(()=>{},1000); }
+});"#;
+        let client = McpClient::connect(&server_config(script), &audit_cwd())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let params = serde_json::json!({"text":"x".repeat(800_000)});
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(6),
+            client.request_with_timeout("blocked", params, Duration::from_millis(150)),
+        )
+        .await;
+        client.shutdown().await;
+        assert!(result.unwrap().unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert!(client.shared.pending.lock().unwrap().is_empty());
+        assert!(client.child.lock().await.try_wait().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn dropping_request_removes_pending_entry() {
+        let script = r#"
+require('readline').createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line); if(m.method==='initialize') process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
+});"#;
+        let client = McpClient::connect(&server_config(script), &audit_cwd())
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(50),
+            client.request("never", serde_json::json!({}))
+        )
+        .await
+        .is_err());
+        assert!(client.shared.pending.lock().unwrap().is_empty());
+        client.shutdown().await;
+    }
+
+    #[test]
+    fn published_result_text_has_utf8_safe_byte_cap() {
+        let text = "雪".repeat(100_000);
+        let result = result_text(&serde_json::json!({"content":[{"text":text}]}));
+        assert!(result.len() <= 200_100);
+        assert!(result.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn dropping_last_client_stops_reader_and_child() {
+        let client = McpClient::connect(&audit_server_config(), &audit_cwd())
+            .await
+            .unwrap();
+        let child = client.child.clone();
+        let reader = Arc::downgrade(&client.reader);
+        drop(client);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(reader.upgrade().is_none());
+        assert!(child.lock().await.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn aliases_are_provider_safe() {

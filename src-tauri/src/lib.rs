@@ -16,6 +16,31 @@ pub struct AppState {
     pub runner: Arc<AgentRunner>,
 }
 
+fn bind_workspace(explicit: Option<&str>, fallback: &str) -> Result<String, String> {
+    storage::canonical_workspace(explicit.unwrap_or(fallback))
+}
+
+fn validate_memory_workspace(expected: Option<&str>, current: &str) -> Result<(), String> {
+    if let Some(expected) = expected {
+        let expected = storage::canonical_workspace(expected)?;
+        let current = storage::canonical_workspace(current)?;
+        if expected != current {
+            return Err(
+                "Workspace changed while the memory editor was open; reopen the editor".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_council_scope(a: &AgentRunRequest, b: &AgentRunRequest) -> Result<(), String> {
+    if a.run_id != b.run_id || a.session_id != b.session_id || a.execution_mode != b.execution_mode
+    {
+        return Err("Council candidates must share run, session, and execution scope".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn send_message(
     app: AppHandle,
@@ -28,6 +53,7 @@ async fn send_message(
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
     let runner = state.runner.clone();
+    let cwd = bind_workspace(request.workspace_cwd.as_deref(), &cwd)?;
     let cancel = runner.begin(&request.run_id, &request.session_id)?;
     let run_id = request.run_id.clone();
     tokio::spawn(async move {
@@ -50,6 +76,13 @@ async fn send_council_message(
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
     let runner = state.runner.clone();
+    validate_council_scope(&request_a, &request_b)?;
+    let cwd_a = bind_workspace(request_a.workspace_cwd.as_deref(), &cwd)?;
+    let cwd_b = bind_workspace(request_b.workspace_cwd.as_deref(), &cwd)?;
+    if cwd_a != cwd_b {
+        return Err("Council candidates must share the same workspace".into());
+    }
+    let cwd = cwd_a;
     let cancel = runner.begin(&request_a.run_id, &request_a.session_id)?;
     let run_id = request_a.run_id.clone();
     tokio::spawn(async move {
@@ -112,7 +145,7 @@ async fn save_settings(settings: AgentSettings) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_sessions() -> Result<Vec<Session>, String> {
-    Ok(storage::list_sessions().await)
+    storage::list_sessions().await
 }
 
 #[tauri::command]
@@ -137,7 +170,7 @@ async fn toggle_pin_session(session_id: String) -> Result<Session, String> {
 
 #[tauri::command]
 async fn list_all_artifacts() -> Result<Vec<agent::types::GlobalArtifactItem>, String> {
-    Ok(storage::list_all_artifacts().await)
+    storage::list_all_artifacts().await
 }
 
 #[tauri::command]
@@ -192,12 +225,16 @@ fn workspace_agents_path(cwd: &str) -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-async fn init_workspace_agents_md(state: State<'_, AppState>) -> Result<String, String> {
+async fn init_workspace_agents_md(
+    state: State<'_, AppState>,
+    expected_workspace: Option<String>,
+) -> Result<String, String> {
     let cwd = state
         .workspace_cwd
         .lock()
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
+    validate_memory_workspace(expected_workspace.as_deref(), &cwd)?;
     let path = workspace_agents_path(&cwd)?;
     if path.exists() {
         return Ok(format!("AGENTS.md already exists at {}", path.display()));
@@ -282,7 +319,10 @@ async fn init_workspace_agents_md(state: State<'_, AppState>) -> Result<String, 
 }
 
 #[tauri::command]
-async fn read_workspace_agents_md(state: State<'_, AppState>) -> Result<Option<String>, String> {
+async fn read_workspace_agents_md(
+    state: State<'_, AppState>,
+    expected_workspace: Option<String>,
+) -> Result<Option<String>, String> {
     let cwd = state
         .workspace_cwd
         .lock()
@@ -291,6 +331,7 @@ async fn read_workspace_agents_md(state: State<'_, AppState>) -> Result<Option<S
     if cwd.is_empty() {
         return Ok(None);
     }
+    validate_memory_workspace(expected_workspace.as_deref(), &cwd)?;
     let path = workspace_agents_path(&cwd)?;
     if path.exists() {
         let metadata = tokio::fs::metadata(&path)
@@ -312,6 +353,7 @@ async fn read_workspace_agents_md(state: State<'_, AppState>) -> Result<Option<S
 async fn save_workspace_agents_md(
     state: State<'_, AppState>,
     content: String,
+    expected_workspace: Option<String>,
 ) -> Result<(), String> {
     let cwd = state
         .workspace_cwd
@@ -321,6 +363,7 @@ async fn save_workspace_agents_md(
     if cwd.is_empty() {
         return Err("No active workspace selected.".into());
     }
+    validate_memory_workspace(expected_workspace.as_deref(), &cwd)?;
     if content.len() > MAX_AGENTS_MD_BYTES {
         return Err("AGENTS.md exceeds the 1 MiB limit.".into());
     }
@@ -568,9 +611,10 @@ pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::Path
     let decoded = decode_percent(clean);
     #[cfg(target_os = "windows")]
     let decoded = {
-        let trimmed = if decoded.starts_with('/') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
-            &decoded[1..]
-        } else if decoded.starts_with('\\') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
+        let trimmed = if (decoded.starts_with('/') || decoded.starts_with('\\'))
+            && decoded.len() > 2
+            && decoded.chars().nth(2) == Some(':')
+        {
             &decoded[1..]
         } else {
             &decoded
@@ -608,63 +652,152 @@ pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::Path
     }
 }
 
+// Build the exact native-open argument; no command interpreter is involved.
+fn build_open_target(target: &str, cwd: &str) -> Result<std::ffi::OsString, String> {
+    let target = target.trim();
+    if target.is_empty() || target.chars().any(char::is_control) {
+        return Err("Invalid open target".into());
+    }
+    if let Ok(url) = url::Url::parse(target) {
+        if matches!(url.scheme(), "http" | "https" | "mailto") {
+            if url.scheme() != "mailto" && url.host_str().is_none() {
+                return Err("URL requires a host".into());
+            }
+            return Ok(target.into());
+        }
+        let windows_drive = target.as_bytes().get(1) == Some(&b':')
+            && target
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic);
+        if url.scheme() != "file" && !windows_drive {
+            return Err("Unsupported URL scheme".into());
+        }
+        if url.scheme() == "file"
+            && url
+                .host_str()
+                .is_some_and(|host| !host.is_empty() && host != "localhost")
+        {
+            return Err("Remote file targets are not allowed".into());
+        }
+    }
+    let resolved = resolve_open_target(target, cwd);
+    let resolved_text = resolved.to_string_lossy();
+    let clean = resolved_text
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&resolved_text);
+    if clean.starts_with(r"\\") || clean.starts_with("//") {
+        return Err("UNC/device targets are not allowed".into());
+    }
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|error| format!("Open target is unavailable: {error}"))?;
+    let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err("Target must be a regular file or directory".into());
+    }
+    if metadata.is_file() {
+        let extension = canonical
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Permit documents only; arbitrary registered extensions can launch code.
+        if !matches!(
+            extension.as_str(),
+            "txt"
+                | "md"
+                | "markdown"
+                | "pdf"
+                | "json"
+                | "csv"
+                | "log"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "bmp"
+                | "svg"
+                | "html"
+                | "htm"
+                | "doc"
+                | "docx"
+                | "xls"
+                | "xlsx"
+                | "ppt"
+                | "pptx"
+                | "odt"
+                | "ods"
+                | "rtf"
+        ) {
+            return Err(
+                "Opening executable, shortcut, or unknown file types is not allowed".into(),
+            );
+        }
+    }
+    Ok(canonical.into_os_string())
+}
+
+#[cfg(target_os = "windows")]
+fn native_open(target: &std::ffi::OsStr) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            window: *mut std::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+    let file: Vec<u16> = target.encode_wide().chain(std::iter::once(0)).collect();
+    if file[..file.len() - 1].contains(&0) {
+        return Err("Open target contains NUL".into());
+    }
+    let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    // File and verb are passed directly to ShellExecute, with no parameters and no cmd.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if result <= 32 {
+        Err(format!("Native opener failed (Windows error {result})"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn native_open(target: &std::ffi::OsStr) -> Result<(), String> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Native opener failed: {error}"))
+}
+
 #[tauri::command]
 async fn open_path_or_url(state: State<'_, AppState>, path_or_url: String) -> Result<(), String> {
-    let target = path_or_url.trim();
-    if target.is_empty() {
-        return Ok(());
-    }
-
-    // 1. Web URLs: open in default browser
-    if target.starts_with("http://") || target.starts_with("https://") || target.starts_with("mailto:") {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            std::process::Command::new("rundll32")
-                .creation_flags(0x08000000)
-                .args(["url.dll,FileProtocolHandler", target])
-                .spawn()
-                .map_err(|e| format!("Failed to open URL in browser: {e}"))?;
-            return Ok(());
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::process::Command::new("open")
-                .arg(target)
-                .spawn()
-                .map_err(|e| format!("Failed to open URL: {e}"))?;
-            return Ok(());
-        }
-    }
-
-    // 2. Local files / directories
     let cwd = state
         .workspace_cwd
         .lock()
-        .map_err(|_| "Workspace lock is unavailable".to_string())?
+        .map_err(|_| "Workspace lock is unavailable")?
         .clone();
-
-    let resolved = resolve_open_target(target, &cwd);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let path_str = resolved.to_string_lossy().to_string();
-        std::process::Command::new("cmd")
-            .creation_flags(0x08000000)
-            .args(["/C", "start", "", &path_str])
-            .spawn()
-            .map_err(|e| format!("Failed to open file: {e}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::process::Command::new("open")
-            .arg(&resolved)
-            .spawn()
-            .map_err(|e| format!("Failed to open file: {e}"))?;
-        Ok(())
-    }
+    let target = build_open_target(&path_or_url, &cwd)?;
+    native_open(&target)
 }
 
 #[tauri::command]
@@ -781,9 +914,11 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
 
     #[cfg(target_os = "windows")]
     {
-        let dir_str = valid_dir.to_string_lossy().replace('/', "\\");
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "powershell", "-NoExit", "-Command", &format!("Set-Location -LiteralPath '{}'", dir_str.replace('\'', "''"))])
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("powershell.exe")
+            .creation_flags(0x00000010)
+            .current_dir(&valid_dir)
+            .args(["-NoLogo", "-NoExit"])
             .spawn()
             .map_err(|e| format!("Failed to open terminal: {e}"))?;
         Ok(())
@@ -822,8 +957,13 @@ async fn kill_background_task(task_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn get_background_task_output(task_id: String, tail_lines: Option<usize>) -> Result<agent::tasks::TaskInfo, String> {
-    agent::tasks::get_task_manager().get_status(&task_id, tail_lines).await
+async fn get_background_task_output(
+    task_id: String,
+    tail_lines: Option<usize>,
+) -> Result<agent::tasks::TaskInfo, String> {
+    agent::tasks::get_task_manager()
+        .get_status(&task_id, tail_lines)
+        .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -912,9 +1052,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn memory_workspace_binding_rejects_stale_editor_without_fallback() {
+        let current = std::env::current_dir().unwrap();
+        let current = current.to_string_lossy();
+        assert!(validate_memory_workspace(Some(""), &current).is_err());
+        assert!(validate_memory_workspace(Some("missing-editor-workspace"), &current).is_err());
+        assert!(validate_memory_workspace(Some(&current), &current).is_ok());
+        assert!(validate_memory_workspace(None, &current).is_ok());
+    }
+
+    #[test]
+    fn regression_workspace_binding_is_explicit_and_fail_closed() {
+        assert_eq!(bind_workspace(Some(""), "missing-global").unwrap(), "");
+        assert!(bind_workspace(Some("missing-explicit"), "").is_err());
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            bind_workspace(None, &cwd.to_string_lossy()).unwrap(),
+            storage::canonical_workspace(&cwd.to_string_lossy()).unwrap()
+        );
+    }
+
+    #[test]
+    fn regression_council_scope_rejected_before_registry_begin() {
+        let a: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "runId":"run-a", "sessionId":"session-a", "provider":{}, "messages":[]
+        }))
+        .unwrap();
+        let mut b = a.clone();
+        assert!(validate_council_scope(&a, &b).is_ok());
+        b.run_id = "different-run".into();
+        assert!(validate_council_scope(&a, &b).is_err());
+        b = a.clone();
+        b.session_id = "different-session".into();
+        assert!(validate_council_scope(&a, &b).is_err());
+        b = a.clone();
+        b.execution_mode = agent::types::ExecutionMode::RequestReview;
+        assert!(validate_council_scope(&a, &b).is_err());
+    }
+
+    #[test]
+    fn regression_native_open_builder_keeps_metacharacters_literal() {
+        let root = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("aether-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("literal & % ^ spaces.txt");
+        std::fs::write(&file, "fixture").unwrap();
+        let target = build_open_target(
+            "literal%20%26%20%25%20%5E%20spaces.txt",
+            &root.to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(
+            target,
+            std::fs::canonicalize(&file).unwrap().into_os_string()
+        );
+        for unsafe_target in [
+            "javascript:alert(1)",
+            "custom:payload",
+            "missing.txt",
+            "a\0b",
+            r"\\server\share\file.txt",
+        ] {
+            assert!(build_open_target(unsafe_target, &root.to_string_lossy()).is_err());
+        }
+        for ext in ["exe", "cmd", "bat", "lnk", "url", "ps1", "js", "vbs"] {
+            let executable = root.join(format!("blocked.{ext}"));
+            std::fs::write(&executable, "fixture").unwrap();
+            assert!(build_open_target(&executable.to_string_lossy(), "").is_err());
+        }
+        assert_eq!(
+            build_open_target("https://example.com/a?q=%26", "").unwrap(),
+            std::ffi::OsString::from("https://example.com/a?q=%26")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn test_decode_percent_escapes() {
         assert_eq!(decode_percent("hello%20world"), "hello world");
-        assert_eq!(decode_percent("D:/My%20Documents/Tugas%201/file.docx"), "D:/My Documents/Tugas 1/file.docx");
+        assert_eq!(
+            decode_percent("D:/My%20Documents/Tugas%201/file.docx"),
+            "D:/My Documents/Tugas 1/file.docx"
+        );
         assert_eq!(decode_percent("plain_text.txt"), "plain_text.txt");
     }
 
@@ -932,10 +1153,16 @@ mod tests {
             assert_eq!(resolved3.to_string_lossy(), "D:\\folder name\\doc.docx");
 
             let resolved4 = resolve_open_target("file:///D:/folder with space/doc.docx", "");
-            assert_eq!(resolved4.to_string_lossy(), "D:\\folder with space\\doc.docx");
+            assert_eq!(
+                resolved4.to_string_lossy(),
+                "D:\\folder with space\\doc.docx"
+            );
 
             let resolved5 = resolve_open_target("clutter/script.py", "D:/UNIKOM/Pemrograman");
-            assert_eq!(resolved5.to_string_lossy(), "D:\\UNIKOM\\Pemrograman\\clutter\\script.py");
+            assert_eq!(
+                resolved5.to_string_lossy(),
+                "D:\\UNIKOM\\Pemrograman\\clutter\\script.py"
+            );
         }
     }
 }

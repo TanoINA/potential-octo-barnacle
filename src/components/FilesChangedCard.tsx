@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { Check, ChevronDown, ChevronUp, ExternalLink, FileCode2, GitBranch, GitCommit, GitCompare, GitPullRequest, Loader2, Undo2 } from 'lucide-react';
 import type { FileDiffStat, ToolCallItem } from '../types/agent';
 
+const UNSCOPED_RECEIPT_REASON = 'Review-only: this receipt has no verified workspace origin. Use the workspace Git controls for current changes.';
+
 interface FilesChangedCardProps {
   toolCalls: ToolCallItem[];
   onSelectArtifact?: (id: string) => void;
@@ -57,7 +59,11 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   const [fileActions, setFileActions] = useState<Record<string, 'reverted' | 'accepted' | 'loading'>>({});
   const [isMinimized, setIsMinimized] = useState(false);
 
+  // Persisted tool receipts have no workspace/revision identity. Never infer it
+  // from the currently selected workspace (which may now be another repo).
+  const canMutate = false;
   const handleRevertFile = async (filePath: string) => {
+    if (!canMutate) return;
     setFileActions((prev) => ({ ...prev, [filePath]: 'loading' }));
     try {
       await invoke('revert_file_changes', { path: filePath });
@@ -75,6 +81,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   };
 
   const handleStageFile = async (filePath: string) => {
+    if (!canMutate) return;
     setFileActions((prev) => ({ ...prev, [filePath]: 'loading' }));
     try {
       await invoke('stage_file_changes', { path: filePath });
@@ -118,7 +125,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   }, []);
 
   const handleCommit = async (push: boolean) => {
-    if (!(commitMessage || '').trim()) return;
+    if (!canMutate || !(commitMessage || '').trim()) return;
     setIsCommitting(true);
     setCommitResult(null);
     try {
@@ -191,7 +198,9 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
           {gitStatus?.isRepo && (
             <button
               type="button"
+              disabled={!canMutate}
               onClick={() => {
+                if (!canMutate) return;
                 if (isMinimized) setIsMinimized(false);
                 setShowCommitBar((prev) => !prev);
               }}
@@ -214,6 +223,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         </div>
       </div>
 
+      {!isMinimized && <p role="note" className="border-b border-[#30363d] px-3.5 py-2 text-[11px] text-[#8b949e]">{UNSCOPED_RECEIPT_REASON}</p>}
       {/* File List */}
       {!isMinimized && (
         <div className="divide-y divide-[#21262d]/60 bg-[#0d1117] p-1">
@@ -277,7 +287,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                   <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
                     <button
                       type="button"
-                      disabled={fileActions[stat.path] === 'loading'}
+                      disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleStageFile(stat.path)}
                       className="flex items-center gap-0.5 rounded border border-[#238636]/40 bg-[#238636]/10 px-1.5 py-0.5 text-[10px] text-[#3fb950] hover:bg-[#238636]/20 transition-colors"
                       title="Accept / stage this file change"
@@ -287,7 +297,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                     </button>
                     <button
                       type="button"
-                      disabled={fileActions[stat.path] === 'loading'}
+                      disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleRevertFile(stat.path)}
                       className="flex items-center gap-0.5 rounded border border-[#da3633]/40 bg-[#da3633]/10 px-1.5 py-0.5 text-[10px] text-[#f85149] hover:bg-[#da3633]/20 transition-colors"
                       title="Revert / discard changes to this file"

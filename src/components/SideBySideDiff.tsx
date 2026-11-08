@@ -51,6 +51,8 @@ export const SideBySideDiff: React.FC<SideBySideDiffProps> = ({ diffText }) => {
 
     let oldLineNum = 1;
     let newLineNum = 1;
+    let oldRemaining = 0;
+    let newRemaining = 0;
 
     let pendingOld: { num: number; text: string }[] = [];
     let pendingNew: { num: number; text: string }[] = [];
@@ -88,38 +90,32 @@ export const SideBySideDiff: React.FC<SideBySideDiffProps> = ({ diffText }) => {
     };
 
     for (const rawLine of rawLines) {
-      if (rawLine.startsWith('---') || rawLine.startsWith('+++')) {
+      const match = rawLine.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (match) {
+        flushPending();
+        oldLineNum = Number(match[1]);
+        newLineNum = Number(match[3]);
+        oldRemaining = match[2] === undefined ? 1 : Number(match[2]);
+        newRemaining = match[4] === undefined ? 1 : Number(match[4]);
+        rows.push({ oldContent: rawLine, newContent: rawLine, type: 'hunk' });
+        continue;
+      }
+      // Markers are metadata, not source lines, and do not split a change pair.
+      if (rawLine.startsWith('\\ No newline at end of file')) continue;
+      if (oldRemaining === 0 && newRemaining === 0) {
+        flushPending();
         continue;
       }
 
-      if (rawLine.startsWith('@@')) {
+      if (rawLine.startsWith('-') && oldRemaining > 0) {
+        pendingOld.push({ num: oldLineNum++, text: rawLine.slice(1) });
+        oldRemaining--;
+      } else if (rawLine.startsWith('+') && newRemaining > 0) {
+        pendingNew.push({ num: newLineNum++, text: rawLine.slice(1) });
+        newRemaining--;
+      } else if (rawLine.startsWith(' ') && oldRemaining > 0 && newRemaining > 0) {
         flushPending();
-        const match = rawLine.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (match) {
-          oldLineNum = parseInt(match[1], 10);
-          newLineNum = parseInt(match[2], 10);
-        }
-        rows.push({
-          oldContent: rawLine,
-          newContent: rawLine,
-          type: 'hunk',
-        });
-        continue;
-      }
-
-      if (rawLine.startsWith('-')) {
-        pendingOld.push({
-          num: oldLineNum++,
-          text: rawLine.slice(1),
-        });
-      } else if (rawLine.startsWith('+')) {
-        pendingNew.push({
-          num: newLineNum++,
-          text: rawLine.slice(1),
-        });
-      } else {
-        flushPending();
-        const content = rawLine.startsWith(' ') ? rawLine.slice(1) : rawLine;
+        const content = rawLine.slice(1);
         rows.push({
           oldLineNumber: oldLineNum++,
           newLineNumber: newLineNum++,
@@ -127,6 +123,8 @@ export const SideBySideDiff: React.FC<SideBySideDiffProps> = ({ diffText }) => {
           newContent: content,
           type: 'unchanged',
         });
+        oldRemaining--;
+        newRemaining--;
       }
     }
 

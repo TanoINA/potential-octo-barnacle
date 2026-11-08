@@ -501,10 +501,35 @@ fn diff_line_stats(previous: &str, updated: &str) -> (usize, usize) {
     (additions, deletions)
 }
 
-/// Atomically write `bytes` to `path` only when the on-disk state still matches
-/// the snapshot the tool read (`expected = None` means the file must not
-/// exist). This re-verification is what stops a stale tool write from silently
-/// destroying a change made by a concurrent user editor, linter, or formatter.
+// Shared by every in-process tool/subagent. Weak entries do not retain locks
+// forever. Callers must hold the guard from their initial read through write.
+async fn lock_file_mutation(path: &Path) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    type Locks = std::collections::HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<Locks>> = std::sync::OnceLock::new();
+    let lock = {
+        let mut locks = LOCKS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| "File mutation lock was poisoned")?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        // Canonical paths normalize aliases; Windows comparison is case-insensitive.
+        #[cfg(windows)]
+        let key = PathBuf::from(path.to_string_lossy().to_lowercase());
+        #[cfg(not(windows))]
+        let key = path.to_path_buf();
+        if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(key, Arc::downgrade(&lock));
+            lock
+        }
+    };
+    Ok(lock.lock_owned().await)
+}
+
+/// Recheck the snapshot before atomic replacement. This catches changes already
+/// visible at recheck, NOT external-editor writes between recheck and rename.
 async fn guarded_atomic_write(
     path: &Path,
     bytes: &[u8],
@@ -542,6 +567,8 @@ async fn write_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecution
     if content.len() > MAX_FILE_BYTES as usize {
         return Err("write_file content exceeds 10 MiB".into());
     }
+    let _mutation = lock_file_mutation(&path).await?;
+    let rel_path = workspace_relative_path(cwd, &path)?;
     let previous = read_existing_text(&path).await?;
     let (additions, deletions) = diff_line_stats(previous.as_deref().unwrap_or(""), content);
     guarded_atomic_write(&path, content.as_bytes(), previous.as_deref()).await?;
@@ -558,10 +585,6 @@ async fn write_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecution
         content.to_string(),
         Some(path.to_string_lossy().to_string()),
     ));
-    let rel_path = path
-        .strip_prefix(cwd)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| filename.to_string());
     let mut res = ToolExecutionResult::success(
         format!("Wrote {} bytes to {}", content.len(), path.display()),
         artifact,
@@ -586,6 +609,7 @@ async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionR
         .or_else(|| args.get("replace_all"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let _mutation = lock_file_mutation(&path).await?;
     let original = {
         let metadata = tokio::fs::metadata(&path)
             .await
@@ -636,10 +660,7 @@ async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionR
             similar::ChangeTag::Equal => {}
         }
     }
-    let rel_path = path
-        .strip_prefix(cwd)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| filename.to_string());
+    let rel_path = workspace_relative_path(cwd, &path)?;
     guarded_atomic_write(&path, updated.as_bytes(), Some(&original)).await?;
     let artifact = new_artifact(
         format!("Diff: {filename}"),
@@ -976,7 +997,9 @@ async fn run_command(
 
     if is_daemon {
         let mgr = super::tasks::get_task_manager();
-        let task_info = mgr.spawn_task(command, &context.cwd, tool_summary, true).await?;
+        let task_info = mgr
+            .spawn_task(command, &context.cwd, tool_summary, true)
+            .await?;
         let output_msg = format!(
             "Background task started successfully.\nTaskId: {}\nStatus: {}\nPID: {}\nLog Path: {}\nUse `manage_task` with action 'status' to monitor output or 'kill' to terminate.",
             task_info.id,
@@ -1259,9 +1282,13 @@ async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, St
             Ok(ToolExecutionResult::success(formatted, None))
         }
         "status" => {
-            let task_id = optional_string(args, "taskId", "task_id")
-                .ok_or_else(|| "Missing required parameter 'taskId' for action 'status'".to_string())?;
-            let tail_lines = args.get("tailLines").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let task_id = optional_string(args, "taskId", "task_id").ok_or_else(|| {
+                "Missing required parameter 'taskId' for action 'status'".to_string()
+            })?;
+            let tail_lines = args
+                .get("tailLines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
             let info = mgr.get_status(task_id, tail_lines).await?;
             let formatted = format!(
                 "Task: {}\nCommand: {}\nStatus: {}\nPID: {}\nStarted: {}ms\nCompleted: {}\nExit Code: {}\nLog Path: {}\n\n--- Recent Output ---\n{}",
@@ -1278,15 +1305,17 @@ async fn manage_task(args: &serde_json::Value) -> Result<ToolExecutionResult, St
             Ok(ToolExecutionResult::success(formatted, None))
         }
         "send_input" => {
-            let task_id = optional_string(args, "taskId", "task_id")
-                .ok_or_else(|| "Missing required parameter 'taskId' for action 'send_input'".to_string())?;
+            let task_id = optional_string(args, "taskId", "task_id").ok_or_else(|| {
+                "Missing required parameter 'taskId' for action 'send_input'".to_string()
+            })?;
             let input = required_string(args, "input")?;
             let res = mgr.send_input(task_id, input).await?;
             Ok(ToolExecutionResult::success(res, None))
         }
         "kill" => {
-            let task_id = optional_string(args, "taskId", "task_id")
-                .ok_or_else(|| "Missing required parameter 'taskId' for action 'kill'".to_string())?;
+            let task_id = optional_string(args, "taskId", "task_id").ok_or_else(|| {
+                "Missing required parameter 'taskId' for action 'kill'".to_string()
+            })?;
             let res = mgr.kill_task(task_id).await?;
             Ok(ToolExecutionResult::success(res, None))
         }
@@ -1507,6 +1536,14 @@ fn is_public_ip(ip: IpAddr) -> bool {
     }
 }
 
+pub(super) fn workspace_relative_path(cwd: &str, path: &Path) -> Result<String, String> {
+    let root =
+        std::fs::canonicalize(cwd).map_err(|error| format!("Workspace is unavailable: {error}"))?;
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| "Resolved path cannot be made relative to the active workspace".into())
+}
+
 pub fn resolve_workspace_path(cwd: &str, requested: &str) -> Result<PathBuf, String> {
     if requested.contains('\0') || requested.starts_with(r"\\?\") || requested.starts_with(r"\\.\")
     {
@@ -1667,6 +1704,68 @@ mod tests {
         let path = std::env::temp_dir().join(format!("aether-tools-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn nested_mutations_report_workspace_relative_path() {
+        let root = workspace();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("config.ts"), "root").unwrap();
+        std::fs::write(root.join("src/config.ts"), "nested").unwrap();
+        let cwd = root.to_string_lossy();
+        let written = write_file(
+            &serde_json::json!({"path":"src/config.ts","content":"first"}),
+            &cwd,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.files_changed.unwrap()[0].path, "src/config.ts");
+        let edited = edit_file(
+            &serde_json::json!({"path":"src/config.ts","oldString":"first","newString":"second"}),
+            &cwd,
+        )
+        .await
+        .unwrap();
+        assert_eq!(edited.files_changed.unwrap()[0].path, "src/config.ts");
+        assert_eq!(
+            std::fs::read_to_string(root.join("config.ts")).unwrap(),
+            "root"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mutations_wait_for_same_file_lock_before_reading() {
+        let root = workspace();
+        let file = root.join("shared.txt");
+        std::fs::write(&file, "one two").unwrap();
+        let resolved = std::fs::canonicalize(&file).unwrap();
+        let held = lock_file_mutation(&resolved).await.unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let mut editing = tokio::spawn(async move {
+            edit_file(
+                &serde_json::json!({"path":"shared.txt","oldString":"two","newString":"three"}),
+                &cwd,
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), &mut editing)
+                .await
+                .is_err()
+        );
+        std::fs::write(&file, "updated two").unwrap();
+        drop(held);
+        editing.await.unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "updated three");
+        let cwd = root.to_string_lossy();
+        let a = serde_json::json!({"path":"shared.txt","oldString":"updated","newString":"first"});
+        let b = serde_json::json!({"path":"shared.txt","oldString":"three","newString":"second"});
+        let (a, b) = tokio::join!(edit_file(&a, &cwd), edit_file(&b, &cwd));
+        a.unwrap();
+        b.unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "first second");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1913,7 +2012,9 @@ mod tests {
         .await
         .expect("spawn daemon");
         assert!(spawn_res.success);
-        assert!(spawn_res.output.contains("Background task started successfully"));
+        assert!(spawn_res
+            .output
+            .contains("Background task started successfully"));
 
         // Extract taskId
         let task_id = spawn_res

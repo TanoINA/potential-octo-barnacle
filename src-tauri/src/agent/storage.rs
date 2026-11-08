@@ -1,6 +1,6 @@
 use super::types::{
-    AgentSettings, AttachedContext, ChatMessage, GlobalArtifactItem, McpServerConfig, ProviderConfig,
-    ProviderKind, Session, SessionData,
+    AgentSettings, AttachedContext, ChatMessage, GlobalArtifactItem, McpServerConfig,
+    ProviderConfig, ProviderKind, Session, SessionData,
 };
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -204,27 +204,13 @@ fn session_path(id: &str) -> Result<PathBuf, String> {
     Ok(sessions_dir().join(format!("{id}.json")))
 }
 
-pub async fn list_sessions() -> Vec<Session> {
+pub async fn list_sessions() -> Result<Vec<Session>, String> {
     let _guard = SESSION_IO_LOCK.lock().await;
-    let mut sessions = Vec::new();
-    let Ok(mut entries) = fs::read_dir(sessions_dir()).await else {
-        return sessions;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(path).await else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        if let Ok(data) = parse_session(value) {
-            sessions.push(data.session);
-        }
-    }
+    let mut sessions: Vec<_> = read_session_directory(&sessions_dir())
+        .await?
+        .into_iter()
+        .map(|data| data.session)
+        .collect();
     sessions.sort_by(|a, b| match (a.pinned, b.pinned) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
@@ -242,39 +228,63 @@ pub async fn list_sessions() -> Vec<Session> {
             .then_with(|| b.created_at.cmp(&a.created_at))
             .then_with(|| a.id.cmp(&b.id)),
     });
-    sessions
+    Ok(sessions)
 }
 
-pub async fn list_all_artifacts() -> Vec<GlobalArtifactItem> {
-    let _guard = SESSION_IO_LOCK.lock().await;
-    let mut items = Vec::new();
-    let Ok(mut entries) = fs::read_dir(sessions_dir()).await else {
-        return items;
+// Fail visibly rather than returning a misleading partial/empty catalog.
+async fn read_session_directory(root: &Path) -> Result<Vec<SessionData>, String> {
+    let mut entries = match fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Could not list {}: {error}", root.display())),
     };
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    let mut data = Vec::new();
+    let mut diagnostics = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| format!("Could not enumerate {}: {error}", root.display()))?
+    {
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let Ok(content) = fs::read_to_string(path).await else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        if let Ok(data) = parse_session(value) {
-            for art in data.artifacts {
-                items.push(GlobalArtifactItem {
-                    session_id: data.session.id.clone(),
-                    session_title: data.session.title.clone(),
-                    session_updated_at: data.session.updated_at,
-                    artifact: art,
-                });
-            }
+        let id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        match read_session_file(&path, id).await {
+            Ok(Some(session)) => data.push(session),
+            Ok(None) => diagnostics.push(format!("{} disappeared during listing", path.display())),
+            Err(error) => diagnostics.push(error),
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(data)
+    } else {
+        Err(format!(
+            "Session catalog has unreadable entries ({} valid sessions preserved):\n{}",
+            data.len(),
+            diagnostics.join("\n")
+        ))
+    }
+}
+
+pub async fn list_all_artifacts() -> Result<Vec<GlobalArtifactItem>, String> {
+    let _guard = SESSION_IO_LOCK.lock().await;
+    let mut items = Vec::new();
+    for data in read_session_directory(&sessions_dir()).await? {
+        for art in data.artifacts {
+            items.push(GlobalArtifactItem {
+                session_id: data.session.id.clone(),
+                session_title: data.session.title.clone(),
+                session_updated_at: data.session.updated_at,
+                artifact: art,
+            });
         }
     }
     items.sort_by_key(|a| std::cmp::Reverse(a.artifact.timestamp));
-    items
+    Ok(items)
 }
 
 pub async fn load_session(session_id: &str) -> Result<SessionData, String> {
@@ -284,19 +294,48 @@ pub async fn load_session(session_id: &str) -> Result<SessionData, String> {
 
 async fn load_session_unlocked(session_id: &str) -> Result<SessionData, String> {
     let path = session_path(session_id)?;
-    let content = fs::read_to_string(&path)
-        .await
-        .map_err(|error| format!("Could not load session {session_id}: {error}"))?;
-    let value = serde_json::from_str(&content)
-        .map_err(|error| format!("Session JSON is invalid: {error}"))?;
-    parse_session(value)
+    read_session_file(&path, session_id)
+        .await?
+        .ok_or_else(|| format!("Session {session_id} was not found"))
+}
+
+async fn read_session_file(path: &Path, expected_id: &str) -> Result<Option<SessionData>, String> {
+    let content = match fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+    };
+    let value = serde_json::from_str(&content).map_err(|error| {
+        format!(
+            "{}: invalid JSON; original preserved: {error}",
+            path.display()
+        )
+    })?;
+    let data = parse_session(value)
+        .map_err(|error| format!("{}: {error}; original preserved", path.display()))?;
+    validate_safe_id(&data.session.id)?;
+    if data.session.id != expected_id {
+        return Err(format!(
+            "{}: session ID does not match filename; original preserved",
+            path.display()
+        ));
+    }
+    Ok(Some(data))
 }
 
 fn parse_session(value: serde_json::Value) -> Result<SessionData, String> {
+    if !value.is_object() {
+        return Err("Session must be a JSON object".into());
+    }
     if value.get("session").is_some() {
         return serde_json::from_value(value)
             .map_err(|error| format!("Session schema is invalid: {error}"));
     }
+    let id = value
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or("Legacy session requires an ID")?;
+    validate_safe_id(id)?;
     let session = Session {
         id: value
             .get("id")
@@ -411,10 +450,8 @@ fn merge_pin_state(data: &mut Session, previous: &Session, pin_is_authoritative:
     if pin_is_authoritative {
         return;
     }
-    if data.pinned_at.is_none() && previous.pinned {
-        data.pinned = previous.pinned;
-        data.pinned_at = previous.pinned_at;
-    }
+    data.pinned = previous.pinned;
+    data.pinned_at = previous.pinned_at;
 }
 
 async fn save_session_unlocked(data: SessionData) -> Result<(), String> {
@@ -422,15 +459,45 @@ async fn save_session_unlocked(data: SessionData) -> Result<(), String> {
 }
 
 async fn save_session_unlocked_with_pin_policy(
-    mut data: SessionData,
+    data: SessionData,
     pin_is_authoritative: bool,
 ) -> Result<(), String> {
     let path = session_path(&data.session.id)?;
+    let stored = save_session_file(&path, data, pin_is_authoritative).await?;
+    let _ = super::search::index_session(&stored);
+    Ok(())
+}
+
+async fn save_session_file(
+    path: &Path,
+    mut data: SessionData,
+    metadata_is_authoritative: bool,
+) -> Result<SessionData, String> {
+    if fs::try_exists(path.with_extension("deleted"))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "Session was deleted; stale snapshots cannot recreate it. Create a new session ID."
+                .into(),
+        );
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let mut is_substantive_change = true;
-    if let Ok(previous) = load_session_unlocked(&data.session.id).await {
+    if let Some(previous) = read_session_file(path, &data.session.id).await? {
         data.session.created_at = previous.session.created_at;
-        merge_pin_state(&mut data.session, &previous.session, pin_is_authoritative);
+        // Native metadata wins over queued snapshots once a conversation exists.
+        // Empty sessions may still acquire the first automatically generated title.
+        if !metadata_is_authoritative
+            && !(previous.messages.is_empty() && previous.session.title == "New Chat")
+        {
+            data.session.title = previous.session.title.clone();
+        }
+        merge_pin_state(
+            &mut data.session,
+            &previous.session,
+            metadata_is_authoritative,
+        );
         merge_self_improvements(&mut data, &previous);
 
         // Preserve previous updated_at if session content is unmodified,
@@ -439,16 +506,14 @@ async fn save_session_unlocked_with_pin_policy(
             && data.session.title == previous.session.title
             && data.session.workspace_cwd == previous.session.workspace_cwd
             && data.session.pinned == previous.session.pinned
-            && data.messages.len() == previous.messages.len()
-            && data.artifacts.len() == previous.artifacts.len()
-            && data
-                .messages
-                .last()
-                .map(|m| (&m.id, &m.content, &m.run_id, &m.run_status))
-                == previous
-                    .messages
-                    .last()
-                    .map(|m| (&m.id, &m.content, &m.run_id, &m.run_status))
+            && serde_json::to_value((&data.messages, &data.artifacts, &data.model_override))
+                .map_err(|e| e.to_string())?
+                == serde_json::to_value((
+                    &previous.messages,
+                    &previous.artifacts,
+                    &previous.model_override,
+                ))
+                .map_err(|e| e.to_string())?
         {
             is_substantive_change = false;
             data.session.updated_at = previous.session.updated_at;
@@ -469,9 +534,8 @@ async fn save_session_unlocked_with_pin_policy(
         data.session.workspace_cwd = Some(clean);
     }
     let content = serde_json::to_vec_pretty(&data).map_err(|error| error.to_string())?;
-    atomic_write(&path, &content).await?;
-    let _ = super::search::index_session(&data);
-    Ok(())
+    atomic_write(path, &content).await?;
+    Ok(data)
 }
 
 fn bounded_title(title: &str) -> String {
@@ -511,7 +575,7 @@ pub async fn rename_session(session_id: &str, title: &str) -> Result<SessionData
     let _guard = SESSION_IO_LOCK.lock().await;
     let mut data = load_session_unlocked(session_id).await?;
     data.session.title = bounded_title(title);
-    save_session_unlocked(data).await?;
+    save_session_unlocked_with_pin_policy(data, true).await?;
     load_session_unlocked(session_id).await
 }
 
@@ -524,18 +588,19 @@ pub async fn toggle_pin_session(session_id: &str) -> Result<Session, String> {
     } else {
         data.session.pinned_at = None;
     }
-    let updated_session = data.session.clone();
     save_session_unlocked_with_pin_policy(data, true).await?;
-    Ok(updated_session)
+    Ok(load_session_unlocked(session_id).await?.session)
 }
 
 pub async fn delete_session(session_id: &str) -> Result<(), String> {
     let _guard = SESSION_IO_LOCK.lock().await;
     let path = session_path(session_id)?;
-    if path.exists() {
-        fs::remove_file(path)
-            .await
-            .map_err(|error| format!("Could not delete session: {error}"))?;
+    // A durable marker prevents late snapshots from recreating a deleted ID.
+    atomic_write(&path.with_extension("deleted"), b"deleted\n").await?;
+    match fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not delete session: {error}")),
     }
     let _ = super::search::delete_session_index(session_id);
     Ok(())
@@ -567,24 +632,148 @@ fn tool_call_path(call: &super::types::ToolCallItem) -> Option<String> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum TranscriptPart<'a> {
+    Text(&'a str),
+    Tool(&'a super::types::ToolCallItem),
+}
+
+pub(crate) fn ordered_transcript(message: &ChatMessage) -> Vec<TranscriptPart<'_>> {
+    let mut parts = Vec::new();
+    let mut seen_tools = std::collections::HashSet::new();
+    if let Some(segments) = message
+        .segments
+        .as_ref()
+        .filter(|segments| !segments.is_empty())
+    {
+        // Segments are authoritative: preamble/content are flattened UI mirrors.
+        for segment in segments {
+            if let Some(text) = segment.text.as_deref().filter(|text| !text.is_empty()) {
+                parts.push(TranscriptPart::Text(text));
+            }
+            for call in segment.tool_calls.iter().flatten() {
+                if seen_tools.insert(call.id.as_str()) {
+                    let latest = message
+                        .tool_calls
+                        .iter()
+                        .flatten()
+                        .find(|current| current.id == call.id)
+                        .unwrap_or(call);
+                    parts.push(TranscriptPart::Tool(latest));
+                }
+            }
+        }
+        // Frontend content concatenates all post-preamble chunks, not just the
+        // final segment. Compare the joined narrative, retaining only a truly
+        // absent tail from older snapshots with incomplete segment persistence.
+        let narrative: String = segments
+            .iter()
+            .filter_map(|segment| segment.text.as_deref())
+            .collect();
+        let aggregate_narrative = message
+            .preamble
+            .as_deref()
+            .and_then(|preamble| narrative.strip_prefix(preamble))
+            .unwrap_or(&narrative);
+        let mut offset = 0;
+        let mirrored = segments.iter().any(|segment| {
+            let matches = narrative[offset..] == message.content;
+            offset += segment.text.as_deref().unwrap_or_default().len();
+            matches
+        });
+        let missing = if mirrored {
+            ""
+        } else {
+            message
+                .content
+                .strip_prefix(aggregate_narrative)
+                .unwrap_or(&message.content)
+        };
+        if !missing.is_empty() {
+            parts.push(TranscriptPart::Text(missing));
+        }
+    } else {
+        if let Some(preamble) = message.preamble.as_deref().filter(|text| !text.is_empty()) {
+            parts.push(TranscriptPart::Text(preamble));
+        }
+        for call in message.tool_calls.iter().flatten() {
+            if seen_tools.insert(call.id.as_str()) {
+                parts.push(TranscriptPart::Tool(call));
+            }
+        }
+        if !message.content.is_empty()
+            && message.preamble.as_deref() != Some(message.content.as_str())
+        {
+            parts.push(TranscriptPart::Text(&message.content));
+        }
+    }
+    for call in message.tool_calls.iter().flatten() {
+        if seen_tools.insert(call.id.as_str()) {
+            parts.push(TranscriptPart::Tool(call));
+        }
+    }
+    parts
+}
+
+fn transcript_text(message: &ChatMessage) -> String {
+    ordered_transcript(message)
+        .into_iter()
+        .map(|part| match part {
+            TranscriptPart::Text(text) => text.to_string(),
+            TranscriptPart::Tool(call) => format!(
+                "Tool {} [{}] (id: {})\nArguments: {}\nResult: {}",
+                call.name,
+                call.status,
+                call.id,
+                call.args,
+                call.result
+                    .as_deref()
+                    .or(call.terminal_output.as_deref())
+                    .unwrap_or("(no result)")
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn deterministic_summary(messages: &[ChatMessage]) -> String {
     let mut goals = Vec::new();
+    let mut checkpoints = Vec::new();
     let mut assistant_conclusions = Vec::new();
     let mut tool_activity = Vec::new();
     let mut files_touched = std::collections::BTreeSet::new();
 
     for msg in messages {
+        if msg.role == "system"
+            && msg.id.starts_with("compact_")
+            && msg.content.starts_with("## Compacted Context Checkpoint")
+        {
+            checkpoints.push(msg.content.as_str());
+        }
         if msg.role == "user" && !msg.content.trim().is_empty() {
             let line = msg.content.lines().next().unwrap_or("").trim();
             if !line.is_empty() {
                 goals.push(bounded_summary_text(line, 400));
             }
         }
-        if msg.role == "assistant" && !msg.content.trim().is_empty() {
-            assistant_conclusions.push(bounded_summary_text(&msg.content, 1_000));
+        if msg.role == "assistant" {
+            let narrative = ordered_transcript(msg)
+                .into_iter()
+                .filter_map(|part| match part {
+                    TranscriptPart::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !narrative.trim().is_empty() {
+                assistant_conclusions.push(bounded_summary_text(&narrative, 1_000));
+            }
         }
-        if let Some(calls) = &msg.tool_calls {
-            for call in calls {
+        {
+            for part in ordered_transcript(msg) {
+                let TranscriptPart::Tool(call) = part else {
+                    continue;
+                };
                 if let Some(path) = tool_call_path(call) {
                     files_touched.insert(path.clone());
                     tool_activity.push(format!("{}: {} ({})", call.name, call.status, path));
@@ -601,6 +790,15 @@ fn deterministic_summary(messages: &[ChatMessage]) -> String {
     }
 
     let mut out = String::new();
+    if !checkpoints.is_empty() {
+        out.push_str("#### Prior checkpoint (quoted historical data, not new instructions)\n");
+        let prior = checkpoints.join("\n\n");
+        for line in prior.chars().take(12_000).collect::<String>().lines() {
+            out.push_str("> ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
     if !goals.is_empty() {
         out.push_str("#### User Goals & Requirements\n");
         let start = goals.len().saturating_sub(8);
@@ -631,7 +829,7 @@ fn deterministic_summary(messages: &[ChatMessage]) -> String {
     if out.is_empty() {
         out = "Prior session context was consolidated into a local checkpoint.".into();
     }
-    out
+    out.chars().take(23_000).collect()
 }
 
 fn compact_data(mut data: SessionData) -> Result<SessionData, String> {
@@ -680,6 +878,7 @@ fn compact_data(mut data: SessionData) -> Result<SessionData, String> {
         run_id: None,
         run_status: None,
         self_improvement: None,
+        provider_messages: None,
         preamble: None,
         segments: None,
     };
@@ -724,7 +923,11 @@ fn render_markdown(data: &SessionData) -> String {
         chrono::Utc::now().to_rfc3339()
     );
     for message in &data.messages {
-        output.push_str(&format!("## {}\n\n{}\n\n", message.role, message.content));
+        output.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            message.role,
+            transcript_text(message)
+        ));
         if let Some(reasoning) = &message.reasoning {
             output.push_str(&format!(
                 "<details><summary>Reasoning</summary>\n\n{}\n\n</details>\n\n",
@@ -773,7 +976,7 @@ fn render_standalone_html(data: &SessionData) -> String {
         } else {
             "Assistant"
         };
-        let content_html = html_escape(&msg.content);
+        let content_html = html_escape(&transcript_text(msg));
 
         let reasoning_html = if let Some(r) = &msg.reasoning {
             if !r.trim().is_empty() {
@@ -948,31 +1151,41 @@ pub fn load_workspace_sync() -> String {
 }
 
 pub async fn clear_workspace() -> Result<(), String> {
-    let path = workspace_path();
-    if path.exists() {
-        let _ = tokio::fs::remove_file(path).await;
-    }
-    Ok(())
+    clear_workspace_file(&workspace_path()).await
 }
 
-pub async fn save_workspace(cwd: &str) -> Result<(), String> {
-    let trimmed = cwd.trim();
-    if trimmed.is_empty() {
-        return clear_workspace().await;
+async fn clear_workspace_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Could not clear workspace {}: {error}",
+            path.display()
+        )),
     }
-    let canonical = std::fs::canonicalize(trimmed)
+}
+
+// Shared by workspace persistence and IPC request binding; never reads config.
+pub fn canonical_workspace(cwd: &str) -> Result<String, String> {
+    if cwd.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let canonical = std::fs::canonicalize(cwd.trim())
         .map_err(|error| format!("Workspace is unavailable: {error}"))?;
     if !canonical.is_dir() {
         return Err("Workspace must be an existing directory".into());
     }
+    let value = canonical.to_string_lossy().to_string();
     #[cfg(target_os = "windows")]
-    let clean_cwd = {
-        let s = canonical.to_string_lossy().to_string();
-        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-    };
-    #[cfg(not(target_os = "windows"))]
-    let clean_cwd = canonical.to_string_lossy().to_string();
+    let value = value.strip_prefix(r"\\?\").unwrap_or(&value).to_string();
+    Ok(value)
+}
 
+pub async fn save_workspace(cwd: &str) -> Result<(), String> {
+    let clean_cwd = canonical_workspace(cwd)?;
+    if clean_cwd.is_empty() {
+        return clear_workspace().await;
+    }
     let content = serde_json::to_vec_pretty(&serde_json::json!({"cwd": clean_cwd}))
         .map_err(|error| error.to_string())?;
     atomic_write(&workspace_path(), &content).await
@@ -1028,16 +1241,28 @@ pub async fn save_attachment(
         return Err("Attachment exceeds the 25 MiB limit".into());
     }
 
-    let target_dir = match workspace_cwd {
-        Some(cwd) if !cwd.trim().is_empty() && Path::new(cwd).is_dir() => {
-            Path::new(cwd).join(".aether-agent").join("attachments")
+    let root = match workspace_cwd {
+        Some(cwd) if !cwd.trim().is_empty() => {
+            let canonical = canonical_workspace(cwd)?;
+            PathBuf::from(canonical)
         }
-        _ => config_dir().join("attachments"),
+        _ => {
+            let root = config_dir();
+            fs::create_dir_all(&root).await.map_err(|e| e.to_string())?;
+            root
+        }
     };
-
+    let relative_dir = if workspace_cwd.is_some_and(|cwd| !cwd.trim().is_empty()) {
+        ".aether-agent/attachments"
+    } else {
+        "attachments"
+    };
+    let root_text = root.to_string_lossy();
+    let target_dir = super::tools::resolve_workspace_path(&root_text, relative_dir)?;
     fs::create_dir_all(&target_dir)
         .await
         .map_err(|e| format!("Failed to create attachments directory: {e}"))?;
+    let target_dir = super::tools::resolve_workspace_path(&root_text, relative_dir)?;
 
     let clean_name = Path::new(name)
         .file_name()
@@ -1056,7 +1281,9 @@ pub async fn save_attachment(
 
     let suffix = &Uuid::new_v4().simple().to_string()[..8];
     let unique_filename = format!("{stem}_{suffix}{ext}");
-    let file_path = target_dir.join(&unique_filename);
+    let relative_file = format!("{relative_dir}/{unique_filename}");
+    let file_path = super::tools::resolve_workspace_path(&root_text, &relative_file)?;
+    debug_assert!(file_path.starts_with(&target_dir));
 
     atomic_write(&file_path, bytes).await?;
 
@@ -1077,6 +1304,279 @@ pub async fn save_attachment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_dir() -> PathBuf {
+        let root = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("aether-storage-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn regression_attachment_rejects_external_link_and_missing_workspace() {
+        let root = fixture_dir();
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        fs::create_dir_all(workspace.join(".aether-agent"))
+            .await
+            .unwrap();
+        fs::create_dir(&outside).await.unwrap();
+        let link = workspace.join(".aether-agent").join("attachments");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            // Fixed command, generated fixture paths only; creates a junction
+            // without Developer Mode/admin privileges. Never launches payloads.
+            let status = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(outside.to_string_lossy().replace('/', "\\"))
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "Could not create isolated junction fixture"
+            );
+        }
+        assert!(
+            save_attachment(Some(&workspace.to_string_lossy()), "image.png", b"fixture")
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(save_attachment(
+            Some(&root.join("missing").to_string_lossy()),
+            "image.png",
+            b"fixture"
+        )
+        .await
+        .is_err());
+        #[cfg(windows)]
+        fs::remove_dir(&link).await.unwrap();
+        #[cfg(unix)]
+        fs::remove_file(&link).await.unwrap();
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[test]
+    fn regression_repeated_compaction_retains_first_checkpoint_and_preamble() {
+        let mut answer = message("assistant", "parser complete");
+        answer.preamble = Some("Unique pre-tool conclusion".into());
+        let first = compact_data(data_with_messages(vec![
+            message("user", "Unique original parser requirement"),
+            answer,
+            message("user", "second turn"),
+            message("assistant", "second result"),
+        ]))
+        .unwrap();
+        let mut next = first;
+        next.messages.extend([
+            message("user", "third turn"),
+            message("assistant", "third result"),
+        ]);
+        let second = compact_data(next).unwrap();
+        assert!(second.messages[0]
+            .content
+            .contains("Unique original parser requirement"));
+        assert!(second.messages[0]
+            .content
+            .contains("Unique pre-tool conclusion"));
+        assert!(second.messages[0].content.chars().count() <= 24_000);
+    }
+
+    #[test]
+    fn regression_transcript_frontend_multitool_aggregate_is_not_duplicated() {
+        let first = serde_json::json!({"id":"tool-1","name":"read_file","args":{},"status":"done","result":"first result"});
+        let second = serde_json::json!({"id":"tool-2","name":"read_file","args":{},"status":"done","result":"second result"});
+        // flushPending appends post-first-tool chunks both to segments and
+        // content; only the opening text is moved out to preamble.
+        let msg: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"assistant-1","role":"assistant","timestamp":1,
+            "content":"intermediate narrative final narrative",
+            "preamble":"opening narrative",
+            "toolCalls":[first.clone(), second.clone()],
+            "segments":[
+                {"id":"s0","text":"opening narrative","toolCalls":[first]},
+                {"id":"s1","text":"intermediate narrative ","toolCalls":[second]},
+                {"id":"s2","text":"final narrative"}
+            ]
+        }))
+        .unwrap();
+        let data = data_with_messages(vec![msg]);
+        let roundtrip: SessionData =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        for rendered in [
+            render_markdown(&roundtrip),
+            render_standalone_html(&roundtrip),
+            deterministic_summary(&roundtrip.messages),
+        ] {
+            for text in [
+                "opening narrative",
+                "intermediate narrative",
+                "final narrative",
+            ] {
+                assert_eq!(
+                    rendered.matches(text).count(),
+                    1,
+                    "missing/duplicate {text}: {rendered}"
+                );
+            }
+            assert!(rendered.find("opening narrative") < rendered.find("intermediate narrative"));
+            assert!(rendered.find("intermediate narrative") < rendered.find("final narrative"));
+        }
+        let text = transcript_text(&roundtrip.messages[0]);
+        for (before, after) in [
+            ("opening narrative", "first result"),
+            ("first result", "intermediate narrative"),
+            ("intermediate narrative", "second result"),
+            ("second result", "final narrative"),
+        ] {
+            assert!(text.find(before) < text.find(after), "{text}");
+        }
+    }
+
+    #[test]
+    fn regression_transcript_preserves_only_absent_legacy_tail() {
+        for (content, expected) in [
+            ("middle final", vec!["opening", "middle final"]),
+            (
+                "middle final plus tail",
+                vec!["opening", "middle final", " plus tail"],
+            ),
+            (
+                "absent final",
+                vec!["opening", "middle final", "absent final"],
+            ),
+            ("final", vec!["opening", "middle final", "final"]),
+        ] {
+            let msg: ChatMessage = serde_json::from_value(serde_json::json!({
+                "id":"assistant-1","role":"assistant","timestamp":1,
+                "content":content,"preamble":"opening",
+                "segments":[{"id":"s0","text":"opening"},{"id":"s1","text":"middle final"}]
+            }))
+            .unwrap();
+            let text: Vec<_> = ordered_transcript(&msg)
+                .into_iter()
+                .filter_map(|part| match part {
+                    TranscriptPart::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(text, expected);
+        }
+    }
+
+    #[test]
+    fn regression_exports_ordered_segments_and_results_once() {
+        let call = serde_json::json!({"id":"tool-1","name":"read_file","args":{"path":"file.txt"},"status":"done","result":"unique result <safe>"});
+        let msg: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"assistant-1","role":"assistant","timestamp":1,"content":"final narrative",
+            "preamble":"before tool","toolCalls":[call.clone()],
+            "segments":[{"id":"s0","text":"before tool","toolCalls":[call]},
+                {"id":"s1","text":"between tools"},{"id":"s2","text":"final narrative"}]
+        }))
+        .unwrap();
+        let data = data_with_messages(vec![msg]);
+        let roundtrip: SessionData =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        for rendered in [
+            render_markdown(&roundtrip),
+            render_standalone_html(&roundtrip),
+        ] {
+            for needle in [
+                "before tool",
+                "unique result",
+                "between tools",
+                "final narrative",
+            ] {
+                assert_eq!(
+                    rendered.matches(needle).count(),
+                    1,
+                    "missing/duplicate {needle}"
+                );
+            }
+            assert!(rendered.find("before tool") < rendered.find("unique result"));
+            assert!(rendered.find("unique result") < rendered.find("between tools"));
+            assert!(rendered.find("between tools") < rendered.find("final narrative"));
+            assert!(rendered.contains("file.txt"));
+        }
+        assert!(render_standalone_html(&roundtrip).contains("&lt;safe&gt;"));
+    }
+
+    #[tokio::test]
+    async fn regression_corrupt_session_is_never_overwritten_and_list_reports_path() {
+        let root = fixture_dir();
+        let path = root.join("test-session.json");
+        for corrupt in ["{broken", "{}", "{\"session\":{\"id\":\"test-session\"}}"] {
+            fs::write(&path, corrupt).await.unwrap();
+            assert!(save_session_file(&path, data_with_messages(vec![]), false)
+                .await
+                .is_err());
+            assert_eq!(fs::read_to_string(&path).await.unwrap(), corrupt);
+            let error = read_session_directory(&root).await.unwrap_err();
+            assert!(error.contains("test-session.json"), "{error}");
+        }
+        fs::remove_file(&path).await.unwrap();
+        save_session_file(&path, data_with_messages(vec![]), false)
+            .await
+            .unwrap();
+        assert_eq!(read_session_directory(&root).await.unwrap().len(), 1);
+        let invalid_dir = root.join("not-directory");
+        fs::write(&invalid_dir, "x").await.unwrap();
+        assert!(read_session_directory(&invalid_dir).await.is_err());
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn regression_stale_save_cannot_restore_title_pin_or_deleted_session() {
+        let root = fixture_dir();
+        let path = root.join("test-session.json");
+        let mut original = data_with_messages(vec![message("user", "hello")]);
+        original.session.pinned = true;
+        original.session.pinned_at = Some(10);
+        save_session_file(&path, original.clone(), false)
+            .await
+            .unwrap();
+        let mut renamed = original.clone();
+        renamed.session.title = "Renamed explicitly".into();
+        renamed.session.pinned = false;
+        renamed.session.pinned_at = None;
+        save_session_file(&path, renamed, true).await.unwrap();
+        save_session_file(&path, original.clone(), false)
+            .await
+            .unwrap();
+        let stored = read_session_file(&path, "test-session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.session.title, "Renamed explicitly");
+        assert!(!stored.session.pinned);
+        fs::write(path.with_extension("deleted"), "deleted")
+            .await
+            .unwrap();
+        fs::remove_file(&path).await.unwrap();
+        assert!(save_session_file(&path, original, false).await.is_err());
+        assert!(!path.exists());
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn regression_clear_workspace_propagates_remove_errors() {
+        let root = fixture_dir();
+        let path = root.join("workspace.json");
+        fs::create_dir(&path).await.unwrap();
+        assert!(clear_workspace_file(&path).await.is_err());
+        fs::remove_dir(&path).await.unwrap();
+        assert!(clear_workspace_file(&path).await.is_ok());
+        fs::write(&path, "workspace").await.unwrap();
+        clear_workspace_file(&path).await.unwrap();
+        assert!(!path.exists());
+        fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[test]
     fn reflection_survives_stale_session_saves_without_resurrecting_deleted_turns() {
@@ -1186,6 +1686,7 @@ mod tests {
             run_id: None,
             run_status: None,
             self_improvement: None,
+            provider_messages: None,
             preamble: None,
             segments: None,
         }];
@@ -1328,7 +1829,9 @@ mod tests {
 
     #[test]
     fn inspect_paths_distinguishes_files_and_directories() {
-        let temp_dir = std::env::temp_dir();
+        let temp_dir = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         let test_file = temp_dir.join(format!("aether_test_{}.txt", Uuid::new_v4().simple()));
         std::fs::write(&test_file, b"sample text").unwrap();
 
@@ -1351,7 +1854,10 @@ mod tests {
         let empty_err = save_attachment(None, "test.png", b"").await;
         assert!(empty_err.is_err());
 
-        let temp_workspace = std::env::temp_dir().join(format!("aether_ws_{}", Uuid::new_v4().simple()));
+        let temp_workspace = std::env::var_os("TMPDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("aether_ws_{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&temp_workspace).unwrap();
 
         let att = save_attachment(

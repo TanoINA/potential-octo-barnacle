@@ -26,6 +26,11 @@ describe('MessageRow Action Buttons', () => {
     });
   });
 
+  it('renders a start failure even when the pre-created segments are empty', () => {
+    render(<MessageRow message={{ ...dummyAssistantMessage, content: 'Error: Failed to start agent', segments: [{ id: 'seg_0', text: '', toolCalls: [] }] }} onSelectArtifact={vi.fn()} />);
+    expect(screen.getByText('Error: Failed to start agent')).toBeTruthy();
+  });
+
   it('renders copy button and copies content to clipboard', async () => {
     render(
       <MessageRow

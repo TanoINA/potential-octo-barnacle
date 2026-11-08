@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 import { ChatCanvas } from './ChatCanvas';
 import type { AgentSettings } from '../types/agent';
@@ -7,6 +7,9 @@ import type { AgentSettings } from '../types/agent';
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('./AetherLogo', () => ({ AetherLogo: () => <span>Aether</span> }));
 vi.mock('./MessageRow', () => ({ MessageRow: () => null }));
+const nativeDrop = vi.hoisted(() => ({ listen: vi.fn() }));
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: nativeDrop.listen }) }));
+afterEach(() => { delete (window as any).__TAURI_INTERNALS__; nativeDrop.listen.mockReset(); });
 
 beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
@@ -60,6 +63,18 @@ function renderCanvas(overrides: Partial<CanvasProps> = {}) {
 }
 
 describe('ChatCanvas drag-and-drop and clipboard paste', () => {
+  it('unregisters a native drop listener whose registration resolves after unmount', async () => {
+    (window as any).__TAURI_INTERNALS__ = {};
+    let complete!: (unlisten: () => void) => void;
+    nativeDrop.listen.mockReturnValue(new Promise<() => void>((resolve) => { complete = resolve; }));
+    const { unmount } = renderCanvas();
+    await waitFor(() => expect(nativeDrop.listen).toHaveBeenCalledOnce());
+    unmount();
+    const unlisten = vi.fn();
+    await act(async () => complete(unlisten));
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
   it('attaches an image when pasted via clipboard event on the textarea', async () => {
     renderCanvas();
     const textarea = screen.getByLabelText('Message AetherAgent');

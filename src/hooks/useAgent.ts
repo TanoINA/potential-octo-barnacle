@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { liveSession, type LiveSession } from './useAgentLiveSession';
 import { playTaskCompleteChime, showDesktopNotification } from '../utils/audioChime';
 import type {
   AgentEvent,
@@ -168,26 +169,57 @@ export function useAgent() {
 
   const dataRef = useRef(data);
   const settingsRef = useRef(settings);
+  const confirmedSettingsRef = useRef(settings);
+  const settingsRevisionRef = useRef(0);
+  const settingsQueueRef = useRef<Promise<void>>(Promise.resolve());
   const workspaceRef = useRef(workspaceCwd);
   const sessionIdRef = useRef(data.session.id);
   const currentRunRef = useRef<string | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
-  const textBufferRef = useRef({ content: '', reasoning: '' });
-  const councilBufferRef = useRef({ contentA: '', reasoningA: '', contentB: '', reasoningB: '' });
-  const terminalBufferRef = useRef<Record<string, string>>({});
-  const frameRef = useRef<number | null>(null);
   const runStartTimeRef = useRef<number | null>(null);
   const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
   const navigationRef = useRef(0);
   const sessionOperationRef = useRef(false);
+  const initializingRef = useRef(true);
+  const navigationPendingRef = useRef(false);
   const reviewResultsRef = useRef(new Map<string, SelfImprovementEvent>());
-
-  const mutateData = useCallback((mutator: (current: SessionData) => SessionData) => {
-    const next = mutator(dataRef.current);
-    dataRef.current = next;
-    sessionIdRef.current = next.session.id;
-    setData(next);
+  const liveSessionsRef = useRef(new Map<string, LiveSession>());
+  const viewedLive = useCallback(() => {
+    let live = liveSessionsRef.current.get(sessionIdRef.current);
+    if (!live) {
+      live = liveSession(dataRef.current);
+      liveSessionsRef.current.set(sessionIdRef.current, live);
+    }
+    return live;
   }, []);
+
+  const publishLive = useCallback((live: LiveSession) => {
+    if (sessionIdRef.current !== live.data.session.id) return;
+    dataRef.current = live.data;
+    currentRunRef.current = live.runId;
+    streamingMessageIdRef.current = live.messageId;
+    runStartTimeRef.current = live.startedAt;
+    runFailedRef.current = live.failed;
+    setData(live.data);
+    setIsStreaming(live.runId !== null);
+    setStopRequested(live.stopRequested);
+    setSubagents(live.subagents);
+    setActiveSkills(live.skills);
+    setActiveArtifactId(live.artifactId);
+  }, []);
+
+  const mutateData = useCallback((mutator: (current: SessionData) => SessionData, target?: LiveSession) => {
+    const live = target ?? viewedLive();
+    live.data = mutator(live.data);
+    live.authoritative = true;
+    publishLive(live);
+  }, [publishLive, viewedLive]);
+
+  const selectArtifact = useCallback((value: string | null | ((current: string | null) => string | null)) => {
+    const live = viewedLive();
+    live.artifactId = typeof value === 'function' ? value(live.artifactId) : value;
+    publishLive(live);
+  }, [publishLive, viewedLive]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -229,14 +261,15 @@ export function useAgent() {
     return queued;
   }, [refreshSessions]);
 
-  const flushPending = useCallback(() => {
-    if (frameRef.current !== null) {
-      cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
+  const flushPending = useCallback((target?: LiveSession) => {
+    const live = target ?? viewedLive();
+    if (live.frame !== null) {
+      cancelAnimationFrame(live.frame);
+      live.frame = null;
     }
-    const text = textBufferRef.current;
-    const terminal = terminalBufferRef.current;
-    const council = councilBufferRef.current;
+    const text = live.text;
+    const terminal = live.terminal;
+    const council = live.council;
     if (
       !text.content &&
       !text.reasoning &&
@@ -248,12 +281,13 @@ export function useAgent() {
     ) {
       return;
     }
-    textBufferRef.current = { content: '', reasoning: '' };
-    terminalBufferRef.current = {};
-    councilBufferRef.current = { contentA: '', reasoningA: '', contentB: '', reasoningB: '' };
-    mutateData((current) => {
+    live.text = { content: '', reasoning: '' };
+    live.terminal = {};
+    live.council = { contentA: '', reasoningA: '', contentB: '', reasoningB: '' };
+    const mutate = (fn: (current: SessionData) => SessionData) => mutateData(fn, live);
+    mutate((current) => {
       let messages = current.messages;
-      const messageId = streamingMessageIdRef.current;
+      const messageId = live.messageId;
       if (messageId && (text.content || text.reasoning)) {
         messages = messages.map((message) => {
           if (message.id !== messageId) return message;
@@ -313,12 +347,10 @@ export function useAgent() {
       }
       return { ...current, messages, artifacts };
     });
-  }, [mutateData]);
+  }, [mutateData, viewedLive]);
 
-  const scheduleFlush = useCallback(() => {
-    if (frameRef.current === null) {
-      frameRef.current = requestAnimationFrame(flushPending);
-    }
+  const scheduleFlush = useCallback((live: LiveSession) => {
+    if (live.frame === null) live.frame = requestAnimationFrame(() => flushPending(live));
   }, [flushPending]);
 
   useEffect(() => {
@@ -329,10 +361,11 @@ export function useAgent() {
       invoke<AgentSettings>('get_settings'),
       invoke<Session[]>('list_sessions'),
       invoke<BackgroundTask[]>('list_background_tasks'),
-    ]).then(([settingsResult, sessionsResult, tasksResult]) => {
+    ]).then(async ([settingsResult, sessionsResult, tasksResult]) => {
       if (!active) return;
       if (settingsResult.status === 'fulfilled') {
         settingsRef.current = settingsResult.value;
+        confirmedSettingsRef.current = settingsResult.value;
         setSettings(settingsResult.value);
       } else {
         setLastError(`Backend settings unavailable: ${String(settingsResult.reason)}`);
@@ -346,19 +379,20 @@ export function useAgent() {
         // If sessions exist, restore the most recent session & its workspace
         if (sessionList.length > 0) {
           const latest = sessionList[0];
-          invoke<SessionData>('load_session', { sessionId: latest.id })
-            .then((loaded) => {
+          await invoke<SessionData>('load_session', { sessionId: latest.id })
+            .then(async (loaded) => {
               if (!active || navigationRef.current !== navigationAtStart) return;
               const normalized = restoreSession(loaded, reviewResultsRef.current);
-              dataRef.current = normalized;
+              const live = liveSession(normalized);
+              liveSessionsRef.current.set(normalized.session.id, live);
               sessionIdRef.current = normalized.session.id;
-              setData(normalized);
+              publishLive(live);
               const sessCwd = normalized.session.workspaceCwd || '';
               setWorkspaceCwd(sessCwd);
               workspaceRef.current = sessCwd;
-              invoke('set_workspace_cwd', { newCwd: sessCwd }).catch(() => {});
+              await invoke('set_workspace_cwd', { newCwd: sessCwd });
             })
-            .catch(() => {});
+            .catch((error) => { if (active && navigationRef.current === navigationAtStart) setLastError(`Could not restore session: ${String(error)}`); });
         } else {
           // Fresh start without sessions: no workspace by default
           setWorkspaceCwd('');
@@ -366,26 +400,41 @@ export function useAgent() {
           invoke('set_workspace_cwd', { newCwd: '' }).catch(() => {});
         }
       }
-      setIsLoading(false);
+      if (active) {
+        initializingRef.current = false;
+        setIsLoading(false);
+      }
     });
     return () => { active = false; };
-  }, [mutateData]);
+  }, [mutateData, publishLive]);
 
   useEffect(() => {
     const unlistenPromise = listen<AgentEvent>('agent-event', ({ payload }) => {
       const scope = payload.data;
-      if (scope.runId !== currentRunRef.current || scope.sessionId !== sessionIdRef.current) return;
+      const live = liveSessionsRef.current.get(scope.sessionId);
+      if (!live || scope.runId !== live.runId) return;
+      const mutate = (fn: (current: SessionData) => SessionData) => mutateData(fn, live);
+      const updateSubagents = (fn: (prev: import('../types/agent').SubagentProgress[]) => import('../types/agent').SubagentProgress[]) => { live.subagents = fn(live.subagents); };
+      const updateSkills = (fn: import('../types/agent').SkillInfo[] | ((prev: import('../types/agent').SkillInfo[]) => import('../types/agent').SkillInfo[])) => { live.skills = typeof fn === 'function' ? fn(live.skills) : fn; };
       switch (payload.type) {
+        case 'provider_state':
+          mutate((current) => ({
+            ...current,
+            messages: current.messages.map((message) => message.id === live.messageId
+              ? { ...message, providerMessages: payload.data.providerMessages }
+              : message),
+          }));
+          break;
         case 'notice': {
           const noticeData = payload.data;
           if (noticeData.resetPartial) {
-            textBufferRef.current.content = '';
-            textBufferRef.current.reasoning = '';
+            live.text.content = '';
+            live.text.reasoning = '';
           }
-          mutateData((current) => ({
+          mutate((current) => ({
             ...current,
             messages: current.messages.map((message) => {
-              if (message.id !== streamingMessageIdRef.current) return message;
+              if (message.id !== live.messageId) return message;
               return {
                 ...message,
                 content: noticeData.resetPartial ? '' : message.content,
@@ -401,35 +450,35 @@ export function useAgent() {
           break;
         }
         case 'chunk':
-          textBufferRef.current.content += payload.data.text;
-          scheduleFlush();
-          mutateData((current) => {
-            const streamingMsg = current.messages.find((m) => m.id === streamingMessageIdRef.current);
+          live.text.content += payload.data.text;
+          scheduleFlush(live);
+          mutate((current) => {
+            const streamingMsg = current.messages.find((m) => m.id === live.messageId);
             if (!streamingMsg || !streamingMsg.notice) return current;
             return {
               ...current,
-              messages: current.messages.map((m) => m.id === streamingMessageIdRef.current ? { ...m, notice: null } : m),
+              messages: current.messages.map((m) => m.id === live.messageId ? { ...m, notice: null } : m),
             };
           });
           break;
         case 'reasoning':
-          textBufferRef.current.reasoning += payload.data.text;
-          scheduleFlush();
-          mutateData((current) => {
-            const streamingMsg = current.messages.find((m) => m.id === streamingMessageIdRef.current);
+          live.text.reasoning += payload.data.text;
+          scheduleFlush(live);
+          mutate((current) => {
+            const streamingMsg = current.messages.find((m) => m.id === live.messageId);
             if (!streamingMsg || !streamingMsg.notice) return current;
             return {
               ...current,
-              messages: current.messages.map((m) => m.id === streamingMessageIdRef.current ? { ...m, notice: null } : m),
+              messages: current.messages.map((m) => m.id === live.messageId ? { ...m, notice: null } : m),
             };
           });
           break;
         case 'tool_update':
-          flushPending();
-          mutateData((current) => ({
+          flushPending(live);
+          mutate((current) => ({
             ...current,
             messages: current.messages.map((message) => {
-              if (message.id !== streamingMessageIdRef.current) return message;
+              if (message.id !== live.messageId) return message;
               let preamble = message.preamble;
               let content = message.content;
               // If this message doesn't have a preamble yet, any text streamed before tools is the preamble
@@ -467,25 +516,25 @@ export function useAgent() {
         case 'artifact': {
           const artifact = payload.data.artifact;
           if (artifact.type === 'terminal' && artifact.content.length > 0) {
-            delete terminalBufferRef.current[artifact.id];
+            delete live.terminal[artifact.id];
           }
-          mutateData((current) => {
+          mutate((current) => {
             const artifacts = [...current.artifacts];
             const index = artifacts.findIndex((item) => item.id === artifact.id);
             if (index >= 0) artifacts[index] = artifact;
             else artifacts.unshift(artifact);
             return { ...current, artifacts };
           });
-          setActiveArtifactId(artifact.id);
+          live.artifactId = artifact.id;
           break;
         }
         case 'terminal_output':
-          terminalBufferRef.current[payload.data.artifactId] = (terminalBufferRef.current[payload.data.artifactId] || '') + payload.data.delta;
-          scheduleFlush();
+          live.terminal[payload.data.artifactId] = (live.terminal[payload.data.artifactId] || '') + payload.data.delta;
+          scheduleFlush(live);
           break;
         case 'subagent_update': {
           const sub = payload.data.subagent;
-          setSubagents((prev) => {
+          updateSubagents((prev) => {
             const index = prev.findIndex((item) => item.id === sub.id);
             if (index >= 0) {
               const next = [...prev];
@@ -498,7 +547,7 @@ export function useAgent() {
         }
         case 'skill_activated': {
           const skill = payload.data.skill;
-          setActiveSkills((prev) => {
+          updateSkills((prev) => {
             if (prev.some((item) => item.name.toLowerCase() === skill.name.toLowerCase())) return prev;
             return [...prev, skill];
           });
@@ -507,21 +556,21 @@ export function useAgent() {
         case 'council_chunk': {
           const { candidate, kind, text: chunkText } = payload.data;
           if (candidate === 'A') {
-            if (kind === 'reasoning') councilBufferRef.current.reasoningA += chunkText;
-            else councilBufferRef.current.contentA += chunkText;
+            if (kind === 'reasoning') live.council.reasoningA += chunkText;
+            else live.council.contentA += chunkText;
           } else {
-            if (kind === 'reasoning') councilBufferRef.current.reasoningB += chunkText;
-            else councilBufferRef.current.contentB += chunkText;
+            if (kind === 'reasoning') live.council.reasoningB += chunkText;
+            else live.council.contentB += chunkText;
           }
-          scheduleFlush();
+          scheduleFlush(live);
           break;
         }
         case 'council_done': {
           const { candidate, durationMs } = payload.data;
-          mutateData((current) => ({
+          mutate((current) => ({
             ...current,
             messages: current.messages.map((m) => {
-              if (m.id !== streamingMessageIdRef.current || !m.councilTurn) return m;
+              if (m.id !== live.messageId || !m.councilTurn) return m;
               if (candidate === 'A') {
                 return {
                   ...m,
@@ -552,25 +601,25 @@ export function useAgent() {
           break;
         }
         case 'error':
-          runFailedRef.current = true;
+          live.failed = true;
           setLastError(payload.data.message);
-          mutateData((current) => ({
+          mutate((current) => ({
             ...current,
             messages: current.messages.map((message) => {
-              if (message.id !== streamingMessageIdRef.current) return message;
+              if (message.id !== live.messageId) return message;
               return { ...message, notice: null };
             }),
           }));
           break;
         case 'done': {
-          flushPending();
-          const elapsedMs = runStartTimeRef.current ? Date.now() - runStartTimeRef.current : 0;
-          runStartTimeRef.current = null;
+          flushPending(live);
+          const elapsedMs = live.startedAt ? Date.now() - live.startedAt : 0;
+          live.startedAt = null;
           const currentSettings = settingsRef.current;
           if (elapsedMs > 2500) {
             if (currentSettings?.notificationsEnabled !== false && typeof document !== 'undefined' && document.hidden) {
               // Preview the assistant reply only — never echo the user's own prompt.
-              const assistantMsg = [...dataRef.current.messages].reverse().find((m) => m.role === 'assistant' && (m.content || m.preamble || '').trim());
+              const assistantMsg = [...live.data.messages].reverse().find((m) => m.role === 'assistant' && (m.content || m.preamble || '').trim());
               const previewText = (assistantMsg?.content || assistantMsg?.preamble || '').slice(0, 100);
               void showDesktopNotification('AetherAgent: Task Complete', previewText || 'Agent has completed execution.');
             }
@@ -579,7 +628,7 @@ export function useAgent() {
             }
           }
           if (payload.data.cancelled) {
-            setSubagents((prev) =>
+            updateSubagents((prev) =>
               prev.map((s) =>
                 s.status === 'running'
                   ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
@@ -587,7 +636,7 @@ export function useAgent() {
               )
             );
           }
-          mutateData((current) => ({
+          mutate((current) => ({
             ...current,
             session: {
               ...current.session,
@@ -596,7 +645,7 @@ export function useAgent() {
               preview: extractPreview(current.messages),
             },
             messages: current.messages.map((message) => {
-              if (message.id !== streamingMessageIdRef.current) return message;
+              if (message.id !== live.messageId) return message;
               if (payload.data.cancelled) {
                 return cancelledMessage(message);
               }
@@ -604,27 +653,30 @@ export function useAgent() {
                 ...message,
                 isStreaming: false,
                 notice: null,
-                runStatus: payload.data.successful === false || runFailedRef.current ? 'failed' : 'completed',
+                runStatus: payload.data.successful === false || live.failed ? 'failed' : 'completed',
               };
             }),
           }));
-          setActiveSkills([]);
+          updateSkills([]);
           void refreshBackgroundTasks();
-          setIsStreaming(false);
-          setStopRequested(false);
-          currentRunRef.current = null;
-          streamingMessageIdRef.current = null;
-          void persistData(dataRef.current).catch(() => undefined);
+
+          live.stopRequested = false;
+          live.runId = null;
+          live.messageId = null;
+          void persistData(live.data).catch(() => undefined);
           void refreshGitStatus();
           break;
         }
       }
+      publishLive(live);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      for (const live of liveSessionsRef.current.values()) {
+        if (live.frame !== null) { cancelAnimationFrame(live.frame); live.frame = null; }
+      }
     };
-  }, [flushPending, mutateData, persistData, scheduleFlush]);
+  }, [flushPending, mutateData, persistData, scheduleFlush, publishLive]);
 
   useEffect(() => {
     const unlisten = listen<SelfImprovementEvent>('agent:self-improvement', ({ payload }) => {
@@ -635,15 +687,15 @@ export function useAgent() {
         const oldest = reviewResultsRef.current.keys().next().value;
         if (oldest !== undefined) reviewResultsRef.current.delete(oldest);
       }
-      if (payload.session_id !== sessionIdRef.current) return;
-      if (!dataRef.current.messages.some((message) => message.role === 'assistant' && (message.runId === payload.run_id || message.id === payload.run_id))) return;
+      const live = liveSessionsRef.current.get(payload.session_id);
+      if (!live || !live.data.messages.some((message) => message.role === 'assistant' && (message.runId === payload.run_id || message.id === payload.run_id))) return;
       mutateData((current) => ({
         ...current,
         messages: current.messages.map((message) => message.role === 'assistant' && (message.runId === payload.run_id || message.id === payload.run_id)
           ? { ...message, selfImprovement: payload }
           : message),
-      }));
-      void persistData(dataRef.current).catch(() => undefined);
+      }), live);
+      void persistData(live.data).catch(() => undefined);
     });
     const unlistenErrors = listen<{ run_id: string; session_id: string; message: string }>('agent:self-improvement-error', ({ payload }) => {
       if (payload.session_id === sessionIdRef.current) setLastError(`Self-improvement review failed: ${payload.message}`);
@@ -701,6 +753,10 @@ export function useAgent() {
     },
   ) => {
     const prompt = (rawPrompt || '').trim();
+    if (initializingRef.current || navigationPendingRef.current) {
+      setLastError('Wait for local state to finish loading.');
+      return false;
+    }
     if (/^\/(review|reflect)$/i.test(prompt)) return reviewSession();
     const currentSettings = settingsRef.current;
     const effective = resolveEffective(currentSettings, dataRef.current.modelOverride);
@@ -709,6 +765,8 @@ export function useAgent() {
       else if (!effective) setLastError('Configure a provider and model before sending a message.');
       return false;
     }
+    const live = viewedLive();
+    const originWorkspace = live.data.session.workspaceCwd ?? workspaceRef.current;
     setLastError(null);
     const runId = makeId('run');
     const userMessage: ChatMessage = {
@@ -777,10 +835,16 @@ export function useAgent() {
       },
       messages: [...dataRef.current.messages, userMessage, assistantMessage],
     }));
-    currentRunRef.current = runId;
-    runFailedRef.current = false;
-    runStartTimeRef.current = Date.now();
-    streamingMessageIdRef.current = assistantId;
+    live.runId = runId;
+    live.stopRequested = false;
+    live.failed = false;
+    live.startedAt = Date.now();
+    live.messageId = assistantId;
+    live.cancelledBeforeStart = false;
+    live.starting = true;
+    live.subagents = [];
+    live.skills = [];
+    publishLive(live);
     setIsStreaming(true);
     setStopRequested(false);
     setSubagents([]);
@@ -791,7 +855,8 @@ export function useAgent() {
     if (options?.council && options.candidateA && options.candidateB) {
       const requestA: AgentRunRequest = {
         runId,
-        sessionId: dataRef.current.session.id,
+        sessionId: live.data.session.id,
+        workspaceCwd: originWorkspace,
         provider: options.candidateA.provider,
         systemPrompt: currentSettings.systemPrompt || undefined,
         messages: requestMessages,
@@ -810,7 +875,8 @@ export function useAgent() {
       };
       const requestB: AgentRunRequest = {
         runId,
-        sessionId: dataRef.current.session.id,
+        sessionId: live.data.session.id,
+        workspaceCwd: originWorkspace,
         provider: options.candidateB.provider,
         systemPrompt: currentSettings.systemPrompt || undefined,
         messages: requestMessages,
@@ -828,27 +894,31 @@ export function useAgent() {
         executionMode: selectedExecutionMode,
       };
       try {
-        await persistData(dataRef.current);
+        await persistData(live.data);
+        if (live.cancelledBeforeStart || live.runId !== runId) return true;
+        live.starting = false;
         await invoke('send_council_message', { requestA, requestB });
       } catch (error) {
+        if (live.runId !== runId) return true;
         setLastError(`Failed to start council agent: ${String(error)}`);
         mutateData((current) => ({
           ...current,
           messages: current.messages.map((message) => message.id === assistantId
             ? { ...message, content: `Error: ${String(error)}`, isStreaming: false, runStatus: 'failed' }
             : message),
-        }));
-        currentRunRef.current = null;
-        streamingMessageIdRef.current = null;
-        setIsStreaming(false);
-        void persistData(dataRef.current).catch(() => undefined);
+        }), live);
+        live.runId = null;
+        live.messageId = null;
+        publishLive(live);
+        void persistData(live.data).catch(() => undefined);
       }
       return true;
     }
 
     const request: AgentRunRequest = {
       runId,
-      sessionId: dataRef.current.session.id,
+      sessionId: live.data.session.id,
+        workspaceCwd: originWorkspace,
       provider: effective.provider,
       systemPrompt: currentSettings.systemPrompt || undefined,
       messages: requestMessages,
@@ -866,28 +936,40 @@ export function useAgent() {
       executionMode: selectedExecutionMode,
     };
     try {
-      await persistData(dataRef.current);
+      await persistData(live.data);
+      if (live.cancelledBeforeStart || live.runId !== runId) return true;
+      live.starting = false;
       await invoke('send_message', { request });
     } catch (error) {
+      if (live.runId !== runId) return true;
       setLastError(`Failed to start agent: ${String(error)}`);
       mutateData((current) => ({
         ...current,
         messages: current.messages.map((message) => message.id === assistantId
           ? { ...message, content: message.content || `Error: ${String(error)}`, isStreaming: false, runStatus: 'failed' }
           : message),
-      }));
-      currentRunRef.current = null;
-      streamingMessageIdRef.current = null;
-      setIsStreaming(false);
-      void persistData(dataRef.current).catch(() => undefined);
+      }), live);
+      live.runId = null;
+      live.messageId = null;
+      publishLive(live);
+      void persistData(live.data).catch(() => undefined);
     }
     return true;
-  }, [mutateData, persistData, reviewSession]);
+  }, [mutateData, persistData, reviewSession, publishLive, viewedLive]);
 
   const stopAgent = useCallback(async () => {
-    const runId = currentRunRef.current;
-    if (!runId || stopRequested) return;
-    setStopRequested(true);
+    const live = viewedLive();
+    const runId = live.runId;
+    if (!runId || live.stopRequested) return;
+    live.stopRequested = true;
+    if (live.starting) {
+      live.cancelledBeforeStart = true;
+      live.runId = null;
+      live.messageId = null;
+      live.starting = false;
+    }
+    publishLive(live);
+    setStopRequested(live.stopRequested);
     setSubagents((prev) =>
       prev.map((s) =>
         s.status === 'running'
@@ -904,129 +986,120 @@ export function useAgent() {
           : message
       ),
     }));
+    if (live.cancelledBeforeStart) {
+      void persistData(live.data).catch(() => undefined);
+      return;
+    }
     try {
       await invoke('abort_agent', { runId });
     } catch (error) {
       setLastError(`Could not stop run: ${String(error)}`);
-      setStopRequested(false);
+      live.stopRequested = false;
+      publishLive(live);
     }
-  }, [stopRequested, mutateData]);
+
+  }, [mutateData, persistData, publishLive, viewedLive]);
 
   const detachCurrentRun = useCallback(() => {
-    flushPending();
-    const runId = currentRunRef.current;
-    if (!runId) return;
-    setSubagents((prev) =>
-      prev.map((s) =>
-        s.status === 'running'
-          ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
-          : s
-      )
-    );
-    setActiveSkills([]);
-    mutateData((current) => ({
-      ...current,
-      messages: current.messages.map((message) => message.role === 'assistant' && message.runId === runId
-        ? cancelledMessage(message) : message),
-    }));
-    currentRunRef.current = null;
-    streamingMessageIdRef.current = null;
-    void invoke('abort_agent', { runId }).catch(() => undefined);
-  }, [flushPending, mutateData]);
+    const live = viewedLive();
+    flushPending(live);
+    const runId = live.runId;
+    live.cancelledBeforeStart = true;
+    live.subagents = live.subagents.map((sub) => sub.status === 'running' ? { ...sub, status: 'cancelled', completedAt: Date.now() } : sub);
+    live.skills = [];
+    live.data = { ...live.data, messages: live.data.messages.map((message) => message.runId === runId ? cancelledMessage(message) : message) };
+    live.runId = null;
+    live.messageId = null;
+    live.stopRequested = false;
+    publishLive(live);
+    if (runId) void invoke('abort_agent', { runId }).catch((error) => setLastError(`Could not stop run: ${String(error)}`));
+  }, [flushPending, publishLive, viewedLive]);
 
   const resetSession = useCallback((persistPrevious: boolean): string => {
     navigationRef.current += 1;
-    detachCurrentRun();
-    if (persistPrevious && dataRef.current.messages.length > 0) void persistData(dataRef.current).catch(() => undefined);
-    textBufferRef.current = { content: '', reasoning: '' };
-    councilBufferRef.current = { contentA: '', reasoningA: '', contentB: '', reasoningB: '' };
-    terminalBufferRef.current = {};
-    if (frameRef.current !== null) {
-      cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
-    }
-    const next = createSession(); // New session has NO workspace by default!
-    dataRef.current = next;
-    sessionIdRef.current = next.session.id;
-    setData(next);
+    navigationPendingRef.current = false;
+    const previous = viewedLive();
+    flushPending(previous);
+    if (persistPrevious && previous.data.messages.length > 0) void persistData(previous.data).catch(() => undefined);
+    const next = liveSession(createSession());
+    liveSessionsRef.current.set(next.data.session.id, next);
+    sessionIdRef.current = next.data.session.id;
+    publishLive(next);
     setWorkspaceCwd('');
     workspaceRef.current = '';
-    invoke('set_workspace_cwd', { newCwd: '' }).catch(() => {});
-    setIsStreaming(false);
-    setStopRequested(false);
-    setActiveArtifactId(null);
+    void invoke('set_workspace_cwd', { newCwd: '' }).catch((error) => setLastError(`Could not clear workspace: ${String(error)}`));
     setLastError(null);
-    setSubagents([]);
-    setActiveSkills([]);
-    return next.session.id;
-  }, [detachCurrentRun, persistData]);
+    return next.data.session.id;
+  }, [flushPending, persistData, publishLive, viewedLive]);
 
   const newSession = useCallback(() => resetSession(true), [resetSession]);
 
   const switchSession = useCallback(async (sessionId: string) => {
-    if (sessionId === sessionIdRef.current) return;
     const navigation = ++navigationRef.current;
-    detachCurrentRun();
-    const previous = dataRef.current;
-    textBufferRef.current = { content: '', reasoning: '' };
-    councilBufferRef.current = { contentA: '', reasoningA: '', contentB: '', reasoningB: '' };
-    terminalBufferRef.current = {};
-    setIsStreaming(false);
-    setStopRequested(false);
+    if (sessionId === sessionIdRef.current) { navigationPendingRef.current = false; return; }
+    navigationPendingRef.current = true;
+    const previous = viewedLive();
+    flushPending(previous);
     try {
-      if (previous.messages.length > 0) await persistData(previous);
-      const loaded = await invoke<SessionData>('load_session', { sessionId });
+      if (previous.data.messages.length > 0) await persistData(previous.data);
+      let next = liveSessionsRef.current.get(sessionId);
+      if (!next?.authoritative && !next?.runId) {
+        const loaded = await invoke<SessionData>('load_session', { sessionId });
+        const current = liveSessionsRef.current.get(sessionId);
+        next = current?.authoritative || current?.runId ? current : liveSession(restoreSession(loaded, reviewResultsRef.current));
+      }
+      if (!next) return;
       if (navigationRef.current !== navigation) return;
-      const normalized = restoreSession(loaded, reviewResultsRef.current);
-      dataRef.current = normalized;
-      sessionIdRef.current = normalized.session.id;
-      setData(normalized);
-      setActiveArtifactId(normalized.artifacts[0]?.id || null);
+      liveSessionsRef.current.set(sessionId, next);
+      sessionIdRef.current = sessionId;
+      flushPending(next);
+      publishLive(next);
       setLastError(null);
-      setSubagents([]);
-      setActiveSkills([]);
-      const sessCwd = (normalized.session.workspaceCwd || '').replace(/^\\\\\?\\/, '');
-      setWorkspaceCwd(sessCwd);
+      const sessCwd = next.data.session.workspaceCwd || '';
       workspaceRef.current = sessCwd;
+      setWorkspaceCwd(sessCwd);
       await invoke('set_workspace_cwd', { newCwd: sessCwd });
     } catch (error) {
-      if (navigationRef.current === navigation) {
-        setLastError(`Could not load session: ${String(error)}`);
-      }
+      if (navigationRef.current === navigation) setLastError(`Could not load session: ${String(error)}`);
+    } finally {
+      if (navigationRef.current === navigation) navigationPendingRef.current = false;
     }
-  }, [detachCurrentRun, persistData]);
+  }, [flushPending, persistData, publishLive, viewedLive]);
 
   const clearCurrentSession = useCallback(() => {
-    const runId = currentRunRef.current;
-    if (runId) void invoke('abort_agent', { runId }).catch(() => undefined);
-    currentRunRef.current = null;
-    streamingMessageIdRef.current = null;
-    setIsStreaming(false);
-    setStopRequested(false);
+    navigationRef.current += 1;
+    detachCurrentRun();
     mutateData((current) => ({
       ...current,
       session: { ...current.session, title: 'New Chat', messageCount: 0, preview: undefined },
       messages: [],
       artifacts: [],
     }));
-    setActiveArtifactId(null);
+    selectArtifact(null);
     setSubagents([]);
     setActiveSkills([]);
     void persistData(dataRef.current).catch(() => undefined);
-  }, [mutateData, persistData]);
+  }, [mutateData, persistData, selectArtifact, detachCurrentRun]);
 
   const updateSettings = useCallback(async (next: AgentSettings) => {
-    const previous = settingsRef.current;
+    const revision = ++settingsRevisionRef.current;
     settingsRef.current = next;
     setSettings(next);
-    try {
-      await invoke('save_settings', { settings: next });
-    } catch (error) {
-      settingsRef.current = previous;
-      setSettings(previous);
-      setLastError(`Could not save settings: ${String(error)}`);
-      throw error;
-    }
+    const queued = settingsQueueRef.current.then(async () => {
+      try {
+        await invoke('save_settings', { settings: next });
+        confirmedSettingsRef.current = next;
+      } catch (error) {
+        if (revision === settingsRevisionRef.current) {
+          settingsRef.current = confirmedSettingsRef.current;
+          setSettings(confirmedSettingsRef.current);
+          setLastError(`Could not save settings: ${String(error)}`);
+        }
+        throw error;
+      }
+    });
+    settingsQueueRef.current = queued.catch(() => undefined);
+    await queued;
   }, []);
 
   const selectModel = useCallback((providerId: string, model: string) => {
@@ -1060,6 +1133,8 @@ export function useAgent() {
   }, [updateSettings]);
 
   const addCustomModel = useCallback(async (providerId: string, model: string) => {
+    const origin = sessionIdRef.current;
+    const navigation = navigationRef.current;
     const current = settingsRef.current;
     const clean = (model || '').trim();
     if (!current || !clean) return;
@@ -1070,6 +1145,7 @@ export function useAgent() {
         : provider),
     };
     await updateSettings(next);
+    if (sessionIdRef.current !== origin || navigationRef.current !== navigation) return;
     selectModel(providerId, clean);
   }, [selectModel, updateSettings]);
 
@@ -1078,9 +1154,14 @@ export function useAgent() {
     const provider = current?.providers.find((item) => item.id === providerId);
     if (!current || !provider) throw new Error('Provider not found');
     const models = await invoke<string[]>('fetch_provider_models', { provider });
+    const latest = settingsRef.current;
+    const latestProvider = latest?.providers.find((item) => item.id === providerId);
+    if (!latest || !latestProvider) return models;
+    // A response from the old endpoint must not overwrite an edited provider.
+    if (latestProvider.baseUrl !== provider.baseUrl || latestProvider.apiKey !== provider.apiKey || latestProvider.kind !== provider.kind) return models;
     const next: AgentSettings = {
-      ...current,
-      providers: current.providers.map((item) => item.id === providerId ? { ...item, models } : item),
+      ...latest,
+      providers: latest.providers.map((item) => item.id === providerId ? { ...item, models } : item),
     };
     await updateSettings(next);
     return models;
@@ -1088,47 +1169,51 @@ export function useAgent() {
 
   const renameSession = useCallback(async (sessionId: string, title: string) => {
     try {
-      if (sessionId === sessionIdRef.current) {
-        mutateData((current) => ({
-          ...current,
-          session: { ...current.session, title },
-        }));
-        await persistData(dataRef.current);
-        return;
-      }
-      await persistenceQueueRef.current;
-      const renamed = await invoke<SessionData>('rename_session', { sessionId, title });
-      await refreshSessions();
-      if (sessionId === sessionIdRef.current) {
-        mutateData((current) => ({ ...current, session: { ...current.session, title: renamed.session.title } }));
-      }
+      const prepared = sessionId === sessionIdRef.current ? persistData(viewedLive().data) : persistenceQueueRef.current;
+      const queued = prepared.then(async () => {
+        const renamed = await invoke<SessionData>('rename_session', { sessionId, title });
+        const origin = liveSessionsRef.current.get(sessionId);
+        if (origin) mutateData((current) => ({ ...current, session: { ...current.session, title: renamed.session.title } }), origin);
+        await refreshSessions();
+      });
+      persistenceQueueRef.current = queued.catch(() => undefined);
+      await queued;
     } catch (error) {
       setLastError(`Could not rename session: ${String(error)}`);
     }
-  }, [mutateData, persistData, refreshSessions]);
+  }, [mutateData, persistData, refreshSessions, viewedLive]);
 
   const togglePinSession = useCallback(async (sessionId: string) => {
     try {
-      await persistenceQueueRef.current;
-      const updated = await invoke<Session>('toggle_pin_session', { sessionId });
-      if (sessionId === sessionIdRef.current) {
-        mutateData((current) => ({
+      const queued = persistenceQueueRef.current.then(async () => {
+        const updated = await invoke<Session>('toggle_pin_session', { sessionId });
+        const origin = liveSessionsRef.current.get(sessionId);
+        if (origin) mutateData((current) => ({
           ...current,
-          session: {
-            ...current.session,
-            pinned: updated.pinned,
-            pinnedAt: updated.pinnedAt,
-          },
-        }));
-      }
-      await refreshSessions();
+          session: { ...current.session, pinned: updated.pinned, pinnedAt: updated.pinnedAt },
+        }), origin);
+        await refreshSessions();
+      });
+      persistenceQueueRef.current = queued.catch(() => undefined);
+      await queued;
     } catch (error) {
       setLastError(`Could not toggle pin on session: ${String(error)}`);
     }
   }, [mutateData, refreshSessions]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
-    if (sessionId === sessionIdRef.current) resetSession(false);
+    if (sessionId === sessionIdRef.current) { detachCurrentRun(); resetSession(false); }
+    else {
+      const live = liveSessionsRef.current.get(sessionId);
+      if (live) {
+        live.cancelledBeforeStart = true;
+        if (live.runId) void invoke('abort_agent', { runId: live.runId }).catch(() => undefined);
+        if (live.frame !== null) cancelAnimationFrame(live.frame);
+        live.runId = null;
+        live.messageId = null;
+      }
+    }
+    liveSessionsRef.current.delete(sessionId);
     try {
       await persistenceQueueRef.current;
       await invoke('delete_session', { sessionId });
@@ -1174,31 +1259,43 @@ export function useAgent() {
   }, [sessions, flushPending, persistData]);
 
   const selectWorkspace = useCallback(async () => {
-    const selected = await open({ directory: true, multiple: false, defaultPath: workspaceRef.current || undefined });
-    if (typeof selected !== 'string') return;
+    const origin = viewedLive();
+    const navigation = navigationRef.current;
+    const isOrigin = () => navigationRef.current === navigation && sessionIdRef.current === origin.data.session.id;
     try {
+      const selected = await open({ directory: true, multiple: false, defaultPath: workspaceRef.current || undefined });
+      if (typeof selected !== 'string' || !isOrigin()) return;
       const cwd = await invoke<string>('set_workspace_cwd', { newCwd: selected });
-      workspaceRef.current = cwd;
-      setWorkspaceCwd(cwd);
-      mutateData((current) => ({ ...current, session: { ...current.session, workspaceCwd: cwd } }));
+      mutateData((current) => ({ ...current, session: { ...current.session, workspaceCwd: cwd } }), origin);
+      if (isOrigin()) {
+        workspaceRef.current = cwd;
+        setWorkspaceCwd(cwd);
+      }
+      await persistData(origin.data);
     } catch (error) {
-      setLastError(`Could not switch workspace: ${String(error)}`);
+      if (isOrigin()) setLastError(`Could not switch workspace: ${String(error)}`);
     }
-  }, [mutateData]);
+  }, [mutateData, persistData, viewedLive]);
 
   const clearWorkspace = useCallback(async () => {
+    const origin = viewedLive();
+    const navigation = navigationRef.current;
+    const isOrigin = () => navigationRef.current === navigation && sessionIdRef.current === origin.data.session.id;
     try {
       await invoke('set_workspace_cwd', { newCwd: '' });
-      workspaceRef.current = '';
-      setWorkspaceCwd('');
       mutateData((current) => ({
         ...current,
         session: { ...current.session, workspaceCwd: undefined },
-      }));
+      }), origin);
+      if (isOrigin()) {
+        workspaceRef.current = '';
+        setWorkspaceCwd('');
+      }
+      await persistData(origin.data);
     } catch (error) {
-      setLastError(`Could not clear workspace: ${String(error)}`);
+      if (isOrigin()) setLastError(`Could not clear workspace: ${String(error)}`);
     }
-  }, [mutateData]);
+  }, [mutateData, persistData, viewedLive]);
 
   const listWorkspaceFiles = useCallback(async (query: string, limit = 30) => {
     return invoke<string[]>('list_workspace_files', { query, limit });
@@ -1213,7 +1310,7 @@ export function useAgent() {
       return await invoke<import('../types/agent').GlobalArtifactItem[]>('list_all_artifacts');
     } catch (error) {
       setLastError(`Could not load artifacts library: ${String(error)}`);
-      return [];
+      throw error;
     }
   }, []);
 
@@ -1221,8 +1318,8 @@ export function useAgent() {
     try {
       return await invoke<import('../types/agent').DeepSearchResult[]>('deep_search', { query, limit });
     } catch (error) {
-      console.error('Deep search error:', error);
-      return [];
+      setLastError(`Could not search sessions: ${String(error)}`);
+      throw error;
     }
   }, []);
 
@@ -1311,9 +1408,7 @@ export function useAgent() {
         ...updated,
         messages: updated.messages.map((message) => ({ ...message, isStreaming: false })),
       };
-      dataRef.current = normalized;
-      sessionIdRef.current = normalized.session.id;
-      setData(normalized);
+      mutateData(() => normalized);
       setSessions((current) =>
         current.map((session) => (session.id === normalized.session.id ? normalized.session : session))
       );
@@ -1435,15 +1530,8 @@ export function useAgent() {
   }, [mutateData, persistData]);
 
   const editAndResendMessage = useCallback(async (messageId: string, newContent: string): Promise<boolean> => {
-    if (currentRunRef.current) {
-      const activeRun = currentRunRef.current;
-      currentRunRef.current = null;
-      setIsStreaming(false);
-      setStopRequested(false);
-      setSubagents([]);
-      setActiveSkills([]);
-      void invoke('abort_agent', { runId: activeRun }).catch(() => {});
-    }
+    const navigation = navigationRef.current;
+    if (currentRunRef.current) detachCurrentRun();
     if (sessionOperationRef.current) {
       setLastError('Wait for session operations before editing.');
       return false;
@@ -1494,20 +1582,13 @@ export function useAgent() {
       return false;
     }
     sessionOperationRef.current = false;
+    if (navigationRef.current !== navigation || sessionIdRef.current !== previous.session.id) return false;
 
     return sendMessage(clean, attachments);
-  }, [mutateData, persistData, sendMessage]);
+  }, [mutateData, persistData, sendMessage, detachCurrentRun]);
 
   const retryTurn = useCallback(async (messageId: string): Promise<boolean> => {
-    if (currentRunRef.current) {
-      const activeRun = currentRunRef.current;
-      currentRunRef.current = null;
-      setIsStreaming(false);
-      setStopRequested(false);
-      setSubagents([]);
-      setActiveSkills([]);
-      void invoke('abort_agent', { runId: activeRun }).catch(() => {});
-    }
+    if (currentRunRef.current) detachCurrentRun();
     if (sessionOperationRef.current) {
       setLastError('Wait for session operations before retrying.');
       return false;
@@ -1536,11 +1617,12 @@ export function useAgent() {
     }
 
     return editAndResendMessage(userMsg.id, userMsg.content || '');
-  }, [editAndResendMessage]);
+  }, [editAndResendMessage, detachCurrentRun]);
 
-  const initAgentsMd = useCallback(async () => {
+  const initAgentsMd = useCallback(async (expectedWorkspace?: string) => {
+    const workspace = expectedWorkspace ?? workspaceRef.current;
     try {
-      const result = await invoke<string>('init_workspace_agents_md');
+      const result = await invoke<string>('init_workspace_agents_md', { expectedWorkspace: workspace });
       return result;
     } catch (error) {
       setLastError(`Failed to initialize AGENTS.md: ${String(error)}`);
@@ -1548,12 +1630,14 @@ export function useAgent() {
     }
   }, []);
 
-  const readAgentsMd = useCallback(async () => {
-    return await invoke<string | null>('read_workspace_agents_md');
+  const readAgentsMd = useCallback(async (expectedWorkspace?: string) => {
+    const workspace = expectedWorkspace ?? workspaceRef.current;
+    return await invoke<string | null>('read_workspace_agents_md', { expectedWorkspace: workspace });
   }, []);
 
-  const saveAgentsMd = useCallback(async (content: string) => {
-    await invoke('save_workspace_agents_md', { content });
+  const saveAgentsMd = useCallback(async (content: string, expectedWorkspace?: string) => {
+    const workspace = expectedWorkspace ?? workspaceRef.current;
+    await invoke('save_workspace_agents_md', { content, expectedWorkspace: workspace });
   }, []);
 
   return {
@@ -1561,7 +1645,7 @@ export function useAgent() {
     artifacts: data.artifacts,
     activeArtifact,
     activeArtifactId,
-    setActiveArtifactId,
+    setActiveArtifactId: selectArtifact,
     subagents,
     backgroundTasks,
     refreshBackgroundTasks,

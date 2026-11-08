@@ -67,6 +67,18 @@ interface MenuState {
   sections: MenuSectionDef[];
 }
 
+function insertInputText(input: HTMLInputElement | HTMLTextAreaElement, text: string) {
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  const value = input.value.slice(0, start) + text + input.value.slice(end);
+  // Bypass React's instance value tracker so its input event reads the change.
+  const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+  input.setSelectionRange(start + text.length, start + text.length);
+}
+
 export const ContextMenu: React.FC<ContextMenuProps> = ({
   workspaceCwd = '',
   currentSessionId,
@@ -358,12 +370,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 try {
                   const clip = await navigator.clipboard.readText();
                   if (clip) {
-                    const start = inputEl.selectionStart ?? inputEl.value.length;
-                    const end = inputEl.selectionEnd ?? inputEl.value.length;
-                    const val = inputEl.value;
-                    inputEl.value = val.substring(0, start) + clip + val.substring(end);
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    inputEl.setSelectionRange(start + clip.length, start + clip.length);
+                    insertInputText(inputEl, clip);
                   }
                 } catch {
                   document.execCommand('paste');
@@ -380,12 +387,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                   const clip = await navigator.clipboard.readText();
                   if (clip) {
                     const snippet = `\n\`\`\`\n${clip}\n\`\`\`\n`;
-                    const start = inputEl.selectionStart ?? inputEl.value.length;
-                    const end = inputEl.selectionEnd ?? inputEl.value.length;
-                    const val = inputEl.value;
-                    inputEl.value = val.substring(0, start) + snippet + val.substring(end);
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    inputEl.setSelectionRange(start + snippet.length, start + snippet.length);
+                    insertInputText(inputEl, snippet);
                   }
                 } catch (e) {
                   console.error('Failed to paste code block', e);
@@ -569,7 +571,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                     label: 'Edit & Resend from Here',
                     icon: <Pencil size={14} className="text-[#58a6ff]" />,
                     action: () => {
-                      void onEditAndResendMessage(foundMessage.id, foundMessage.content);
+                      messageEl?.querySelector<HTMLButtonElement>('[aria-label="Edit message"]')?.click();
                       closeMenu();
                     },
                   },

@@ -284,6 +284,13 @@ pub struct ChatMessage {
     pub reasoning: Option<String>,
     #[serde(rename = "toolCalls", default)]
     pub tool_calls: Option<Vec<ToolCallItem>>,
+    /// Provider-native assistant/tool transcript for this display message.
+    #[serde(
+        rename = "providerMessages",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider_messages: Option<Vec<serde_json::Value>>,
     #[serde(rename = "isStreaming", default)]
     pub is_streaming: Option<bool>,
     #[serde(default)]
@@ -388,6 +395,8 @@ pub struct AgentRunRequest {
     pub run_id: String,
     #[serde(rename = "sessionId")]
     pub session_id: String,
+    #[serde(rename = "workspaceCwd", default)]
+    pub workspace_cwd: Option<String>,
     pub provider: ProviderConfig,
     #[serde(rename = "systemPrompt", default)]
     pub system_prompt: Option<String>,
@@ -501,6 +510,14 @@ pub struct ToolEventData {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStateEventData {
+    pub run_id: String,
+    pub session_id: String,
+    pub provider_messages: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ArtifactEventData {
     #[serde(rename = "runId")]
     pub run_id: String,
@@ -580,6 +597,8 @@ pub enum AgentEvent {
     Chunk(StreamEventData),
     #[serde(rename = "reasoning")]
     Reasoning(StreamEventData),
+    #[serde(rename = "provider_state")]
+    ProviderState(ProviderStateEventData),
     #[serde(rename = "tool_update")]
     ToolUpdate(ToolEventData),
     #[serde(rename = "artifact")]

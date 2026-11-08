@@ -1,0 +1,802 @@
+{
+  "scope_note": "88 finding records before cross-layer deduplication; overlapping IDs are not 88 unique bugs. fixed_bounded means scoped repair, not global release approval.",
+  "summary": {
+    "fixed_bounded": 53,
+    "partial_or_mitigated": 11,
+    "open": 24
+  },
+  "findings": [
+    {
+      "id": "P01",
+      "severity": "H",
+      "title": "Path kanonis Windows direduksi menjadi basename, sehingga Stage/Revert bisa mengenai file lain",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tools.rs:561-564`, `639-642`; asal canonical path `1521-1545`; konsumen `git.rs:189-218`, `247-255`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P02",
+      "severity": "H",
+      "title": "Snapshot guard tidak menserialisasi write paralel: dua edit sukses, satu perubahan hilang",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tools.rs:508-536`; call sites `545-547`, `643`; pemanggilan paralel `runner.rs:1067-1077`, `1283`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P03",
+      "severity": "H",
+      "title": "Konfigurasi Anthropic thinking mengirim temperature yang tidak valid dan effort tanpa capability gate",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:589-603`; nilai default `types.rs:170-174`; model default `storage.rs:55-61`.",
+      "status": "fixed_bounded",
+      "notes": "Documented known-model capability table; unknown-model discovery/live API not verified."
+    },
+    {
+      "id": "P04",
+      "severity": "H",
+      "title": "Thinking state/signature hilang saat round-trip tool Anthropic dan DeepSeek",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:68-74`, `852-860`, `913-936`, `649-665`; penerusan `runner.rs:983-987`, `1767-1785`.",
+      "status": "fixed_bounded",
+      "notes": "Opaque signed state + native snapshot + target-adapter normalization; original data not reconstructed."
+    },
+    {
+      "id": "P05",
+      "severity": "H",
+      "title": "Adapter OpenAI mengirim field lintas-provider tanpa pembatasan",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:563-578`; enum wire `types.rs:27-37`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P06",
+      "severity": "H",
+      "title": "EOF SSE parsial dianggap sukses dan dapat mengeksekusi tool dari turn yang belum selesai",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:120-140`, `531-553`; fallback SSE `458-470`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P07",
+      "severity": "H",
+      "title": "Cap SSE tidak membatasi total stream dan dapat dilewati dengan data line kosong",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:1138-1148`, `1180-1197`, `773`, `783`, `1023`; cap nonstream `224`, `371`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P08",
+      "severity": "H",
+      "title": "MCP read tanpa cap, sedangkan timeout tidak mencakup write stdin",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/mcp.rs:54-58`, `109-121`, `134-162`; publikasi result `302-314` dan `runner.rs:1141-1165`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P09",
+      "severity": "H",
+      "title": "Daemon command melewati byte cap runner foreground",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tools.rs:977-987` → `src-tauri/src/agent/tasks.rs:172-193`, `220-228`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P10",
+      "severity": "H",
+      "title": "Revert/Stage memakai pathspec Git, bukan path file literal",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/git.rs:189-218`, `225-227`, `247-255`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P11",
+      "severity": "M",
+      "title": "Ollama thinking off tidak diterapkan ke endpoint yang dipakai",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:323-328`, `566-577`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P12",
+      "severity": "M",
+      "title": "Anthropic message_stop tidak mengakhiri stream; framing CR-only juga tidak dipahami",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/provider.rs:478-520`, `939-947`, `1143-1148`.",
+      "status": "fixed_bounded",
+      "notes": "CR framing/message_stop implemented; keep-open HTTP timing fixture not added."
+    },
+    {
+      "id": "P13",
+      "severity": "M",
+      "title": "MCP discovery hanya membaca halaman pertama",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/mcp.rs:167-174`; pemakai `224-264`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P14",
+      "severity": "M",
+      "title": "Timeout/drop request MCP tidak membatalkan pekerjaan server, dan partial connect tidak punya cleanup terstruktur",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/mcp.rs:140-162`, `188-205`, `217-275`; caller cancellation `runner.rs:758-764`, `1129-1131`.",
+      "status": "partial_or_mitigated",
+      "notes": "RAII pending/direct child cleanup; protocol cancellation/process-tree partial-connect still residual."
+    },
+    {
+      "id": "P15",
+      "severity": "M",
+      "title": "Foreground command yang parent-nya keluar lebih dahulu meninggalkan descendant",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tools.rs:1050-1057`, `1089-1108`, `1185-1199`; shared caller `pty.rs:25-35`.",
+      "status": "open",
+      "notes": "Foreground grandchild ownership remains unverified/unfixed."
+    },
+    {
+      "id": "P16",
+      "severity": "M",
+      "title": "Error git status menjadi laporan Working tree clean",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/git.rs:72-106`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P17",
+      "severity": "M",
+      "title": "Parser porcelain merusak rename, quoted UTF-8, dan path relatif subfolder",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/git.rs:22-34`, `85-92`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "P18",
+      "severity": "M",
+      "title": "Commit/push Git tidak bounded dan tidak dapat dibatalkan",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/git.rs:123-143`, `162-166`; command factory `mod.rs:17-21`.",
+      "status": "open",
+      "notes": "Git commit/push deadline and bounded subprocess output still residual."
+    },
+    {
+      "id": "P19",
+      "severity": "M",
+      "title": "Deep search masih membatasi raw rows sebelum agregasi session",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/search.rs:190-198`, `225-249`.",
+      "status": "open",
+      "notes": "FTS grouping after 10000-row cap still residual."
+    },
+    {
+      "id": "P20",
+      "severity": "M",
+      "title": "Validasi public URL rentan DNS rebinding karena koneksi melakukan resolve ulang",
+      "report": "docs/audit/layer-provider-tools-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tools.rs:1319-1322`, `1426-1437`.",
+      "status": "open",
+      "notes": "DNS rebinding/pinned resolver still residual."
+    },
+    {
+      "id": "RT-01",
+      "severity": "H",
+      "title": "Request Review tidak memiliki enforcement native; subagent bahkan tidak mewarisi mode",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:800–806,1122–1126,1190–1218,1219–1220`; `runner.rs:237–250,294–295,330–334`; `src-tauri/src/agent/types.rs:110–122,417–418`; terkait `agent/tools.rs:37–40,290–319`.",
+      "status": "fixed_bounded",
+      "notes": "RequestReview fail-closed blocks mutation/exec/MCP; approval UI not implemented."
+    },
+    {
+      "id": "RT-02",
+      "severity": "H",
+      "title": "`send_input` dapat mengunci task sehingga kill/cancel tidak pernah memperoleh lock",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:118–130,224–228,325–338,349–350`; terkait `agent/tools.rs:314,1280–1285`; `runner.rs:1283`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-03",
+      "severity": "H",
+      "title": "Output background tidak dibatasi bytes; pembatas 500 baris tidak mencegah OOM/disk exhaustion",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:13,175–176,187–188,219–228,261–270,292–299`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-04",
+      "severity": "H",
+      "title": "Replay mengekspor pending/cancelled/phantom tool calls tanpa pasangan hasil",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:1767–1786`; pembentuk pending `runner.rs:892–916`; terkait `src/hooks/useAgent.ts:49–64,427–460,767`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-05",
+      "severity": "H",
+      "title": "`join_all` menjalankan mutation satu resource bersamaan; snapshot check tidak atomic dengan commit",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:1067–1077,1219–1220,1283`; terkait `agent/tools.rs:508–536,539–547,577–643`, `agent/storage.rs:910–934`.",
+      "status": "fixed_bounded",
+      "notes": "Process-wide per-path app writer lock; no external-editor/handle TOCTOU guarantee."
+    },
+    {
+      "id": "RT-06",
+      "severity": "H",
+      "title": "Background task global tidak mempunyai owner; semua session/subagent dapat mengelola proses lain",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:17–35,43–46,66–72,292–369`; `runner.rs:330–334,1122–1126`; terkait `agent/tools.rs:977–979,1237–1290`, `src-tauri/src/lib.rs:814–826`.",
+      "status": "open",
+      "notes": "Global task registry still lacks session/run ownership enforcement."
+    },
+    {
+      "id": "RT-07",
+      "severity": "M",
+      "title": "Task monitor menunggu `child.wait()` di dalam branch tanpa cancellation",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:208–258`, khususnya `230–242`; `tasks.rs:212–215`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-08",
+      "severity": "M",
+      "title": "Kill mengeklaim sukses sebelum exit; PID shell yang sudah exit dapat didaur ulang",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:247–255,273–285,349–368`.",
+      "status": "partial_or_mitigated",
+      "notes": "Kill waits/reaps and errors visible; no Windows Job Object/Unix process-group ownership."
+    },
+    {
+      "id": "RT-09",
+      "severity": "M",
+      "title": "ID task reset pada restart dan log append mencampur output dari pekerjaan berbeda",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/tasks.rs:49–55,59–63,73–77,197–203`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-10",
+      "severity": "M",
+      "title": "Retry reset merusak teks turn terdahulu dan meninggalkan tool phantom/segments stale",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:875–916,930–946`; terkait `src/hooks/useAgent.ts:379–398,427–460`, `src/components/MessageRow.tsx:157–185`.",
+      "status": "open",
+      "notes": "Per-attempt rollback of segments/tools not implemented."
+    },
+    {
+      "id": "RT-11",
+      "severity": "M",
+      "title": "Subagent kehilangan AGENTS.md dan operator instructions, bukan hanya mengisolasi history",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:237–250,294–304`; bandingkan parent `runner.rs:780–806` dan council `runner.rs:1378–1382`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-12",
+      "severity": "M",
+      "title": "Tanpa workspace, subagent mengaktifkan seluruh OS temp sebagai workspace file tools",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:256–263,280,330–334`; terkait `agent/tools.rs:1515–1519`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-13",
+      "severity": "M",
+      "title": "Synthesis subagent menelan failure/cancel dan tetap melaporkan completed successfully",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:515–525,528–580,582–625`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-14",
+      "severity": "M",
+      "title": "Artifact/tool evidence subagent dibuang sebelum mencapai parent/persistence",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:330–334,493–511`; `runner.rs:605–625`; dibanding parent `runner.rs:1114–1125,1246–1277`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-15",
+      "severity": "M",
+      "title": "Snapshot replay mengabaikan `segments`/`preamble` sehingga urutan multi-turn runtuh",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:1767–1787`; data model `src-tauri/src/agent/types.rs:303–315`; terkait `src/hooks/useAgent.ts:260–280,433–460`, `MessageRow.tsx:157–185`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-16",
+      "severity": "M",
+      "title": "Kontrak council menerima dua scope independen tetapi registry hanya melindungi A",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:1331–1343,1510–1515,1566–1582`; terkait `src-tauri/src/lib.rs:40–60`; `src/hooks/useAgent.ts:375–377,792–828`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "RT-17",
+      "severity": "M",
+      "title": "Registry manual review dan run tidak mutually exclusive secara atomic",
+      "report": "docs/audit/layer-runtime-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/runner.rs:673–692,712–743,1303–1327,1608–1623,1631`; terkait `src-tauri/src/lib.rs:31–35`.",
+      "status": "open",
+      "notes": "Atomic mutual exclusion manual-review vs begin not implemented."
+    },
+    {
+      "id": "ST-01",
+      "severity": "H",
+      "title": "Run yang sudah ditinggalkan tetap dapat dimulai; catch run lama membatalkan tracking run baru",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:780-784,830-844,868-882,915-935`.",
+      "status": "fixed_bounded",
+      "notes": "Origin run snapshots/catch guards; native dispatch-before-abort gap remains."
+    },
+    {
+      "id": "ST-02",
+      "severity": "H",
+      "title": "Switching/startup tidak menjadi transaction; input/queue boleh menulis sesi lama ketika load sedang berlangsung",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:346-369,703-711,966-991`; `src/components/ChatCanvas.tsx:361-383`; `src/App.tsx:117-162,272-275`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-03",
+      "severity": "H",
+      "title": "Edit/retry melanjutkan prompt A ke sesi B dan dapat membawa buffered delta run lama",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:232-281,1437-1499,1501-1538`; `src/components/ChatCanvas.tsx:1102-1123`.",
+      "status": "partial_or_mitigated",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-04",
+      "severity": "H",
+      "title": "Lock operasi sesi tidak mencakup Clear/Delete/navigation; hasil compaction atau save lanjutan dapat menghidupkan data yang sudah dihapus",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:999-1015,1130-1135,1293-1324,1328-1379,1384-1434`; `src-tauri/src/agent/storage.rs:367-369,424-472,532-541`.",
+      "status": "partial_or_mitigated",
+      "notes": "Native tombstones present; full per-session operation coordinator not implemented."
+    },
+    {
+      "id": "ST-05",
+      "severity": "H",
+      "title": "Cwd global IPC tidak terikat transaction sesi; workspace UI/persisted/run dapat berbeda",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:359-366,948-955,980-991,1176-1201,1229-1258`; `src/types/agent.ts:198-216`; `src-tauri/src/lib.rs:25-34,346-374`.",
+      "status": "partial_or_mitigated",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-06",
+      "severity": "H",
+      "title": "Pelanggaran requirement lifecycle: sekadar switch/new membatalkan run aktif",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:173-174,375-377,915-935,966-970`; `src/hooks/useAgent.reflection.test.tsx:96-116`; `src-tauri/src/agent/runner.rs:673-692`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-07",
+      "severity": "M",
+      "title": "Rename/pin menunggu queue tetapi tidak menjadi bagian queue; snapshot stale menimpa metadata baru",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:218-229,1089-1104,1110-1124`; `src-tauri/src/agent/storage.rs:410-417,431-451,507-529`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-08",
+      "severity": "M",
+      "title": "Settings save rollback dan refreshModels membawa snapshot lama yang dapat membuang perubahan terbaru",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:1018-1028,1053-1085`; `src/components/ModelPicker.tsx:112-123,126-139`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-09",
+      "severity": "M",
+      "title": "Provider reconnect reset hanya content/reasoning, bukan segments yang sebenarnya dirender",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:379-398,260-281`; `src/components/MessageRow.tsx:53-57,158-178,264-270`; `src-tauri/src/agent/runner.rs:931-946`.",
+      "status": "open",
+      "notes": "Notice partial reset still does not roll back per-attempt segments/tools."
+    },
+    {
+      "id": "ST-10",
+      "severity": "M",
+      "title": "Pemilihan pemenang Council sebelum candidate selesai membekukan content parsial/empty",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:285-302,1274-1290`; `src/components/CouncilView.tsx:52-65,110-123`.",
+      "status": "open",
+      "notes": "Early Council winner selection synchronization still residual."
+    },
+    {
+      "id": "ST-11",
+      "severity": "M",
+      "title": "Buffer RAF tidak dibatasi; Clear tidak menghapus buffer/frame",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:175-178,237-253,279-300,311,403-417,482-484,507-516,999-1015`.",
+      "status": "open",
+      "notes": "Live-session cache/buffers lack total budget and hidden-window flush fallback."
+    },
+    {
+      "id": "ST-12",
+      "severity": "M",
+      "title": "Listener IPC tidak punya readiness/error path; async native drop cleanup bocor di StrictMode",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:374-377,622-627,629-654`; `src/components/ChatCanvas.tsx:680-719`; `src/main.tsx:7-12`.",
+      "status": "partial_or_mitigated",
+      "notes": "Native drag late cleanup fixed; hook event readiness/rejection still residual."
+    },
+    {
+      "id": "ST-13",
+      "severity": "M",
+      "title": "App shortcut menembus modal dan editor memory tidak terikat workspace asal",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/App.tsx:45-71,117-162,227-234`; `src/hooks/useModalAccessibility.ts:37-44,63-67`; `src/components/MemoryModal.tsx:30-50,65-74`; `src/hooks/useAgent.ts:1551-1557`; `src-tauri/src/lib.rs:285-290,312-328`.",
+      "status": "partial_or_mitigated",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "ST-14",
+      "severity": "M",
+      "title": "Rollback/edit persisten gagal tetapi UI tetap memakai history terpotong tanpa pemulihan",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:1422-1434,1487-1495` (bandingkan rollback undo `1372-1375`); `src/App.tsx:260-270`.",
+      "status": "open",
+      "notes": "Rollback/edit failed persistence recovery remains residual."
+    },
+    {
+      "id": "ST-15",
+      "severity": "L",
+      "title": "Jalur speech/initial-load/search error belum konsisten terlihat di UI",
+      "report": "docs/audit/layer-state-review.md",
+      "location": "**Lokasi:** `src/hooks/useSpeechRecognition.ts:35-57,68-76,79-99`; `src/components/ChatCanvas.tsx:840-844,2158-2170`; `src/hooks/useAgent.ts:343-361,1176-1178,1220-1226`; `src/App.tsx:260-269`.",
+      "status": "open",
+      "notes": "Speech/initial-load/search UX not fully closed."
+    },
+    {
+      "id": "F01",
+      "severity": "Tinggi",
+      "title": "mode Request Review bukan enforcement izin native",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src-tauri/src/agent/types.rs:110-122,160-161`; `agent/runner.rs:800-806,1179-1243`; `agent/tools.rs:290-319`; `src-tauri/src/lib.rs:422-447,460-510`.",
+      "status": "partial_or_mitigated",
+      "notes": "Native RequestReview safety gate implemented; approval workflow absent."
+    },
+    {
+      "id": "F02",
+      "severity": "Tinggi",
+      "title": "isi run panjang hanya di RAM sampai selesai",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:403-475,565-617,831-844,869-882`; `src-tauri/src/lib.rs:33-36`; `agent/runner.rs:1296-1328`.",
+      "status": "open",
+      "notes": "No throttled/native durable mid-run checkpoint; crash before done may lose streaming output."
+    },
+    {
+      "id": "F03",
+      "severity": "Tinggi",
+      "title": "startup/switch bisa mengirim run ke workspace lama ketika restore workspace gagal",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:349-369,966-995`; `src-tauri/src/lib.rs:25-34,345-374,831,857-859`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "F04",
+      "severity": "Tinggi",
+      "title": "native opener menerima konten model lalu mengirimnya ke `cmd /C start`",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/components/MarkdownRenderer.tsx:18-23,60-78`; `src-tauri/src/lib.rs:553-609,611-658`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "F05",
+      "severity": "Sedang",
+      "title": "mutex sesi menserialisasi I/O, tetapi snapshot usang tetap dapat mengembalikan delete/rename/unpin",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/storage.rs:11,367-369,410-417,424-474,507-541`; `src/hooks/useAgent.ts:218-229,1089-1135`; `src-tauri/src/lib.rs:829-860`.",
+      "status": "fixed_bounded",
+      "notes": "Tombstone+field-authoritative title/pin; not multi-process revision/CAS."
+    },
+    {
+      "id": "F06",
+      "severity": "Sedang",
+      "title": "compact berulang menghapus checkpoint sebelumnya",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/storage.rs:570-601,637-690`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "F07",
+      "severity": "Sedang",
+      "title": "preamble/segments tersimpan, tetapi replay dan ekspor tidak merekonstruksi narasi lengkap",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:433-460`; `agent/types.rs:303-315`; `agent/runner.rs:1767-1790`; `agent/storage.rs:570-601,720-745,765-795`.",
+      "status": "partial_or_mitigated",
+      "notes": "Ordered text/tool export fixed; complete council/attachment receipt export incomplete."
+    },
+    {
+      "id": "F08",
+      "severity": "Sedang",
+      "title": "perubahan workspace tidak langsung dipersist ke sesi; clear workspace mengaku sukses pada kegagalan disk",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:1176-1201`; `agent/storage.rs:937-955`; `src-tauri/src/lib.rs:345-374`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "F09",
+      "severity": "Sedang",
+      "title": "settings write tidak berurutan dan rollback optimistic bisa menimpa update baru",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:1018-1030,1053-1086`; `agent/storage.rs:84-90,152-185,910-934`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "F10",
+      "severity": "Sedang",
+      "title": "daftar sesi/artifacts menyamarkan error sebagai daftar kosong dan save dapat menimpa file invalid",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/storage.rs:207-227,248-275,424-456`; `src-tauri/src/lib.rs:113-116,138-141`; `src/hooks/useAgent.ts:343-366`.",
+      "status": "fixed_bounded",
+      "notes": "Fail-whole-catalog diagnostics; valid source files retained but partial-list recovery UX absent."
+    },
+    {
+      "id": "F11",
+      "severity": "Sedang",
+      "title": "kegagalan update indeks disembunyikan; delete tidak menjamin hasil pencarian menghilang",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/storage.rs:471-474,532-541`; `agent/search.rs:24-52,66-79,134-152`; `src/hooks/useAgent.ts:1220-1225`.",
+      "status": "open",
+      "notes": "Index failure reconciliation remains residual."
+    },
+    {
+      "id": "F12",
+      "severity": "Sedang",
+      "title": "API key/header/MCP env disimpan plaintext dan provider remote HTTP tetap diperbolehkan",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/types.rs:54-71,93-99`; `agent/storage.rs:13-26,152-184,910-932`; `src-tauri/src/lib.rs:103-110`; `src/components/SettingsModal.tsx:43-45,362,768`.",
+      "status": "open",
+      "notes": "OS keyring/DPAPI and remote-HTTP migration not applied."
+    },
+    {
+      "id": "F13",
+      "severity": "Sedang",
+      "title": "skills workspace yang belum dipercaya dapat menyamar sebagai skill global tepercaya",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/skills.rs:67-90,123-129,204-224`; `agent/runner.rs:777-790`; `src-tauri/src/lib.rs:394-405`.",
+      "status": "open",
+      "notes": "Workspace skill trust/provenance policy not applied."
+    },
+    {
+      "id": "F14",
+      "severity": "Sedang",
+      "title": "batas/path skills dan attachment berbeda dari primary workspace resolver",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `agent/skills.rs:141-150,240-244,294-325`; `agent/storage.rs:1031-1061`; `agent/tools.rs:1510-1557`.",
+      "status": "fixed_bounded",
+      "notes": "Bounded activation and canonical checks, not handle-level no-follow/TOCTOU guarantee."
+    },
+    {
+      "id": "F15",
+      "severity": "Sedang",
+      "title": "backend mutasi/ekspor tidak menggunakan registry run; abort bukan selesai",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src-tauri/src/lib.rs:123-135,151-183`; `agent/runner.rs:673-709,712-744`; `agent/storage.rs:637-646`; `src/hooks/useAgent.ts:999-1015,1146-1168,1437-1498`.",
+      "status": "open",
+      "notes": "Native active-run mutation/abort-finish lease remains residual."
+    },
+    {
+      "id": "F16",
+      "severity": "Sedang",
+      "title": "export dapat menimpa state internal atau keluar workspace tanpa konfirmasi jika destination disuplai",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:1131-1138`; `src/hooks/useAgent.ts:1154-1168`; `src-tauri/src/lib.rs:156-177`; `agent/storage.rs:701-717,910-934`.",
+      "status": "open",
+      "notes": "Export collision with internal application state remains residual."
+    },
+    {
+      "id": "F17",
+      "severity": "Rendah",
+      "title": "parity schema cukup luas, tetapi notice hilang dan optional TypeScript bukan null Rust",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src/types/agent.ts:13-26,67-87,139-183,262-274`; `agent/types.rs:196-220,277-316,343-419,576-603`.",
+      "status": "open",
+      "notes": "Full generated wire/nullability contract not implemented."
+    },
+    {
+      "id": "F18",
+      "severity": "Rendah",
+      "title": "CSP nonaktif memperluas dampak kompromi renderer",
+      "report": "docs/audit/layer-storage-ipc-review.md",
+      "location": "**Lokasi:** `src-tauri/tauri.conf.json:25-27`; `capabilities/default.json:5-11`; `src-tauri/src/lib.rs:861-905,501-510,103-110`.",
+      "status": "open",
+      "notes": "Packaged CSP policy remains unchanged."
+    },
+    {
+      "id": "UI-01",
+      "severity": "P1",
+      "title": "“Request Review” menjanjikan approval yang tidak ditegakkan runtime",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:55-59,509-514,1215-1219`; `src/hooks/useAgent.ts:789,866`; `src-tauri/src/agent/runner.rs:800-806,1067-1126,1190-1220`; `src-tauri/src/agent/tools.rs:36-41`.",
+      "status": "partial_or_mitigated",
+      "notes": "Disclosure matches blocked write/command/MCP; no approval dialog."
+    },
+    {
+      "id": "UI-02",
+      "severity": "P1",
+      "title": "`/plan` dikonsumsi UI tanpa pernah dikirim",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:149,1016-1027,1031-1143,1185-1189`; implementasi tujuan `src/hooks/useAgent.ts:748-752`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-03",
+      "severity": "P1",
+      "title": "Aksi Git pada kartu pesan lama bekerja pada workspace aktif, bukan workspace pembuat pesan",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/FilesChangedCard.tsx:60-82,106-118,120-133,269-297`; `src/components/MessageRow.tsx:365-369`; `src/App.tsx:106-108`; `src/hooks/useAgent.ts:1180-1183`; `src-tauri/src/lib.rs:460-497`; `src-tauri/src/agent/git.rs:184-218`.",
+      "status": "partial_or_mitigated",
+      "notes": "Unsafe receipt mutations disabled pending persisted origin/revision; review still works."
+    },
+    {
+      "id": "UI-04",
+      "severity": "P1",
+      "title": "“Edit & Resend from Here” pada context menu langsung memotong riwayat tanpa editor",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ContextMenu.tsx:565-573`; `src/App.tsx:288`; `src/hooks/useAgent.ts:1437-1498`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-05",
+      "severity": "P1",
+      "title": "Prompt antrean melewati dispatcher dan kehilangan execution mode/Council",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:290-294,367-390,1146-1219`; fallback `src/hooks/useAgent.ts:789`; test yang mengunci perilaku lama `src/components/ChatCanvas.commands.test.tsx:155-204`.",
+      "status": "fixed_bounded",
+      "notes": "Normal queued prompts/options/session routing fixed; async local-command edge cases remain."
+    },
+    {
+      "id": "UI-06",
+      "severity": "P2",
+      "title": "Queue menghapus item sebelum request diterima dan dapat macet ketika review berlangsung",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:368-390,1767-1774`; penolakan `src/hooks/useAgent.ts:707-710`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-07",
+      "severity": "P1",
+      "title": "Shortcut global menembus modal; memory editor dapat menulis konten A ke workspace B",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/App.tsx:45-71,227-235`; `src/hooks/useModalAccessibility.ts:37-61`; `src/components/MemoryModal.tsx:30-50,65-71`; `src/hooks/useAgent.ts:1551-1556`.",
+      "status": "fixed_bounded",
+      "notes": "App shortcut guard + memory expected-workspace binding; complete top-modal manager absent."
+    },
+    {
+      "id": "UI-08",
+      "severity": "P2",
+      "title": "Paste dari context menu tidak memperbarui state input React terkontrol",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ContextMenu.tsx:353-388`; composer terkontrol `src/components/ChatCanvas.tsx:1854-1861`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-09",
+      "severity": "P2",
+      "title": "Execution trace menyembunyikan error/result non-terminal dan mengumumkan keberhasilan",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ExecutionTrace.tsx:70-77,130-209,229-271,338-402`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-10",
+      "severity": "P2",
+      "title": "Bubble “task inspector” tidak membuka inspector ketika belum ada artifact",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:1350-1369,1653-1662`; `src/App.tsx:131-132,164-171`; `src/components/ArtifactPane.tsx:94-99`.",
+      "status": "open",
+      "notes": "Task-only bubble inspector not implemented."
+    },
+    {
+      "id": "UI-11",
+      "severity": "P2",
+      "title": "Artifact baru dapat mengusir pilihan Live Shell",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ArtifactPane.tsx:42-50,76-80`; `src/hooks/useAgent.ts:472-479`; `src/components/ArtifactPane.test.tsx:15-25`.",
+      "status": "open",
+      "notes": "Artifact-arrival versus explicitly selected Live Shell not fully fixed."
+    },
+    {
+      "id": "UI-12",
+      "severity": "P2",
+      "title": "Layout minimum native dengan Live Shell menyisakan chat 260 px",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/App.tsx:84,116,246-257`; `src/components/Sidebar.tsx:301`; `src/hooks/useIsNarrowViewport.ts:3`; `src/components/ChatCanvas.tsx:1309-1345,1873-1875,1957-1983,2090-2210`; `src/index.css:15`; `src-tauri/tauri.conf.json:18-19`.",
+      "status": "fixed_bounded",
+      "notes": "Live shell now overlay; measured basic widths, not dense task/Council/scaled layout matrix."
+    },
+    {
+      "id": "UI-13",
+      "severity": "P2",
+      "title": "Kartu task di composer dapat memakan tinggi jendela dan menyembunyikan kontrol",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ChatCanvas.tsx:1589,1653-1662,1757-1817,1821-1846`; `src/components/SubagentTreeCard.tsx:52`; `src/components/BackgroundTasksCard.tsx:83`; `src/index.css:15`.",
+      "status": "open",
+      "notes": "Total composer task-card height constraint remains residual."
+    },
+    {
+      "id": "UI-14",
+      "severity": "P2",
+      "title": "Context menu panjang tidak memiliki scroll; event keyboard dapat sekaligus mengirim composer",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ContextMenu.tsx:733-735,796-892,896-903,913-930,958-962,1033-1037`; `src/components/ChatCanvas.tsx:1242-1268`.",
+      "status": "open",
+      "notes": "Context menu height/capture keyboard remains residual."
+    },
+    {
+      "id": "UI-15",
+      "severity": "P2",
+      "title": "Split diff menghilangkan baris sah yang diawali dua tanda minus/plus",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/SideBySideDiff.tsx:90-93,110-128`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-16",
+      "severity": "P2",
+      "title": "Auto-tail TerminalOutput berhenti saat chunk baru lebih tinggi dari threshold",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/TerminalOutput.tsx:26-41`; penggunaan `src/components/ExecutionTrace.tsx:394-402`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-17",
+      "severity": "P2",
+      "title": "Error library yang sudah ditangani modal ditelan adapter App",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/components/ArtifactsLibraryModal.tsx:75-93,247-260`; `src/App.tsx:190-196`; `src/hooks/useAgent.ts:1211-1217`; test `src/components/ArtifactsLibraryModal.test.tsx:113-133`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    },
+    {
+      "id": "UI-18",
+      "severity": "P2",
+      "title": "Error awal pengiriman dapat hilang di bubble karena empty segments mengalahkan content",
+      "report": "docs/audit/layer-ui-review.md",
+      "location": "**Lokasi:** `src/hooks/useAgent.ts:722-730,833-839,871-877`; `src/components/MessageRow.tsx:158-185,264-270,273-275`.",
+      "status": "fixed_bounded",
+      "notes": "Lihat laporan per-layer dan handoff fix terkait untuk batas bukti."
+    }
+  ]
+}

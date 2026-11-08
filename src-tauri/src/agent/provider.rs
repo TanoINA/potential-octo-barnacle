@@ -27,16 +27,43 @@ pub struct ChatCompletionFunctionCall {
     pub arguments: String,
 }
 
+#[cfg(test)]
+#[path = "provider_state_audit_tests.rs"]
+mod provider_state_audit_tests;
+
+#[cfg(test)]
+#[path = "provider_payload_audit_tests.rs"]
+mod provider_payload_audit_tests;
+
 #[derive(Debug, Default)]
 pub struct StreamResult {
     pub content: String,
     #[allow(dead_code)]
     pub reasoning: String,
     pub tool_calls: Vec<ChatCompletionToolCall>,
+    /// Native Anthropic content in block-index order; signatures are opaque.
+    pub assistant_content: Vec<serde_json::Value>,
     pub cancelled: bool,
     /// Provider finish reason (`stop`, `length`, `tool_calls`, `end_turn`, ...).
     /// `None` when the provider did not report one.
     pub finish_reason: Option<String>,
+}
+
+impl StreamResult {
+    /// Build replay state independently of display text. Never synthesize a signature.
+    pub fn assistant_message(&self, kind: ProviderKind) -> serde_json::Value {
+        if kind == ProviderKind::Anthropic && !self.assistant_content.is_empty() {
+            return serde_json::json!({"role":"assistant","content":self.assistant_content});
+        }
+        let mut message = serde_json::json!({"role":"assistant","content":self.content});
+        if !self.tool_calls.is_empty() {
+            message["tool_calls"] = serde_json::json!(self.tool_calls);
+        }
+        if kind == ProviderKind::Deepseek && !self.reasoning.is_empty() {
+            message["reasoning_content"] = serde_json::json!(self.reasoning);
+        }
+        message
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,12 +96,24 @@ struct StreamAccumulator {
     content: String,
     reasoning: String,
     tools: BTreeMap<usize, ToolBuilder>,
+    assistant_content: BTreeMap<usize, serde_json::Value>,
     cancelled: bool,
     finish_reason: Option<String>,
 }
 
 impl StreamAccumulator {
-    fn finish(self) -> StreamResult {
+    fn finish(mut self) -> StreamResult {
+        // Only tool input is assembled from JSON fragments; never reconstruct
+        // signed or redacted thinking from display reasoning.
+        for (index, block) in &mut self.assistant_content {
+            if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
+                if let Some(tool) = self.tools.get(index) {
+                    if let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.arguments) {
+                        block["input"] = input;
+                    }
+                }
+            }
+        }
         let tool_calls = self
             .tools
             .into_iter()
@@ -96,6 +135,7 @@ impl StreamAccumulator {
             content: self.content,
             reasoning: self.reasoning,
             tool_calls,
+            assistant_content: self.assistant_content.into_values().collect(),
             cancelled: self.cancelled,
             finish_reason: self.finish_reason,
         }
@@ -314,6 +354,7 @@ where
     if provider.model.trim().is_empty() {
         return Err("A model must be selected".into());
     }
+    validate_chat_model(provider)?;
     let (url, body) = match provider.kind {
         ProviderKind::Anthropic => (
             endpoint(&provider.base_url, "/v1/messages", "/messages"),
@@ -410,6 +451,9 @@ where
         let stream_error = Mutex::new(None::<String>);
         {
             let mut process_event = |data: &str| {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
                 if data.trim() == "[DONE]" {
                     done.store(true, Ordering::Relaxed);
                     return;
@@ -436,6 +480,12 @@ where
                     done.store(true, Ordering::Relaxed);
                     return;
                 }
+                if provider.kind == ProviderKind::Anthropic
+                    && value.get("type").and_then(|v| v.as_str()) == Some("message_stop")
+                {
+                    done.store(true, Ordering::Relaxed);
+                    return;
+                }
                 match provider.kind {
                     ProviderKind::Anthropic => process_anthropic_event(
                         &value,
@@ -459,7 +509,7 @@ where
                 decoder.finish(&mut process_event);
             }
             if decoder.failed {
-                return Err(SSE_EVENT_TOO_LARGE.to_string());
+                return Err(decoder.error.unwrap_or(SSE_EVENT_TOO_LARGE).to_string());
             }
         }
         if let Some(error) = stream_error.into_inner().unwrap_or(None) {
@@ -467,6 +517,9 @@ where
         }
         accumulator.cancelled = cancel.is_cancelled();
         let result = accumulator.finish();
+        if !result.cancelled && !done.load(Ordering::Relaxed) && result.finish_reason.is_none() {
+            return Err("Provider stream failed: EOF before a completion marker".into());
+        }
         validate_stream_result(&result)?;
         return Ok(result);
     }
@@ -476,6 +529,9 @@ where
     let stream_error = Mutex::new(None::<String>);
     {
         let mut process_event = |data: &str| {
+            if done.load(Ordering::Relaxed) {
+                return;
+            }
             if data.trim() == "[DONE]" {
                 done.store(true, Ordering::Relaxed);
                 return;
@@ -502,6 +558,12 @@ where
                 done.store(true, Ordering::Relaxed);
                 return;
             }
+            if provider.kind == ProviderKind::Anthropic
+                && value.get("type").and_then(|v| v.as_str()) == Some("message_stop")
+            {
+                done.store(true, Ordering::Relaxed);
+                return;
+            }
             match provider.kind {
                 ProviderKind::Anthropic => process_anthropic_event(
                     &value,
@@ -521,6 +583,7 @@ where
         };
         let mut decoder = SseDecoder::default();
         let mut stream = response.bytes_stream();
+        let mut wire_bytes = 0usize;
         loop {
             let next = tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -530,6 +593,10 @@ where
             };
             let Some(item) = next else { break };
             let bytes = item.map_err(|error| format!("Provider stream failed: {error}"))?;
+            wire_bytes = wire_bytes.saturating_add(bytes.len());
+            if wire_bytes > MAX_PROVIDER_RESPONSE_BYTES {
+                return Err("Provider response exceeded the size limit".into());
+            }
             decoder.feed(&bytes, &mut process_event);
             if decoder.failed || done.load(Ordering::Relaxed) {
                 break;
@@ -542,7 +609,7 @@ where
         // never a silent success. This is checked independently of the event
         // side-channel so the guarantee does not depend on `fail()` emitting.
         if decoder.failed {
-            return Err(SSE_EVENT_TOO_LARGE.to_string());
+            return Err(decoder.error.unwrap_or(SSE_EVENT_TOO_LARGE).to_string());
         }
     }
     if let Some(error) = stream_error.into_inner().unwrap_or(None) {
@@ -550,6 +617,9 @@ where
     }
     accumulator.cancelled = cancel.is_cancelled();
     let result = accumulator.finish();
+    if !result.cancelled && !done.load(Ordering::Relaxed) && result.finish_reason.is_none() {
+        return Err("Provider stream failed: EOF before a completion marker".into());
+    }
     validate_stream_result(&result)?;
     Ok(result)
 }
@@ -563,21 +633,153 @@ fn openai_body(
     let mut body = serde_json::json!({
         "model": provider.model, "messages": messages, "stream": options.stream,
         "temperature": options.temperature,
-        "thinking": { "type": if options.thinking { "enabled" } else { "disabled" } },
-        "reasoning_effort": options.reasoning_effort.as_str(),
     });
+    body["messages"] = normalize_openai_messages(messages, provider.kind);
+    let official = is_official_openai(provider);
+    let mut token_key = "max_tokens";
+    if official {
+        let model = provider.model.as_str();
+        let o_series = ["o1", "o1-mini", "o1-preview", "o3", "o3-mini", "o4-mini"]
+            .iter()
+            .any(|name| payload_model_matches(model, name));
+        let gpt5 = [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5-pro",
+            "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.2-pro",
+        ]
+        .iter()
+        .any(|name| payload_model_matches(model, name));
+        if o_series || gpt5 {
+            token_key = "max_completion_tokens";
+            let effort = openai_reasoning_effort(model, options);
+            if let Some(effort) = effort {
+                body["reasoning_effort"] = effort.into();
+            }
+            if effort != Some("none") {
+                body.as_object_mut().unwrap().remove("temperature");
+            }
+        }
+    } else {
+        // Preserve custom-compatible (including GutsAI) controls. Compatibility
+        // does not imply that a custom host implements OpenAI's model allowlist.
+        body["thinking"] = serde_json::json!({
+            "type": if options.thinking { "enabled" } else { "disabled" }
+        });
+        body["reasoning_effort"] = compatible_effort(options.reasoning_effort).into();
+    }
     if let Some(max_tokens) = options.max_tokens {
-        body["max_tokens"] = max_tokens.into();
+        body[token_key] = max_tokens.into();
     }
     if tools.as_array().is_some_and(|items| !items.is_empty()) {
         body["tools"] = tools.clone();
         body["tool_choice"] = "auto".into();
     }
     if provider.kind == ProviderKind::Ollama {
-        body["think"] = options.thinking.into();
+        body.as_object_mut().unwrap().remove("thinking");
+        body["reasoning_effort"] = if options.thinking {
+            compatible_effort(options.reasoning_effort)
+        } else {
+            "none"
+        }
+        .into();
     }
     merge_extra_body(&mut body, provider);
     body
+}
+
+fn is_official_openai(provider: &ProviderConfig) -> bool {
+    provider.kind == ProviderKind::Openai
+        && url::Url::parse(provider.base_url.trim())
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("api.openai.com"))
+}
+
+fn validate_chat_model(provider: &ProviderConfig) -> Result<(), String> {
+    if is_official_openai(provider)
+        && ["gpt-5-pro", "gpt-5.2-pro"]
+            .iter()
+            .any(|alias| payload_model_matches(&provider.model, alias))
+    {
+        return Err(format!(
+            "Model {} requires the Responses API; this provider adapter uses Chat Completions",
+            provider.model
+        ));
+    }
+    Ok(())
+}
+
+// Translate native Anthropic replay only at the target adapter. In particular,
+// never edit signed thinking blocks in the source/native message history.
+fn normalize_openai_messages(
+    messages: &serde_json::Value,
+    kind: ProviderKind,
+) -> serde_json::Value {
+    let Some(entries) = messages.as_array() else {
+        return messages.clone();
+    };
+    let mut output = Vec::new();
+    for entry in entries {
+        let mut message = entry.clone();
+        if kind != ProviderKind::Deepseek {
+            if let Some(object) = message.as_object_mut() {
+                object.remove("reasoning_content");
+            }
+        }
+        let Some(blocks) = entry.get("content").and_then(|value| value.as_array()) else {
+            output.push(message);
+            continue;
+        };
+        let native = blocks.iter().any(|block| {
+            matches!(
+                block.get("type").and_then(|value| value.as_str()),
+                Some("thinking" | "redacted_thinking" | "tool_use" | "tool_result")
+            )
+        });
+        if !native {
+            output.push(message);
+            continue;
+        }
+        let mut text = String::new();
+        let mut calls = message
+            .get("tool_calls")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut results = Vec::new();
+        for block in blocks {
+            match block.get("type").and_then(|value| value.as_str()) {
+                Some("text") => text.push_str(block.get("text").and_then(|value| value.as_str()).unwrap_or_default()),
+                Some("tool_use") => {
+                    let id = block.get("id").and_then(|value| value.as_str()).unwrap_or_default();
+                    if !calls.iter().any(|call| call.get("id").and_then(|value| value.as_str()) == Some(id)) {
+                        calls.push(serde_json::json!({"id":id,"type":"function","function":{
+                            "name":block.get("name").cloned().unwrap_or_default(),
+                            "arguments":block.get("input").cloned().unwrap_or_else(|| serde_json::json!({})).to_string()
+                        }}));
+                    }
+                }
+                Some("tool_result") => results.push(serde_json::json!({
+                    "role":"tool", "tool_call_id":block.get("tool_use_id").cloned().unwrap_or_default(),
+                    "content":text_from_value(block.get("content").unwrap_or(&serde_json::Value::Null))
+                })),
+                _ => {}
+            }
+        }
+        message["content"] = text.clone().into();
+        if !calls.is_empty() {
+            message["tool_calls"] = calls.into();
+        }
+        // Results must precede any new user text in a mixed native block list.
+        output.extend(results.iter().cloned());
+        if results.is_empty() || !text.is_empty() || message.get("tool_calls").is_some() {
+            output.push(message);
+        }
+    }
+    output.into()
 }
 
 fn anthropic_body(
@@ -587,20 +789,38 @@ fn anthropic_body(
     options: &CompletionOptions,
 ) -> Result<serde_json::Value, String> {
     let (system, converted) = convert_anthropic_messages(messages)?;
-    let mut max_tokens = options.max_tokens.unwrap_or(8_192).max(1);
-    if options.thinking {
-        max_tokens = max_tokens.max(2_048);
+    let max_tokens = options.max_tokens.unwrap_or(8_192);
+    let capabilities = anthropic_payload_capabilities(&provider.model);
+    let effort = capabilities.effort(options.reasoning_effort);
+    let manual_thinking = options.thinking && !capabilities.adaptive;
+    if max_tokens == 0 || (manual_thinking && max_tokens < 2_048) {
+        return Err(
+            "Anthropic max_tokens must be positive and at least 2048 for manual thinking".into(),
+        );
+    }
+    if !options.thinking && !supports_thinking_off(provider, options.reasoning_effort) {
+        return Err(format!(
+            "Model {} does not support thinking disabled at effort {}; enable thinking or choose a supported model/effort",
+            provider.model, effort.unwrap_or("default")
+        ));
     }
     let mut body = serde_json::json!({
         "model": provider.model, "messages": converted, "system": system, "stream": options.stream,
-        "temperature": options.temperature, "max_tokens": max_tokens,
-        "output_config": { "effort": options.reasoning_effort.as_str() },
+        "max_tokens": max_tokens,
     });
-    body["thinking"] = if options.thinking {
+    if !options.thinking && !capabilities.no_sampling {
+        body["temperature"] = options.temperature.into();
+    }
+    body["thinking"] = if manual_thinking {
         serde_json::json!({"type":"enabled","budget_tokens":options.reasoning_effort.anthropic_budget(max_tokens)})
+    } else if options.thinking {
+        serde_json::json!({"type":"adaptive"})
     } else {
         serde_json::json!({"type":"disabled"})
     };
+    if let Some(effort) = effort {
+        body["output_config"] = serde_json::json!({"effort":effort});
+    }
     if let Some(items) = tools.as_array().filter(|items| !items.is_empty()) {
         body["tools"] = serde_json::Value::Array(items.iter().filter_map(|tool| {
             let function = tool.get("function")?;
@@ -614,6 +834,177 @@ fn anthropic_body(
     }
     merge_extra_body(&mut body, provider);
     Ok(body)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnthropicThinkingOff {
+    Supported,
+    HighOrBelow,
+    Unsupported,
+}
+
+#[derive(Clone, Copy)]
+enum AnthropicEffortSupport {
+    None,
+    High,
+    Max,
+    XhighMax,
+}
+
+struct AnthropicPayloadCapabilities {
+    adaptive: bool,
+    no_sampling: bool,
+    off: AnthropicThinkingOff,
+    effort: AnthropicEffortSupport,
+}
+
+impl AnthropicPayloadCapabilities {
+    fn effort(&self, effort: ReasoningEffort) -> Option<&'static str> {
+        use AnthropicEffortSupport::*;
+        if matches!(self.effort, None) {
+            return Option::None;
+        }
+        Some(match effort {
+            ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::ExtraHigh if matches!(self.effort, XhighMax) => "xhigh",
+            ReasoningEffort::Max | ReasoningEffort::Ultra
+                if matches!(self.effort, Max | XhighMax) =>
+            {
+                "max"
+            }
+            _ => "high",
+        })
+    }
+}
+
+// Only documented aliases and Anthropic's -YYYYMMDD snapshot shape opt into
+// newer capabilities. Unknown/custom models retain the legacy payload contract.
+fn anthropic_model_matches(model: &str, alias: &str) -> bool {
+    model == alias
+        || model
+            .strip_prefix(alias)
+            .and_then(|suffix| suffix.strip_prefix('-'))
+            .is_some_and(|snapshot| {
+                snapshot.len() == 8 && snapshot.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+/// Whether this adapter accepts an explicit thinking-off request at this effort.
+/// Unknown models retain legacy behavior; this is not live capability discovery
+/// or a guarantee that all non-Anthropic models can disable reasoning entirely.
+pub fn supports_thinking_off(provider: &ProviderConfig, effort: ReasoningEffort) -> bool {
+    if provider.kind != ProviderKind::Anthropic {
+        return true;
+    }
+    let capabilities = anthropic_payload_capabilities(&provider.model);
+    match capabilities.off {
+        AnthropicThinkingOff::Supported => true,
+        AnthropicThinkingOff::HighOrBelow => {
+            !matches!(capabilities.effort(effort), Some("xhigh" | "max"))
+        }
+        AnthropicThinkingOff::Unsupported => false,
+    }
+}
+
+fn anthropic_payload_capabilities(model: &str) -> AnthropicPayloadCapabilities {
+    use AnthropicEffortSupport::{High, Max, None, XhighMax};
+    use AnthropicThinkingOff::{HighOrBelow, Supported, Unsupported};
+    let aliases: &[(&str, AnthropicEffortSupport, AnthropicThinkingOff, bool)] = &[
+        ("claude-opus-4-5", High, Supported, false),
+        ("claude-opus-4-6", Max, Supported, false),
+        ("claude-sonnet-4-6", Max, Supported, false),
+        ("claude-opus-4-7", XhighMax, Supported, true),
+        ("claude-opus-4-8", XhighMax, Supported, true),
+        ("claude-opus-5", XhighMax, HighOrBelow, true),
+        ("claude-sonnet-5", XhighMax, Supported, true),
+        ("claude-opus-5-5", XhighMax, Unsupported, true),
+        ("claude-sonnet-5-5", XhighMax, Unsupported, true),
+        ("claude-haiku-5-5", XhighMax, HighOrBelow, true),
+        ("claude-fable-5", XhighMax, Unsupported, true),
+        ("claude-fable-5-1", XhighMax, Unsupported, true),
+        ("claude-mythos-5", XhighMax, Unsupported, true),
+        ("claude-mythos-5-1", XhighMax, Unsupported, true),
+        ("claude-mythos-preview", Max, Unsupported, true),
+    ];
+    for &(alias, effort, off, no_sampling) in aliases {
+        if anthropic_model_matches(model, alias) {
+            return AnthropicPayloadCapabilities {
+                adaptive: alias != "claude-opus-4-5",
+                no_sampling,
+                off,
+                effort,
+            };
+        }
+    }
+    AnthropicPayloadCapabilities {
+        adaptive: false,
+        no_sampling: false,
+        off: Supported,
+        effort: None,
+    }
+}
+
+// Accept the public alias or its dated snapshot, not an arbitrary model with
+// the same prefix (for example gpt-5-chat-latest or a custom fine-tuned alias).
+fn payload_model_matches(model: &str, alias: &str) -> bool {
+    model == alias
+        || model
+            .strip_prefix(alias)
+            .and_then(|suffix| suffix.strip_prefix('-'))
+            .is_some_and(|snapshot| {
+                snapshot.len() == 10
+                    && snapshot.bytes().enumerate().all(|(index, byte)| {
+                        if index == 4 || index == 7 {
+                            byte == b'-'
+                        } else {
+                            byte.is_ascii_digit()
+                        }
+                    })
+            })
+}
+
+fn openai_reasoning_effort(model: &str, options: &CompletionOptions) -> Option<&'static str> {
+    if payload_model_matches(model, "o1-mini") || payload_model_matches(model, "o1-preview") {
+        return None;
+    }
+    let first_gpt5 = ["gpt-5", "gpt-5-mini", "gpt-5-nano"]
+        .iter()
+        .any(|alias| payload_model_matches(model, alias));
+    let gpt51 = payload_model_matches(model, "gpt-5.1");
+    let gpt52 = payload_model_matches(model, "gpt-5.2");
+    let gpt52_pro = payload_model_matches(model, "gpt-5.2-pro");
+    if payload_model_matches(model, "gpt-5-pro") || payload_model_matches(model, "o3-pro") {
+        return Some("high");
+    }
+    if !options.thinking {
+        return Some(if gpt51 || gpt52 {
+            "none"
+        } else if first_gpt5 {
+            "minimal"
+        } else if gpt52_pro {
+            "medium"
+        } else {
+            "low"
+        });
+    }
+    Some(match options.reasoning_effort {
+        ReasoningEffort::Minimal if first_gpt5 => "minimal",
+        ReasoningEffort::Minimal | ReasoningEffort::Low if gpt52_pro => "medium",
+        ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        _ if gpt52 || gpt52_pro => "xhigh",
+        _ => "high",
+    })
+}
+
+fn compatible_effort(effort: ReasoningEffort) -> &'static str {
+    match effort {
+        ReasoningEffort::ExtraHigh => "xhigh",
+        _ => effort.as_str(),
+    }
 }
 
 fn merge_extra_body(body: &mut serde_json::Value, provider: &ProviderConfig) {
@@ -651,6 +1042,12 @@ fn convert_anthropic_messages(
                 if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
                     for call in calls {
                         let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
+                        if blocks.iter().any(|block| {
+                            block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+                                && block.get("id").and_then(|value| value.as_str()) == Some(id)
+                        }) {
+                            continue;
+                        }
                         let function = call.get("function");
                         let name = function
                             .and_then(|f| f.get("name"))
@@ -834,6 +1231,7 @@ fn process_anthropic_event<F1, F2, F3>(
         "content_block_start" => {
             let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             if let Some(block) = value.get("content_block") {
+                accumulator.assistant_content.insert(index, block.clone());
                 match block
                     .get("type")
                     .and_then(|v| v.as_str())
@@ -895,6 +1293,25 @@ fn process_anthropic_event<F1, F2, F3>(
             let Some(delta) = value.get("delta") else {
                 return;
             };
+            let field = match delta.get("type").and_then(|value| value.as_str()) {
+                Some("text_delta") => Some("text"),
+                Some("thinking_delta") => Some("thinking"),
+                Some("signature_delta") => Some("signature"),
+                _ => None,
+            };
+            if let Some(field) = field {
+                if let (Some(block), Some(fragment)) = (
+                    accumulator.assistant_content.get_mut(&index),
+                    delta.get(field).and_then(|value| value.as_str()),
+                ) {
+                    if let Some(object) = block.as_object_mut() {
+                        let value = object.entry(field).or_insert_with(|| serde_json::json!(""));
+                        if let Some(text) = value.as_str() {
+                            *value = serde_json::json!(format!("{text}{fragment}"));
+                        }
+                    }
+                }
+            }
             match delta
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -962,6 +1379,7 @@ fn process_anthropic_message<F1, F2, F3>(
     capture_finish_reason(accumulator, value.get("stop_reason"));
     if let Some(blocks) = value.get("content").and_then(|v| v.as_array()) {
         for (index, block) in blocks.iter().enumerate() {
+            accumulator.assistant_content.insert(index, block.clone());
             if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
                 let id = block
                     .get("id")
@@ -1108,11 +1526,21 @@ struct SseDecoder {
     data_lines: Vec<String>,
     data_bytes: usize,
     failed: bool,
+    error: Option<&'static str>,
+    skip_lf: bool,
 }
 impl SseDecoder {
     const MAX_EVENT_BYTES: usize = 1024 * 1024;
+    const MAX_DATA_LINES: usize = 8192;
 
     fn fail<F>(&mut self, on_event: &mut F)
+    where
+        F: FnMut(&str),
+    {
+        self.fail_with(SSE_EVENT_TOO_LARGE, on_event);
+    }
+
+    fn fail_with<F>(&mut self, message: &'static str, on_event: &mut F)
     where
         F: FnMut(&str),
     {
@@ -1120,37 +1548,39 @@ impl SseDecoder {
             return;
         }
         self.failed = true;
+        self.error = Some(message);
         self.buffer.clear();
         self.data_lines.clear();
         self.data_bytes = 0;
-        on_event(&format!(
-            "{{\"error\":{{\"message\":\"{SSE_EVENT_TOO_LARGE}\"}}}}"
-        ));
+        on_event(&format!("{{\"error\":{{\"message\":\"{message}\"}}}}"));
     }
 
     fn feed<F>(&mut self, bytes: &[u8], on_event: &mut F)
     where
         F: FnMut(&str),
     {
-        if self.failed {
-            return;
-        }
-        self.buffer.extend_from_slice(bytes);
-        if self.buffer.len() > Self::MAX_EVENT_BYTES && !self.buffer.contains(&b'\n') {
-            self.fail(on_event);
-            return;
-        }
-        while !self.failed {
-            let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') else {
+        for &byte in bytes {
+            if self.failed {
                 break;
-            };
-            let line = self.buffer.drain(..=position).collect::<Vec<_>>();
-            self.consume_line(&line[..line.len().saturating_sub(1)], on_event);
-        }
-        if self.failed {
-            self.buffer.clear();
+            }
+            if self.skip_lf {
+                self.skip_lf = false;
+                if byte == b'\n' {
+                    continue;
+                }
+            }
+            if byte == b'\r' || byte == b'\n' {
+                self.skip_lf = byte == b'\r';
+                let line = std::mem::take(&mut self.buffer);
+                self.consume_line(&line, on_event);
+            } else if self.buffer.len() + self.data_bytes >= Self::MAX_EVENT_BYTES {
+                self.fail(on_event);
+            } else {
+                self.buffer.push(byte);
+            }
         }
     }
+
     fn finish<F>(&mut self, on_event: &mut F)
     where
         F: FnMut(&str),
@@ -1162,8 +1592,11 @@ impl SseDecoder {
             let line = std::mem::take(&mut self.buffer);
             self.consume_line(&line, on_event);
         }
-        self.dispatch(on_event);
+        if !self.failed {
+            self.dispatch(on_event);
+        }
     }
+
     fn consume_line<F>(&mut self, raw: &[u8], on_event: &mut F)
     where
         F: FnMut(&str),
@@ -1171,34 +1604,48 @@ impl SseDecoder {
         if self.failed {
             return;
         }
-        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
-        let Ok(line) = std::str::from_utf8(raw) else {
-            return;
+        let line = match std::str::from_utf8(raw) {
+            Ok(line) => line,
+            Err(_) => {
+                self.fail_with("Provider SSE data was not valid UTF-8", on_event);
+                return;
+            }
         };
         if line.is_empty() {
             self.dispatch(on_event);
-        } else if let Some(data) = line.strip_prefix("data:") {
-            let data = data.strip_prefix(' ').unwrap_or(data);
-            if self.data_bytes + data.len() > Self::MAX_EVENT_BYTES {
+            return;
+        }
+        self.data_bytes += raw.len() + 1;
+        if self.data_bytes > Self::MAX_EVENT_BYTES {
+            self.fail(on_event);
+            return;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            if self.data_lines.len() >= Self::MAX_DATA_LINES {
                 self.fail(on_event);
                 return;
             }
-            self.data_bytes += data.len();
-            self.data_lines.push(data.to_string());
+            self.data_lines
+                .push(data.strip_prefix(' ').unwrap_or(data).to_string());
         }
     }
+
     fn dispatch<F>(&mut self, on_event: &mut F)
     where
         F: FnMut(&str),
     {
+        self.data_bytes = 0;
         if !self.data_lines.is_empty() {
             let event = self.data_lines.join("\n");
             self.data_lines.clear();
-            self.data_bytes = 0;
             on_event(&event);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_audit_tests.rs"]
+mod audit_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1429,13 +1876,23 @@ mod tests {
             },
         );
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["reasoning_effort"], "extra_high");
+        // Internal ExtraHigh is serialized as the compatible API spelling.
+        assert_eq!(body["reasoning_effort"], "xhigh");
         assert_eq!(body["max_tokens"], 1000);
     }
 
     /// Spins up a one-shot HTTP server that replies with `sse_body` and returns
     /// the JSON request body it received.
-    async fn sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<serde_json::Value>) {
+    pub(super) async fn sse_server(
+        sse_body: String,
+    ) -> (String, tokio::task::JoinHandle<serde_json::Value>) {
+        sse_server_with_content_type(sse_body, "text/event-stream").await
+    }
+
+    pub(super) async fn sse_server_with_content_type(
+        sse_body: String,
+        content_type: &'static str,
+    ) -> (String, tokio::task::JoinHandle<serde_json::Value>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1472,21 +1929,23 @@ mod tests {
             let body: serde_json::Value =
                 serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
             stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-                )
+                .write_all(format!("HTTP/1.1 200 OK{cr}{lf}Content-Type: {content_type}{cr}{lf}Connection: close{cr}{lf}{cr}{lf}", cr = char::from(13), lf = char::from(10)).as_bytes())
                 .await
                 .unwrap();
-            for chunk in sse_body.as_bytes().chunks(7) {
-                stream.write_all(chunk).await.unwrap();
-                stream.flush().await.unwrap();
+            for chunk in sse_body.as_bytes().chunks(64 * 1024) {
+                if stream.write_all(chunk).await.is_err() {
+                    break;
+                }
+                if stream.flush().await.is_err() {
+                    break;
+                }
             }
             body
         });
         (format!("http://{address}"), server)
     }
 
-    async fn stream_against(base_url: &str) -> Result<StreamResult, String> {
+    pub(super) async fn stream_against(base_url: &str) -> Result<StreamResult, String> {
         let provider = ProviderConfig {
             base_url: base_url.to_string(),
             model: "test-model".into(),
@@ -1509,6 +1968,18 @@ mod tests {
             CancellationToken::new(),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn openai_http_stream_rejects_eof_without_completion_marker() {
+        let (base_url, server) = sse_server(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"unfinished reply\"}}]}\n\n".into(),
+        )
+        .await;
+        let result = stream_against(&base_url).await;
+        server.await.unwrap();
+        let error = result.expect_err("EOF without a completion marker must not succeed");
+        assert!(error.contains("completion marker"), "{error}");
     }
 
     /// A stream cut short by the token limit must not look like a clean success.
@@ -1758,26 +2229,58 @@ mod tests {
     #[test]
     fn retryable_provider_error_classification() {
         // Retryable errors:
-        assert!(is_retryable_provider_error("Provider stream timed out after 60s without data"));
-        assert!(is_retryable_provider_error("Provider response timed out after 60s waiting for initial response (TTFB)"));
-        assert!(is_retryable_provider_error("Provider returned HTTP 500: Internal Server Error"));
-        assert!(is_retryable_provider_error("Provider returned HTTP 502: Bad Gateway"));
-        assert!(is_retryable_provider_error("Provider returned HTTP 503: Service Unavailable"));
-        assert!(is_retryable_provider_error("Provider returned HTTP 504: Gateway Timeout"));
-        assert!(is_retryable_provider_error("Provider returned HTTP 429: Rate limit exceeded"));
-        assert!(is_retryable_provider_error("Provider stream failed: connection reset by peer"));
-        assert!(is_retryable_provider_error("Provider request failed: error sending request"));
-        assert!(is_retryable_provider_error("Provider stream produced no content, reasoning, or tool calls before completing"));
+        assert!(is_retryable_provider_error(
+            "Provider stream timed out after 60s without data"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider response timed out after 60s waiting for initial response (TTFB)"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider returned HTTP 500: Internal Server Error"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider returned HTTP 502: Bad Gateway"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider returned HTTP 503: Service Unavailable"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider returned HTTP 504: Gateway Timeout"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider returned HTTP 429: Rate limit exceeded"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider stream failed: connection reset by peer"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider request failed: error sending request"
+        ));
+        assert!(is_retryable_provider_error(
+            "Provider stream produced no content, reasoning, or tool calls before completing"
+        ));
 
         // Non-retryable errors:
-        assert!(!is_retryable_provider_error("Provider returned HTTP 400: Bad Request"));
-        assert!(!is_retryable_provider_error("Provider returned HTTP 401: Invalid API Key"));
-        assert!(!is_retryable_provider_error("Provider returned HTTP 403: Forbidden"));
-        assert!(!is_retryable_provider_error("Provider returned HTTP 404: Not Found"));
+        assert!(!is_retryable_provider_error(
+            "Provider returned HTTP 400: Bad Request"
+        ));
+        assert!(!is_retryable_provider_error(
+            "Provider returned HTTP 401: Invalid API Key"
+        ));
+        assert!(!is_retryable_provider_error(
+            "Provider returned HTTP 403: Forbidden"
+        ));
+        assert!(!is_retryable_provider_error(
+            "Provider returned HTTP 404: Not Found"
+        ));
         assert!(!is_retryable_provider_error("Provider response cancelled"));
         assert!(!is_retryable_provider_error("A model must be selected"));
-        assert!(!is_retryable_provider_error("Provider base URL is required"));
-        assert!(!is_retryable_provider_error("Provider stream ended with finish_reason 'length'"));
+        assert!(!is_retryable_provider_error(
+            "Provider base URL is required"
+        ));
+        assert!(!is_retryable_provider_error(
+            "Provider stream ended with finish_reason 'length'"
+        ));
     }
 
     #[test]
@@ -1835,7 +2338,8 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut scratch = [0u8; 1024];
             let _ = stream.read(&mut scratch).await.unwrap();
-            let body = r#"{"choices":[{"message":{"content":"hello from json"},"finish_reason":"stop"}]}"#;
+            let body =
+                r#"{"choices":[{"message":{"content":"hello from json"},"finish_reason":"stop"}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),

@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../types/agent';
+import { useState } from 'react';
+import { MessageRow } from './MessageRow';
 import { ContextMenu } from './ContextMenu';
 
 const mockInvoke = vi.fn();
@@ -34,6 +36,35 @@ describe('ContextMenu Component', () => {
     });
     // mock window.__TAURI_INTERNALS__
     (window as any).__TAURI_INTERNALS__ = {};
+  });
+
+  it('opens the real inline editor without resending until the user submits', () => {
+    const resend = vi.fn();
+    render(<><MessageRow message={dummyMessages[0]} onSelectArtifact={vi.fn()} onEditAndResend={resend} />
+      <ContextMenu messages={dummyMessages} onEditAndResendMessage={resend} /></>);
+    fireEvent.contextMenu(screen.getByText('Hello AetherAgent'), { clientX: 100, clientY: 100 });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit & Resend from Here' }));
+    expect(resend).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Hello AetherAgent');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Edited prompt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save & Submit' }));
+    expect(resend).toHaveBeenCalledWith('Edited prompt');
+  });
+
+  it.each(['Paste', 'Paste as Code Block'])('updates React controlled state through %s', async (label) => {
+    function ControlledInput() {
+      const [value, setValue] = useState('draft');
+      return <><textarea aria-label="Controlled draft" value={value} onChange={(event) => setValue(event.target.value)} /><output>{value}</output><ContextMenu /></>;
+    }
+    render(<ControlledInput />);
+    const input = screen.getByLabelText('Controlled draft') as HTMLTextAreaElement;
+    input.focus();
+    input.setSelectionRange(5, 5);
+    fireEvent.contextMenu(input, { clientX: 100, clientY: 100 });
+    fireEvent.click(screen.getByRole('button', { name: label === 'Paste' ? 'Paste Ctrl+V' : label }));
+    const expected = label === 'Paste' ? 'draftclipboard content' : 'draft\n```\nclipboard content\n```\n';
+    await screen.findByText((_, element) => element?.tagName === 'OUTPUT' && element.textContent === expected);
+    expect(input.value).toBe(expected);
   });
 
   it('renders nothing initially until a contextmenu event fires', () => {

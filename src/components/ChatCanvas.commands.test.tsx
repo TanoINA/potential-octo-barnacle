@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 import { ChatCanvas } from './ChatCanvas';
@@ -58,6 +58,27 @@ function renderCanvas(overrides: Partial<CanvasProps> = {}) {
   return props;
 }
 
+describe('ChatCanvas plan commands', () => {
+  it.each(['enter', 'button'])('sends /plan with its goal using %s', async (method) => {
+    const props = renderCanvas();
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/plan Build a parser' } });
+    if (method === 'enter') fireEvent.keyDown(input, { key: 'Enter' });
+    else fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(
+      '/plan Build a parser', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
+    ));
+  });
+
+  it('keeps a rejected /plan draft for correction', async () => {
+    renderCanvas({ onSendMessage: vi.fn(async () => false) });
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/plan Build a parser' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(input.value).toBe('/plan Build a parser'));
+  });
+});
+
 describe('ChatCanvas streaming commands', () => {
   it('runs /stop while a turn is still streaming', async () => {
     const onStop = vi.fn();
@@ -91,6 +112,101 @@ describe('ChatCanvas council candidates', () => {
     const selects = screen.getAllByRole('combobox') as HTMLSelectElement[];
     expect(selects).toHaveLength(2);
     expect(selects[0].value).not.toBe(selects[1].value);
+  });
+});
+
+describe('ChatCanvas queue dispatch contract', () => {
+  function queuedCanvas(extra: Partial<CanvasProps> = {}) {
+    const settings = agentSettings(['model-a', 'model-b']);
+    const props: CanvasProps = {
+      messages: [], isStreaming: true, stopRequested: false,
+      onSendMessage: vi.fn(async () => true), onStop: vi.fn(), onSelectArtifact: vi.fn(),
+      onClearSession: vi.fn(), onNewSession: () => 'next', onOpenSettings: vi.fn(), onOpenModelPicker: vi.fn(),
+      effectiveConfig: { provider: settings.providers[0], thinking: false, reasoningEffort: 'medium', usesSettingsDefault: true },
+      settings, sessionTitle: 'Queue test', currentSessionId: 'session-a', artifactCount: 0,
+      isArtifactOpen: false, onToggleArtifacts: vi.fn(), onListFiles: async () => [], ...extra,
+    };
+    return { props, ...render(<ChatCanvas {...props} />) };
+  }
+
+  function enqueue(text: string) {
+    fireEvent.change(screen.getByLabelText('Message AetherAgent'), { target: { value: text } });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+  }
+
+  it('preserves the queued execution mode and Council candidates until accepted', async () => {
+    localStorage.setItem('aether_execution_mode', 'request_review');
+    let accept!: (accepted: boolean) => void;
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { accept = resolve; }));
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    fireEvent.click(screen.getByTitle('Council Mode (Dual Model A/B Test)'));
+    enqueue('compare this after the run');
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(send).toHaveBeenCalledWith('compare this after the run', undefined, expect.objectContaining({
+      executionMode: 'request_review', council: true,
+      candidateA: expect.objectContaining({ provider: expect.objectContaining({ model: 'model-a' }) }),
+      candidateB: expect.objectContaining({ provider: expect.objectContaining({ model: 'model-b' }) }),
+    }));
+    expect(screen.getByTestId('queued-prompts-banner')).toBeTruthy();
+    await act(async () => accept(true));
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('retains a rejected item and offers explicit retry instead of spinning', async () => {
+    const send = vi.fn(async () => false);
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('must not be lost');
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(screen.getByText('must not be lost')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume Queue' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('must not be lost')).toBeTruthy();
+  });
+
+  it('does not dispatch the old session queue on navigation to an idle session', async () => {
+    const send = vi.fn(async () => true);
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('belongs to session A');
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" isStreaming={false} />);
+    await act(async () => {});
+    expect(send).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('does not consume a new composer draft when dispatching a queued local command', async () => {
+    const onOpenModelPicker = vi.fn();
+    const { props, rerender } = queuedCanvas({ onOpenModelPicker });
+    enqueue('/model');
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'new draft for later' } });
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(onOpenModelPicker).toHaveBeenCalledOnce());
+    expect(input.value).toBe('new draft for later');
+  });
+
+  it('does not dispatch after Stop until Resume is selected', async () => {
+    const send = vi.fn(async () => true);
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('paused instruction');
+    rerender(<ChatCanvas {...props} stopRequested />);
+    rerender(<ChatCanvas {...props} isStreaming={false} stopRequested={false} />);
+    await act(async () => {});
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Queue' }));
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+  });
+
+  it('waits for review to finish then dispatches a local command locally', async () => {
+    const onNewSession = vi.fn(() => 'next');
+    const { props, rerender } = queuedCanvas({ onNewSession });
+    enqueue('/new');
+    rerender(<ChatCanvas {...props} isStreaming={false} isReviewing />);
+    expect(onNewSession).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} isStreaming={false} isReviewing={false} />);
+    await waitFor(() => expect(onNewSession).toHaveBeenCalledOnce());
+    expect(props.onSendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -200,7 +316,7 @@ describe('ChatCanvas prompt queueing', () => {
     } as any} />);
 
     await waitFor(() => {
-      expect(onSendMessage).toHaveBeenCalledWith('Next prompt to run after stream', undefined);
+      expect(onSendMessage).toHaveBeenCalledWith('Next prompt to run after stream', undefined, expect.objectContaining({ executionMode: expect.any(String) }));
     });
   });
 
@@ -216,7 +332,7 @@ describe('ChatCanvas prompt queueing', () => {
     // Open execution mode menu
     fireEvent.click(modeBtn);
     expect(screen.getByText('Request Review')).toBeTruthy();
-    expect(screen.getByText('Every command requires approval.')).toBeTruthy();
+    expect(screen.getByText('Write, command, and MCP tools are blocked.')).toBeTruthy();
     expect(screen.getByText('Default')).toBeTruthy();
     expect(screen.getByText('Auto (Preview)')).toBeTruthy();
 

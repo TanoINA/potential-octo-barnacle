@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useId } from 'react';
 import {
   Ban,
   BookOpen,
@@ -27,6 +27,10 @@ function formatDuration(ms?: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = (ms / 1000).toFixed(1);
   return `${seconds.endsWith('.0') ? seconds.slice(0, -2) : seconds}s`;
+}
+
+function isToolFailed(tool: ToolCallItem): boolean {
+  return tool.status !== 'cancelled' && (tool.status === 'error' || (tool.exitCode !== undefined && tool.exitCode !== 0));
 }
 
 function extractArg(tool: ToolCallItem, key: string): string {
@@ -223,10 +227,15 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   onSelectArtifact,
 }) => {
   const [manualCollapsed, setManualCollapsed] = useState<boolean | null>(null);
-  const [expandedTerminals, setExpandedTerminals] = useState<Record<string, boolean>>({});
+  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
+  const traceId = useId();
 
   // Summary counts
   const summary = useMemo(() => {
+    // Do not describe attempted or interrupted work as successfully completed.
+    if (toolCalls.some((tool) => tool.status !== 'done' || isToolFailed(tool))) {
+      return `${toolCalls.length} step${toolCalls.length > 1 ? 's' : ''}`;
+    }
     let skills = 0;
     let files = 0;
     let commands = 0;
@@ -268,7 +277,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
   const hasRunning = isStreaming || toolCalls.some((t) => t.status === 'running' || t.status === 'pending');
   const hasCancelled = !hasRunning && toolCalls.some((t) => t.status === 'cancelled');
-  const hasError = toolCalls.some((t) => t.status === 'error' || (t.exitCode !== undefined && t.exitCode !== 0));
+  const hasError = toolCalls.some(isToolFailed);
 
   const [now, setNow] = useState(() => Date.now());
 
@@ -283,10 +292,10 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   // Default: open while running or if error; collapsed when completed unless user explicitly toggled
   const isCollapsed = manualCollapsed !== null ? manualCollapsed : hasRunning || hasError ? false : true;
 
-  const toggleTerminal = (id: string) => {
-    setExpandedTerminals((prev) => ({
+  const toggleDetails = (id: string, isOpen: boolean) => {
+    setExpandedDetails((prev) => ({
       ...prev,
-      [id]: !prev[id],
+      [id]: !isOpen,
     }));
   };
 
@@ -335,9 +344,12 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
         <div className="border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
           {toolCalls.map((tool) => {
             const info = getToolDisplayInfo(tool);
-            const isTerminalOpen = expandedTerminals[tool.id] !== undefined ? expandedTerminals[tool.id] : tool.status === 'running' || tool.status === 'error';
+            const failed = isToolFailed(tool);
+            const cancelled = tool.status === 'cancelled';
+            const isDetailsOpen = expandedDetails[tool.id] ?? (tool.status === 'running' || failed);
+            const detailsId = `${traceId}-${tool.id}-details`;
             const duration = formatDuration(tool.durationMs);
-            const isClickable = info.isTerminal || Boolean(tool.artifactId && onSelectArtifact);
+            const selectsArtifact = !info.isTerminal && Boolean(tool.artifactId && onSelectArtifact);
             const isToolRunning = tool.status === 'running' || tool.status === 'pending';
             const liveElapsedSec = isToolRunning
               ? Math.max(1, Math.floor((now - (tool.startedAt || now)) / 1000))
@@ -345,61 +357,95 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
             return (
               <div key={tool.id} className="group">
-                <div
-                  data-file-link={info.filePath ? 'true' : undefined}
-                  data-file-path={info.filePath}
-                  data-code-block={info.command ? 'true' : undefined}
-                  data-code-content={info.command ? encodeURIComponent(info.command) : undefined}
-                  data-code-lang={info.command ? 'powershell' : undefined}
-                  onClick={() => {
-                    if (info.isTerminal) {
-                      toggleTerminal(tool.id);
-                    } else if (tool.artifactId && onSelectArtifact) {
-                      onSelectArtifact(tool.artifactId);
-                    }
-                  }}
-                  className={`flex items-center justify-between px-3.5 py-1.5 text-[11px] font-mono transition-colors ${isClickable ? 'cursor-pointer hover:bg-[#161b22]/60' : ''}`}
-                >
-                  <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
-                    {info.icon}
-                    <span className="truncate text-[#c9d1d9]">{info.label}</span>
-                  </div>
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    aria-expanded={selectsArtifact ? undefined : isDetailsOpen}
+                    aria-controls={selectsArtifact ? undefined : detailsId}
+                    data-file-link={info.filePath ? 'true' : undefined}
+                    data-file-path={info.filePath}
+                    data-code-block={info.command ? 'true' : undefined}
+                    data-code-content={info.command ? encodeURIComponent(info.command) : undefined}
+                    data-code-lang={info.command ? 'powershell' : undefined}
+                    onClick={() => {
+                      if (selectsArtifact && tool.artifactId && onSelectArtifact) {
+                        onSelectArtifact(tool.artifactId);
+                      } else {
+                        toggleDetails(tool.id, isDetailsOpen);
+                      }
+                    }}
+                    className="flex min-w-0 flex-1 items-center justify-between px-3.5 py-1.5 text-left text-[11px] font-mono transition-colors cursor-pointer hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]"
+                  >
+                    <span className="flex items-center gap-2 min-w-0 flex-1 mr-3">
+                      {info.icon}
+                      <span className="truncate text-[#c9d1d9]">{failed || cancelled ? tool.name : info.label}</span>
+                    </span>{' '}
+                    <span className="flex items-center gap-2 shrink-0">
+                      {isToolRunning && (
+                        <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
+                          <Loader2 size={10} className="animate-spin text-[#f0883e]" />
+                          <span>{liveElapsedSec}s</span>
+                        </span>
+                      )}
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {isToolRunning && (
-                      <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
-                        <Loader2 size={10} className="animate-spin text-[#f0883e]" />
-                        <span>{liveElapsedSec}s</span>
-                      </span>
-                    )}
+                      {failed && (
+                        <span className="rounded bg-[#da3633]/20 px-1.5 py-0.5 text-[9px] font-medium text-[#f85149]">
+                          Failed
+                        </span>
+                      )}
 
-                    {tool.status === 'cancelled' && (
-                      <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
-                        cancelled
-                      </span>
-                    )}
+                      {cancelled && (
+                        <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
+                          Cancelled
+                        </span>
+                      )}
 
-                    {!isToolRunning && duration && (
-                      <span className="text-[10px] text-[#6e7681]">{duration}</span>
-                    )}
+                      {!isToolRunning && duration && (
+                        <span className="text-[10px] text-[#6e7681]">{duration}</span>
+                      )}
 
-                    {info.isTerminal && (
-                      <span className="text-[#6e7681] group-hover:text-[#c9d1d9]">
-                        {isTerminalOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                      </span>
-                    )}
-                  </div>
+                      {!selectsArtifact && (
+                        <span className="text-[#6e7681] group-hover:text-[#c9d1d9]">
+                          {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  {selectsArtifact && (
+                    <button
+                      type="button"
+                      aria-label={`Details for ${tool.name}`}
+                      aria-expanded={isDetailsOpen}
+                      aria-controls={detailsId}
+                      onClick={() => toggleDetails(tool.id, isDetailsOpen)}
+                      className="shrink-0 px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9] focus-visible:outline focus-visible:outline-[#58a6ff]"
+                    >
+                      {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </button>
+                  )}
                 </div>
 
-                {/* Inline Terminal Viewer for run_command */}
-                {info.isTerminal && isTerminalOpen && (
-                  <div className="px-3 pb-2 pt-0.5">
-                    <TerminalOutput
-                      command={info.command}
-                      output={info.output}
-                      exitCode={tool.exitCode}
-                      isRunning={tool.status === 'running'}
-                    />
+                {isDetailsOpen && (
+                  <div id={detailsId} className="px-3 pb-2 pt-0.5">
+                    <div className="text-[10px] text-[#8b949e]">Arguments</div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+                      {tool.argumentsRaw || JSON.stringify(tool.args, null, 2)}
+                    </pre>
+                    {info.isTerminal ? (
+                      <TerminalOutput
+                        command={info.command}
+                        output={info.output}
+                        exitCode={tool.exitCode}
+                        isRunning={tool.status === 'running'}
+                      />
+                    ) : (
+                      <>
+                        <div className="mt-2 text-[10px] text-[#8b949e]">Result</div>
+                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+                          {tool.result || tool.terminalOutput || (info.isRunning ? 'Waiting for result...' : '(no result)')}
+                        </pre>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

@@ -55,7 +55,7 @@ const EXECUTION_MODES: Array<{
   {
     id: 'request_review',
     title: 'Request Review',
-    description: 'Every command requires approval.',
+    description: 'Write, command, and MCP tools are blocked.',
     icon: Eye,
   },
   {
@@ -287,10 +287,14 @@ const TOOL_ITEMS: SlashItem[] = [
   },
 ];
 
+type RunOptions = NonNullable<Parameters<ChatCanvasProps['onSendMessage']>[2]>;
+
 interface QueuedPrompt {
   id: string;
   prompt: string;
   attachments?: AttachedContext[];
+  options: RunOptions;
+  sessionId: string | null | undefined;
 }
 
 export function ChatCanvas({
@@ -349,46 +353,25 @@ export function ChatCanvas({
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [stoppedWithQueue, setStoppedWithQueue] = useState(false);
-  const prevStreamingRef = useRef(isStreaming);
-  const wasStopRequestedRef = useRef(false);
+  const dispatchingQueueRef = useRef<string | null>(null);
+  const queueSessionRef = useRef(currentSessionId);
+  queueSessionRef.current = currentSessionId;
 
-  useEffect(() => {
-    if (stopRequested) {
-      wasStopRequestedRef.current = true;
-    }
-  }, [stopRequested]);
-
-  // Reset queue when active session changes
+  // Queue items are scoped to their origin. Navigation must never dispatch a
+  // previous view's item merely because the new view is idle.
   useEffect(() => {
     setQueuedPrompts([]);
     setStoppedWithQueue(false);
+    dispatchingQueueRef.current = null;
   }, [currentSessionId]);
 
-  // Auto-dispatch next queued prompt when streaming ends (unless user explicitly stopped)
   useEffect(() => {
-    if (prevStreamingRef.current && !isStreaming) {
-      if (wasStopRequestedRef.current) {
-        wasStopRequestedRef.current = false;
-        if (queuedPrompts.length > 0) {
-          setStoppedWithQueue(true);
-        }
-      } else if (queuedPrompts.length > 0 && !isReviewing) {
-        setStoppedWithQueue(false);
-        const nextItem = queuedPrompts[0];
-        setQueuedPrompts((prev) => prev.slice(1));
-        onSendMessage(nextItem.prompt, nextItem.attachments);
-      }
-    }
-    prevStreamingRef.current = isStreaming;
-  }, [isStreaming, queuedPrompts, isReviewing, onSendMessage]);
+    if (stopRequested) setStoppedWithQueue(true);
+  }, [stopRequested]);
 
-  const handleResumeQueue = useCallback(() => {
-    if (queuedPrompts.length === 0 || isStreaming || isReviewing) return;
-    setStoppedWithQueue(false);
-    const nextItem = queuedPrompts[0];
-    setQueuedPrompts((prev) => prev.slice(1));
-    onSendMessage(nextItem.prompt, nextItem.attachments);
-  }, [queuedPrompts, isStreaming, isReviewing, onSendMessage]);
+  const handleResumeQueue = () => {
+    if (!isStreaming && !isReviewing) setStoppedWithQueue(false);
+  };
 
   const handleEditQueued = useCallback((id: string) => {
     const item = queuedPrompts.find((q) => q.id === id);
@@ -680,11 +663,13 @@ export function ChatCanvas({
   // Native Tauri drag & drop event listener
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     const setupTauriDrop = async () => {
       try {
         if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
           const { getCurrentWebview } = await import('@tauri-apps/api/webview');
           unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
+            if (disposed) return;
             if (event.payload.type === 'enter' || event.payload.type === 'over') {
               setIsDraggingOver(true);
             } else if (event.payload.type === 'leave') {
@@ -706,6 +691,7 @@ export function ChatCanvas({
               }
             }
           });
+          if (disposed) unlisten();
         }
       } catch (err) {
         // Outside Tauri or test env
@@ -714,6 +700,7 @@ export function ChatCanvas({
 
     setupTauriDrop();
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   }, []);
@@ -1028,10 +1015,12 @@ export function ChatCanvas({
     }
   };
 
-  const executeSlashCommand = (item: SlashItem, argText?: string) => {
-    setInput('');
-    setMenuDismissed(false);
-    setCursor(0);
+  const executeSlashCommand = (item: SlashItem, argText?: string, clearComposer = true) => {
+    if (clearComposer) {
+      setInput('');
+      setMenuDismissed(false);
+      setCursor(0);
+    }
 
     const arg = argText?.trim() || '';
 
@@ -1143,6 +1132,50 @@ export function ChatCanvas({
     }
   };
 
+  const runOptions = useMemo<RunOptions>(() => {
+    const options: RunOptions = { executionMode };
+    if (councilMode && councilModelA && councilModelB && settings) {
+      const providerA = settings.providers.find((provider) => provider.id === councilModelA.providerId);
+      const providerB = settings.providers.find((provider) => provider.id === councilModelB.providerId);
+      if (providerA && providerB) {
+        options.council = true;
+        options.candidateA = { provider: { ...providerA, model: councilModelA.model }, thinking: effectiveConfig?.thinking ?? false, reasoningEffort: effectiveConfig?.reasoningEffort ?? 'medium' };
+        options.candidateB = { provider: { ...providerB, model: councilModelB.model }, thinking: effectiveConfig?.thinking ?? false, reasoningEffort: effectiveConfig?.reasoningEffort ?? 'medium' };
+      }
+    }
+    return options;
+  }, [executionMode, councilMode, councilModelA, councilModelB, settings, effectiveConfig]);
+
+  useEffect(() => {
+    const next = queuedPrompts[0];
+    if (!next || next.sessionId !== currentSessionId || isStreaming || isReviewing || stopRequested || stoppedWithQueue || dispatchingQueueRef.current) return;
+    dispatchingQueueRef.current = next.id;
+    let disposed = false;
+    const dispatch = async () => {
+      let accepted = false;
+      try {
+        const clean = next.prompt.trim();
+        const localCommand = allSlashItems.find((item) => item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan');
+        if (localCommand) {
+          executeSlashCommand(localCommand, clean.split(/\s+/).slice(1).join(' '), false);
+          accepted = true;
+        } else {
+          accepted = await onSendMessage(next.prompt, next.attachments, next.options);
+        }
+      } catch {
+        // Keep the item available for an explicit retry.
+      }
+      if (disposed || queueSessionRef.current !== next.sessionId) return;
+      dispatchingQueueRef.current = null;
+      if (accepted) setQueuedPrompts((items) => items.filter((item) => item.id !== next.id));
+      else setStoppedWithQueue(true);
+    };
+    void dispatch();
+    // A pending send belongs to the origin session even if navigation occurs.
+    // Do not cancel this effect on ordinary renders while acceptance is pending.
+    return () => { disposed = queueSessionRef.current !== next.sessionId; };
+  }, [queuedPrompts, currentSessionId, isStreaming, isReviewing, stopRequested, stoppedWithQueue, onSendMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const send = async () => {
     const draft = input;
     const draftAttachments = attachedContexts;
@@ -1166,6 +1199,8 @@ export function ChatCanvas({
           id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           prompt: draft,
           attachments: draftAttachments.length > 0 ? draftAttachments : undefined,
+          options: runOptions,
+          sessionId: currentSessionId,
         },
       ]);
       setStoppedWithQueue(false);
@@ -1182,40 +1217,18 @@ export function ChatCanvas({
       setCursor(0);
     };
 
-    if (slashItem) {
+    // /plan is transformed by useAgent; it is a run, not a local command.
+    if (slashItem && slashItem.command !== '/plan') {
       const args = clean.split(/\s+/).slice(1).join(' ').trim();
       executeSlashCommand(slashItem, args);
       setAttachedContexts([]);
       return;
     }
 
-    if (councilMode && councilModelA && councilModelB && settings) {
-      const provA = settings.providers.find((p) => p.id === councilModelA.providerId) || effectiveConfig?.provider;
-      const provB = settings.providers.find((p) => p.id === councilModelB.providerId) || effectiveConfig?.provider;
-      if (provA && provB) {
-        const accepted = await onSendMessage(draft, draftAttachments.length > 0 ? draftAttachments : undefined, {
-          council: true,
-          candidateA: {
-            provider: { ...provA, model: councilModelA.model },
-            thinking: effectiveConfig?.thinking ?? false,
-            reasoningEffort: effectiveConfig?.reasoningEffort ?? 'medium',
-          },
-          candidateB: {
-            provider: { ...provB, model: councilModelB.model },
-            thinking: effectiveConfig?.thinking ?? false,
-            reasoningEffort: effectiveConfig?.reasoningEffort ?? 'medium',
-          },
-          executionMode,
-        });
-        clearIfUnchanged(accepted);
-        return;
-      }
-    }
-
     const accepted = await onSendMessage(
       draft,
       draftAttachments.length > 0 ? draftAttachments : undefined,
-      { executionMode },
+      runOptions,
     );
     clearIfUnchanged(accepted);
   };

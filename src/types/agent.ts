@@ -71,6 +71,8 @@ export interface ChatMessage {
   timestamp: number;
   reasoning?: string;
   toolCalls?: ToolCallItem[];
+  /** Opaque assistant/tool transcript, separate from display content. */
+  providerMessages?: Record<string, unknown>[];
   isStreaming?: boolean;
   attachments?: AttachedContext[];
   councilTurn?: CouncilTurn;
@@ -198,6 +200,7 @@ export interface UndoTurnResult {
 export interface AgentRunRequest {
   runId: string;
   sessionId: string;
+  workspaceCwd?: string;
   provider: ProviderConfig;
   systemPrompt?: string;
   messages: ChatMessage[];
@@ -262,6 +265,7 @@ export interface NoticeEventData extends EventScope {
 export type AgentEvent =
   | { type: 'chunk'; data: EventScope & { text: string } }
   | { type: 'reasoning'; data: EventScope & { text: string } }
+  | { type: 'provider_state'; data: EventScope & { providerMessages: Record<string, unknown>[] } }
   | { type: 'tool_update'; data: EventScope & { tool: ToolCallItem } }
   | { type: 'artifact'; data: EventScope & { artifact: Artifact } }
   | { type: 'terminal_output'; data: EventScope & { artifactId: string; delta: string; stream: 'stdout' | 'stderr' | 'system' } }

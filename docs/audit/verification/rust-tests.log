@@ -1,0 +1,216 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running unittests src\lib.rs (target\debug\deps\aether_agent_lib-1ae7b90338ba39ef.exe)
+
+running 195 tests
+test agent::git::tests::empty_commit_message_is_rejected ... ok
+test agent::git::tests::parses_quoted_porcelain_paths ... ok
+test agent::git::tests::parses_porcelain_lines_correctly ... ok
+test agent::git::tests::non_existent_directory_returns_not_a_repo ... ok
+test agent::mcp::tests::aliases_are_provider_safe ... ok
+test agent::mcp::tests::extracts_mcp_text_content ... ok
+test agent::mcp::tests::capped_mcp_aliases_stay_unique_for_every_dedup_suffix ... ok
+test agent::mcp::tests::dropping_last_client_stops_reader_and_child ... ok
+test agent::mcp::tests::published_result_text_has_utf8_safe_byte_cap ... ok
+test agent::mcp::tests::short_mcp_aliases_are_not_reshaped ... ok
+test agent::provider::audit_tests::sse_cr_only_and_split_crlf_are_equivalent ... ok
+test agent::provider::audit_tests::sse_empty_data_lines_count_toward_event_budget ... ok
+test agent::provider::audit_tests::sse_enforces_a_total_wire_budget_across_small_events ... ok
+test agent::provider::audit_tests::sse_ignores_events_after_done_in_the_same_packet ... ok
+test agent::provider::audit_tests::sse_invalid_utf8_is_an_explicit_error ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_anthropic_capabilities_map_all_efforts ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_anthropic_manual_thinking_validates_without_raising_cap ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_anthropic_off_is_explicit_or_rejected_not_faked ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_deepseek_preserves_existing_thinking_controls ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_extra_body_is_last_explicit_override ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_official_non_reasoning_has_no_vendor_controls ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_official_reasoning_uses_supported_efforts_and_completion_cap ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_ollama_compatibility_controls_and_custom_wire_mapping ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_responses_only_rejected_before_network ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_switch_from_anthropic_normalizes_openai_replay ... ok
+test agent::provider::provider_payload_audit_tests::provider_payload_thinking_off_capability_for_background_requests ... ok
+test agent::provider::provider_state_audit_tests::p04_anthropic_signed_stream_survives_tool_roundtrip ... ok
+test agent::provider::provider_state_audit_tests::p04_deepseek_helper_replays_reasoning_only_for_deepseek ... ok
+test agent::provider::provider_state_audit_tests::p04_nonstream_preserves_opaque_blocks_and_does_not_duplicate_tools ... ok
+test agent::provider::provider_state_audit_tests::p04_provider_messages_survive_chat_message_serialization_and_event_scope ... ok
+test agent::provider::tests::anthropic_deltas_accumulate_thinking_and_tool_json ... ok
+test agent::provider::tests::anthropic_stop_reason_is_captured_for_validation ... ok
+test agent::provider::tests::endpoint_does_not_duplicate_v1 ... ok
+test agent::provider::tests::finish_reason_validation_distinguishes_clean_and_truncated_runs ... ok
+test agent::provider::tests::openai_deltas_accumulate_reasoning_content_and_tools ... ok
+test agent::provider::tests::openai_http_stream_accepts_stop_finish_reason ... ok
+test agent::provider::tests::openai_http_stream_accepts_tool_calls_finish_reason ... ok
+test agent::provider::tests::openai_http_stream_rejects_empty_completion ... ok
+test agent::provider::tests::openai_http_stream_rejects_eof_without_completion_marker ... ok
+test agent::provider::tests::openai_http_stream_reports_content_filter_finish_reason_as_error ... ok
+test agent::provider::tests::openai_http_stream_reports_truncated_finish_reason_as_error ... ok
+test agent::provider::tests::openai_http_stream_round_trip_parses_network_chunks ... ok
+test agent::provider::tests::openai_http_stream_surfaces_oversized_sse_event_as_error ... ok
+test agent::provider::tests::openai_non_streaming_request_handles_event_stream_response ... ok
+test agent::provider::tests::openai_non_streaming_request_handles_json_response ... ok
+test agent::provider::tests::request_contains_thinking_and_effort ... ok
+test agent::provider::tests::request_headers_includes_identity_encoding ... ok
+test agent::provider::tests::retryable_provider_error_classification ... ok
+test agent::provider::tests::sse_decoder_stops_processing_after_a_failure ... ok
+test agent::provider::tests::sse_handles_crlf_multiline_and_split_utf8 ... ok
+test agent::provider::tests::sse_rejects_unbounded_events ... ok
+test agent::reflection::tests::anthropic_uses_selected_model_and_low_effort_without_tools ... ok
+test agent::reflection::tests::atomic_writer_revalidates_snapshot_and_does_not_replace_concurrent_changes ... ok
+test agent::reflection::tests::automatic_reflection_is_opt_in_and_requires_successful_tool_work ... ok
+test agent::reflection::tests::cancellation_provider_failure_malformed_or_oversized_output_leave_no_writes ... ok
+test agent::reflection::tests::context_bounds_tool_arguments_and_redacts_credentials_from_structured_data ... ok
+test agent::reflection::tests::creates_workspace_skill_through_provider_without_tools_or_request_overrides ... ok
+test agent::reflection::tests::manual_edit_during_provider_request_is_never_overwritten ... ok
+test agent::reflection::tests::no_op_does_not_create_directories_and_missing_workspace_never_falls_back ... ok
+test agent::reflection::tests::overall_timeout_leaves_workspace_untouched ... ok
+test agent::reflection::tests::parses_plain_or_fenced_json_and_explicit_no_op ... ok
+test agent::reflection::tests::provider_error_does_not_expose_active_credentials ... ok
+test agent::reflection::tests::read_rejects_malformed_names_oversized_or_missing_skills ... ok
+test agent::reflection::tests::reflection_context_includes_bounded_tool_recipes_and_redacts_provider_credentials ... ok
+test agent::reflection::tests::reflection_supports_required_thinking_without_enabling_tools ... ok
+test agent::reflection::tests::refuses_to_overwrite_manual_skill_even_with_matching_name ... ok
+test agent::reflection::tests::refuses_to_persist_credentials_echoed_by_provider ... ok
+test agent::reflection::tests::rejects_linked_skill_file_without_reading_or_changing_its_target ... ok
+test agent::reflection::tests::rejects_linked_skill_parents_even_inside_workspace_or_with_missing_descendants ... ok
+test agent::reflection::tests::rejects_malformed_unknown_or_duplicate_fields_and_unsafe_skill_data ... ok
+test agent::reflection::tests::rejects_parent_replaced_by_junction_during_provider_request ... ok
+test agent::reflection::tests::simultaneous_writers_allow_only_one_commit_for_same_snapshot ... ok
+test agent::reflection::tests::updates_only_generated_skills_and_preserves_all_existing_instructions ... ok
+test agent::runner::tests::child_artifact_and_terminal_events_share_scoped_identity ... ok
+test agent::runner::tests::child_options_preserve_every_parent_completion_setting ... ok
+test agent::runner::tests::child_policy_preserves_operator_root_and_nested_memory_without_history ... ok
+test agent::runner::tests::concurrent_tool_calls_execute_simultaneously ... ok
+test agent::runner::tests::manual_review_rejects_identified_runs_without_completed_status ... ok
+test agent::runner::tests::manual_review_targets_latest_completed_turn_only ... ok
+test agent::runner::tests::micro_compaction_noop_under_threshold ... ok
+test agent::runner::tests::micro_compaction_preserves_recent_turns_and_prunes_older_verbose_tools ... ok
+test agent::runner::tests::native_anthropic_helper_snapshot_validates_and_replays_unchanged ... ok
+test agent::runner::tests::native_replay_preserves_signed_blocks_and_rejects_unpaired_snapshots ... ok
+test agent::runner::tests::native_snapshot_optional_mirrors_must_match_without_double_pending ... ok
+test agent::runner::tests::native_snapshot_rejects_invalid_tool_blocks_and_reused_ids ... ok
+test agent::runner::tests::provider_errors_redact_credentials_from_extra_headers ... ok
+test agent::runner::tests::provider_keys_are_redacted_from_errors ... ok
+test agent::runner::tests::replay_filters_phantom_invalid_and_duplicate_calls_but_keeps_terminal_pairs ... ok
+test agent::runner::tests::replay_legacy_preamble_precedes_tools_and_final_content_follows_results ... ok
+test agent::runner::tests::replay_segments_preserves_two_tool_turns_without_duplicate_aggregate_text ... ok
+test agent::runner::tests::request_review_blocks_child_write_and_exec_before_side_effects ... ok
+test agent::runner::tests::request_review_does_not_start_mcp_servers_during_connection ... ok
+test agent::runner::tests::subagent_finding_detection_and_safe_prefix_regression ... ok
+test agent::runner::tests::subagent_rejects_missing_workspace_without_temp_fallback ... ok
+test agent::runner::tests::subagent_use_skill_tool_call_activates_the_catalogued_skill ... ok
+test agent::runner::tests::synthesis_cancel_error_empty_and_budget_never_report_success ... ok
+test agent::runner::tests::use_skill_hot_reloads_dynamically_when_skill_added_to_disk ... ok
+test agent::search::tests::deep_search_does_not_let_one_session_crowd_out_other_sessions ... ok
+test agent::search::tests::fts_handles_special_query_characters_gracefully ... ok
+test agent::search::tests::fts_indexes_and_matches_messages_with_snippets ... ok
+test agent::search::tests::indexing_multibyte_tool_output_and_artifacts_truncates_on_char_boundaries ... ok
+test agent::search::tests::search_query_supports_prefix_wildcard_matching ... ok
+test agent::skills::tests::default_skill_paths_do_not_include_machine_specific_directories ... ok
+test agent::skills::tests::discovers_workspace_skills_before_global_namesakes ... ok
+test agent::skills::tests::parses_yaml_frontmatter ... ok
+test agent::skills::tests::regression_activation_rechecks_size_type_and_identity ... ok
+test agent::mcp::tests::oversized_frames_fail_and_transport_is_closed ... ok
+test agent::skills::tests::rejects_missing_frontmatter ... ok
+test agent::skills::tests::save_skill_markdown_guards_against_accidental_overwrite ... ok
+test agent::skills::tests::save_skill_markdown_rejects_unsafe_or_oversized_names ... ok
+test agent::skills::tests::seeds_starter_skills_in_fresh_directory ... ok
+test agent::skills::tests::test_save_skill_markdown ... ok
+test agent::storage::tests::compaction_is_local_turn_aware_and_reads_object_arguments ... ok
+test agent::storage::tests::compaction_rejects_in_progress_or_single_turn_histories ... ok
+test agent::storage::tests::creates_compact_preview ... ok
+test agent::storage::tests::global_artifact_item_round_trips_json ... ok
+test agent::storage::tests::inspect_paths_distinguishes_files_and_directories ... ok
+test agent::storage::tests::migrates_legacy_session_shape ... ok
+test agent::storage::tests::pinned_sessions_sort_ahead_of_recent_unpinned_sessions ... ok
+test agent::storage::tests::reflection_survives_stale_session_saves_without_resurrecting_deleted_turns ... ok
+Junction created for C:\Users\Tano\AppData\Local\hermes\cache\scratch\aether-skills-90383af0-2538-4f61-a217-41cfeca7fe83\config\skills <<===>> C:\Users\Tano\AppData\Local\hermes\cache\scratch\aether-skills-90383af0-2538-4f61-a217-41cfeca7fe83\outside
+test agent::skills::tests::regression_skill_save_rejects_external_parent_link ... ok
+test agent::storage::tests::regression_clear_workspace_propagates_remove_errors ... ok
+test agent::storage::tests::regression_corrupt_session_is_never_overwritten_and_list_reports_path ... ok
+test agent::storage::tests::regression_exports_ordered_segments_and_results_once ... ok
+test agent::storage::tests::regression_repeated_compaction_retains_first_checkpoint_and_preamble ... ok
+test agent::storage::tests::regression_stale_save_cannot_restore_title_pin_or_deleted_session ... ok
+test agent::storage::tests::regression_transcript_frontend_multitool_aggregate_is_not_duplicated ... ok
+test agent::storage::tests::regression_transcript_preserves_only_absent_legacy_tail ... ok
+test agent::storage::tests::rejects_path_shaped_session_ids ... ok
+test agent::storage::tests::save_attachment_persists_bytes_and_rejects_empty_data ... ok
+test agent::storage::tests::session_deserialization_defaults_pinned_to_false ... ok
+test agent::storage::tests::unpinning_a_session_is_not_resurrected_by_stale_disk_state ... ok
+test agent::mcp::tests::dropping_request_removes_pending_entry ... ok
+Junction created for C:\Users\Tano\AppData\Local\hermes\cache\scratch\aether-storage-2d3f5e1f-4afa-44e1-a5a9-93e3f82a98b4\workspace\.aether-agent\attachments <<===>> C:\Users\Tano\AppData\Local\hermes\cache\scratch\aether-storage-2d3f5e1f-4afa-44e1-a5a9-93e3f82a98b4\outside
+test agent::storage::tests::regression_attachment_rejects_external_link_and_missing_workspace ... ok
+test agent::mcp::tests::full_request_deadline_covers_blocked_stdin_and_pending_cleanup ... ok
+test agent::tasks::tests::log_collision_and_unavailable_directory_are_explicit_errors ... ok
+test agent::mcp::tests::json_rpc_stdio_round_trip_with_real_child_process ... ok
+test agent::tasks::tests::quota_marker_and_write_failures_are_explicit ... ok
+test agent::mcp::tests::mcp_alias_dedup_survives_the_length_cap ... ok
+test agent::mcp::tests::mcp_aliases_schema_and_errors_match_the_native_tool_contract ... ok
+test agent::tasks::tests::split_utf8_and_invalid_bytes_are_not_silently_lost ... ok
+test agent::tasks::tests::task_fixture ... ignored, child-process fixture, invoked explicitly by regression tests
+test agent::tasks::tests::saturated_stdin_does_not_hold_entry_lock ... ok
+test agent::mcp::tests::mcp_aliases_stay_within_the_provider_function_name_limit ... ok
+test agent::git::tests::per_file_git_rejects_workspace_escape_and_directory ... ok
+test agent::tasks::tests::test_task_not_found ... ok
+test agent::tools::tests::agent_tools_contain_subagent_and_skill_contracts ... ok
+test agent::tools::tests::context_file_listing_excludes_generated_and_vcs_directories ... ok
+test agent::tools::tests::empty_file_read_is_successful ... ok
+test agent::tools::tests::exact_edit_generates_diff_and_writes_once ... ok
+test agent::tools::tests::fetch_rejects_ipv4_mapped_loopback_literal_urls ... ok
+test agent::tools::tests::guarded_write_rejects_stale_or_unexpected_disk_state ... ok
+test agent::tools::tests::ipv4_mapped_and_embedded_ipv6_targets_cannot_bypass_the_private_filter ... ok
+test agent::tools::tests::ipv6_documentation_and_nat64_targets_cannot_bypass_the_private_filter ... ok
+test agent::tasks::tests::newline_free_output_and_log_have_byte_quotas ... ok
+test agent::tools::tests::mutations_wait_for_same_file_lock_before_reading ... ok
+test agent::tools::tests::nested_mutations_report_workspace_relative_path ... ok
+test agent::tools::tests::no_workspace_never_grants_absolute_file_access ... ok
+test agent::tasks::tests::daemon_survives_manager_scope_until_explicit_kill ... ok
+test agent::tasks::tests::eof_before_exit_remains_cancellable ... ok
+test agent::tasks::tests::task_ids_do_not_repeat_between_managers ... ok
+test agent::tools::tests::private_addresses_are_blocked ... ok
+test agent::tools::tests::process_utf8_decoder_preserves_split_characters ... ok
+test agent::tools::tests::rejects_traversal_and_accepts_nested_workspace_path ... ok
+test agent::tools::tests::reserved_benchmark_and_shared_ipv4_ranges_are_blocked ... ok
+test agent::tools::tests::symlink_escape_is_rejected ... ok
+test agent::tools::tests::write_file_reports_accurate_diff_stats_for_overwrite ... ok
+test agent::types::tests::completed_message_preserves_reflection_and_run_identity ... ok
+test agent::types::tests::council_chunk_event_serializes_properly ... ok
+test agent::types::tests::event_contract_uses_camel_case_and_scopes ... ok
+test agent::types::tests::message_round_trip_preserves_attachments_and_council_state ... ok
+test agent::types::tests::notice_event_serializes_properly ... ok
+test agent::types::tests::old_provider_shape_gets_forward_compatible_defaults ... ok
+test agent::types::tests::reflection_is_opt_in_and_round_trips_in_settings ... ok
+test tests::memory_workspace_binding_rejects_stale_editor_without_fallback ... ok
+test tests::regression_council_scope_rejected_before_registry_begin ... ok
+test tests::regression_native_open_builder_keeps_metacharacters_literal ... ok
+test tests::regression_workspace_binding_is_explicit_and_fail_closed ... ok
+test tests::test_decode_percent_escapes ... ok
+test tests::test_resolve_open_target_decodes_and_strips_file_scheme ... ok
+test agent::mcp::tests::discovery_follows_pages_and_rejects_cursor_cycles ... ok
+test agent::git::tests::corrupt_index_is_error_not_clean_tree ... ok
+test agent::git::tests::literal_stage_and_revert_do_not_touch_glob_neighbor ... ok
+test agent::tasks::tests::test_kill_running_task ... ok
+test agent::tasks::tests::exited_parent_with_inherited_pipes_has_bounded_drain ... ok
+test agent::tools::tests::manage_task_roundtrip_with_daemon ... ok
+test agent::git::tests::status_preserves_rename_unicode_and_workspace_relative_names ... ok
+test agent::git::tests::regression_commit_scope_root_keeps_repository_wide_behavior ... ok
+test agent::tools::tests::powershell_cancellation_terminates_the_process ... ok
+test agent::tasks::tests::real_stdin_backpressure_is_bounded_and_kill_completes ... ok
+test agent::git::tests::regression_commit_scope_excludes_hidden_sibling_changes ... ok
+test agent::tasks::tests::test_spawn_and_complete_task ... ok
+test agent::git::tests::regression_commit_scope_rejects_external_index_before_any_mutation ... ok
+test agent::tools::tests::powershell_giant_unbroken_output_is_bounded ... ok
+test agent::tools::tests::powershell_streams_output_and_finishes ... ok
+
+test result: ok. 194 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.64s
+
+     Running unittests src\main.rs (target\debug\deps\aether_agent-b893a9ea91b4bdb6.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests aether_agent_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
