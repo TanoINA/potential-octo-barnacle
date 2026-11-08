@@ -26,7 +26,7 @@ npm run tauri dev
 
 Or run the helper script:
 ```powershell
-.\run-aether.ps1
+.\scripts\run-aether.ps1
 ```
 
 ## Build
@@ -37,7 +37,7 @@ npm run tauri build
 ```
 
 The release executable is generated at `src-tauri/target/release/aether-agent.exe`.
-Pre-built verified binaries (`AetherAgent.exe` and `AetherAgent-Setup.exe`) are also available directly in the repository root.
+Pre-built verified binaries (`AetherAgent.exe` and `AetherAgent-Setup.exe`) are located in the `release/` directory.
 
 ## Local Data
 

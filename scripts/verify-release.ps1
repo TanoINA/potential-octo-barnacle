@@ -3,7 +3,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
 
 Write-Host '==> Frontend type-check and production build' -ForegroundColor Cyan
@@ -29,8 +30,11 @@ else {
   if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed ($LASTEXITCODE)" }
 }
 
+$ReleaseDir = Join-Path $Root 'release'
+if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null }
+
 $Source = Join-Path $Root 'src-tauri/target/release/aether-agent.exe'
-$Target = Join-Path $Root 'AetherAgent.exe'
+$Target = Join-Path $ReleaseDir 'AetherAgent.exe'
 if (-not (Test-Path $Source -PathType Leaf)) { throw "Release executable not found: $Source" }
 Copy-Item -LiteralPath $Source -Destination $Target -Force
 
@@ -45,7 +49,7 @@ Write-Host "    SHA256: $TargetHash"
 
 if (-not $SkipBundle) {
   $SetupSource = Join-Path $Root 'src-tauri/target/release/bundle/nsis/AetherAgent_0.2.0_x64-setup.exe'
-  $SetupTarget = Join-Path $Root 'AetherAgent-Setup.exe'
+  $SetupTarget = Join-Path $ReleaseDir 'AetherAgent-Setup.exe'
   if (Test-Path $SetupSource -PathType Leaf) {
     Copy-Item -LiteralPath $SetupSource -Destination $SetupTarget -Force
     $SetupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SetupTarget).Hash

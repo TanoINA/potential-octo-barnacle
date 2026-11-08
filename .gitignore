@@ -1,5 +1,7 @@
-# Node
+# Dependencies
 node_modules/
+
+# Production build artifacts
 dist/
 dist-ssr/
 *.local
@@ -8,12 +10,15 @@ dist-ssr/
 src-tauri/target/
 src-tauri/gen/
 
-# Logs
+# Logs & test runs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# OS
+# OS / Editor
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

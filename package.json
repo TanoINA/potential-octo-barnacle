@@ -1,7 +1,7 @@
 {
   "name": "aether-agent",
   "version": "0.2.0",
-  "description": "Ultra-fast native desktop AI agent powered by Rust & Tauri 2.0 with custom provider support and Antigravity-grade smooth UI",
+  "description": "Native Windows desktop AI coding agent built with Rust, Tauri 2, and React",
   "private": true,
   "type": "module",
   "scripts": {
