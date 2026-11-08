@@ -87,7 +87,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
               <span className="w-1.5 h-1.5 rounded-full bg-[#f0883e]" />
               running
             </span>
-          ) : exitCode !== undefined ? (
+          ) : exitCode != null ? (
             exitCode === 0 ? (
               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[#238636]/20 text-[#3fb950] border border-[#238636]/40">
                 exit 0

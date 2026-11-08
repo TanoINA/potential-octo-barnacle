@@ -30,7 +30,7 @@ function formatDuration(ms?: number): string {
 }
 
 function isToolFailed(tool: ToolCallItem): boolean {
-  return tool.status !== 'cancelled' && (tool.status === 'error' || (tool.exitCode !== undefined && tool.exitCode !== 0));
+  return tool.status !== 'cancelled' && (tool.status === 'error' || (tool.exitCode != null && tool.exitCode !== 0));
 }
 
 function extractArg(tool: ToolCallItem, key: string): string {

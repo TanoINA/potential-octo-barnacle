@@ -84,4 +84,11 @@ describe('ExecutionTrace truthful details', () => {
     expect(screen.getByText('Permission denied')).toBeTruthy();
     expect(screen.queryByText(/Wrote/)).toBeNull();
   });
+
+  it('does not treat null exitCode from native nonterminal tools as failed', () => {
+    render(<ExecutionTrace toolCalls={[tool({ name: 'read_file', args: { filePath: 'README.md' }, status: 'done', exitCode: null as unknown as number, result: 'File content' })]} />);
+    expect(screen.queryByText(/Failed/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'explored 1 file' }));
+    expect(screen.getByRole('button', { name: 'Read README.md' })).toBeTruthy();
+  });
 });
