@@ -14,6 +14,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
 
   const runningCount = subagents.filter((s) => s.status === 'running').length;
   const completedCount = subagents.filter((s) => s.status === 'completed').length;
+  const failedCount = subagents.filter((s) => s.status === 'error' || s.status === 'failed').length;
   const cancelledCount = subagents.filter((s) => s.status === 'cancelled').length;
 
   return (
@@ -30,6 +31,7 @@ export function SubagentTreeCard({ subagents, onSelectArtifact }: SubagentTreeCa
           <span className="text-xs font-semibold text-[#e6edf3]">Subagent Tasks</span>
           <span className="rounded-full bg-[#30363d] px-2 py-0.5 text-[10px] font-mono text-[#8b949e]">
             {completedCount}/{subagents.length} done
+            {failedCount > 0 && <span className="text-[#f85149]">{` · ${failedCount} failed`}</span>}
             {cancelledCount > 0 && ` · ${cancelledCount} cancelled`}
           </span>
           {runningCount > 0 && (

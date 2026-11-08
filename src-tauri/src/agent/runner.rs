@@ -20,6 +20,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+const SUBAGENT_MAX_TURNS: usize = 25;
+
 #[derive(Clone)]
 struct EmitterContext {
     app: AppHandle,
@@ -518,7 +520,7 @@ async fn run_subagent(
     let mut final_text = String::new();
     let mut intermediate_findings: Vec<String> = Vec::new();
     let mut completed_cleanly = false;
-    let max_turns = 12;
+    let max_turns = SUBAGENT_MAX_TURNS;
 
     while turns < max_turns {
         if parent_cancel.is_cancelled() {
@@ -2547,6 +2549,11 @@ mod tests {
             serde_json::json!({"role":"tool","tool_call_id":"orphan","content":"orphan"})
         ]));
         assert!(!valid_provider_messages(&[]));
+    }
+
+    #[test]
+    fn subagent_turn_budget_allows_twenty_five_investigation_turns() {
+        assert_eq!(SUBAGENT_MAX_TURNS, 25);
     }
 
     #[test]

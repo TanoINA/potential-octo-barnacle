@@ -24,6 +24,25 @@ describe('SubagentTreeCard', () => {
     },
   ];
 
+  it('shows failed and error statuses in a red header count without counting cancellations', () => {
+    const statuses = ['completed', 'running', 'failed', 'error', 'cancelled'] as const;
+    const subagents: SubagentProgress[] = statuses.map((status, index) => ({
+      ...sampleSubagents[0], id: `sub-${index}`, status,
+    }));
+    render(<SubagentTreeCard subagents={subagents} />);
+    const failures = screen.getByText('· 2 failed');
+    expect(failures.classList.contains('text-[#f85149]')).toBe(true);
+    expect(failures.parentElement?.textContent).toContain('1/5 done');
+    expect(failures.parentElement?.textContent).toContain('1 cancelled');
+    expect(screen.getByText('1 active')).toBeTruthy();
+    expect(screen.queryByText('Researcher')).toBeNull();
+  });
+
+  it('does not show a failure indicator when no subagents failed', () => {
+    render(<SubagentTreeCard subagents={sampleSubagents} />);
+    expect(screen.queryByText(/failed/)).toBeNull();
+  });
+
   it('renders nothing when subagent list is empty', () => {
     const { container } = render(<SubagentTreeCard subagents={[]} />);
     expect(container.firstChild).toBeNull();

@@ -289,8 +289,12 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
     return () => clearInterval(interval);
   }, [hasRunning]);
 
-  // Default: open while running or if error; collapsed when completed unless user explicitly toggled
-  const isCollapsed = manualCollapsed !== null ? manualCollapsed : hasRunning || hasError ? false : true;
+  // Manual choices apply within a phase, not across live/completed transitions.
+  useEffect(() => {
+    setManualCollapsed(null);
+  }, [hasRunning]);
+
+  const isCollapsed = manualCollapsed ?? !hasRunning;
 
   const toggleDetails = (id: string, isOpen: boolean) => {
     setExpandedDetails((prev) => ({
@@ -321,7 +325,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
           ) : (
             <ChevronDown size={13} className="text-[#6e7681] shrink-0" />
           )}
-          <span className="truncate text-[11px] font-mono text-[#8b949e]">
+          <span className={`truncate text-[11px] font-mono ${hasError ? 'text-[#f85149]' : 'text-[#8b949e]'}`}>
             {summary}
           </span>
         </div>
@@ -341,7 +345,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
       {/* Expanded Detailed Status Rows */}
       {!isCollapsed && (
-        <div className="border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
+        <div className="max-h-80 overflow-y-auto overscroll-contain border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
           {toolCalls.map((tool) => {
             const info = getToolDisplayInfo(tool);
             const failed = isToolFailed(tool);

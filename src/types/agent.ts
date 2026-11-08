@@ -234,7 +234,7 @@ export interface SubagentProgress {
   id: string;
   role: string;
   task: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'running' | 'completed' | 'failed' | 'error' | 'cancelled';
   startedAt: number;
   completedAt?: number;
   summary?: string;
