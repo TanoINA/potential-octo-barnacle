@@ -17,6 +17,254 @@ const created: SelfImprovementEvent = {
 beforeEach(() => { vi.mocked(invoke).mockReset(); });
 
 describe('SelfImprovementBadge', () => {
+  it('keeps a local approval across an equivalent stale event rerender but does not infer approval after remount', async () => {
+    let approved = false;
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: 'new', diff: '+new' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return approved ? [] : [proposal];
+      if (command === 'review_proposal_diff') return proposal;
+      if (command === 'approve_review_proposal') { approved = true; return { action: 'skill_updated', skill_name: 'test-recipe', file_path: '/skill/SKILL.md' }; }
+      if (command === 'read_reflection_skill') return '# Approved';
+      throw new Error('Unexpected command');
+    });
+    const stale: SelfImprovementEvent = { ...created, action: 'skill_staged', changes: [{ action: 'skill_staged', skill_name: 'test-recipe', pending_id: 'pending-1' }] };
+    const view = render(<SelfImprovementBadge review={stale} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve proposal' }));
+    expect(await screen.findByText('# Approved')).toBeTruthy();
+    view.rerender(<SelfImprovementBadge review={structuredClone(stale)} />);
+    expect(screen.getByText('# Approved')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve proposal' })).toBeNull();
+    view.unmount();
+    render(<SelfImprovementBadge review={stale} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    expect((await screen.findByRole('alert')).textContent).toContain('no longer available');
+    expect(screen.queryByRole('button', { name: 'Approve proposal' })).toBeNull();
+    expect(screen.queryByText('# Approved')).toBeNull();
+    expect(screen.getByRole('button', { name: /Self-improvement review/ }).textContent).toContain('staged');
+  });
+
+  it('reads distinct files for changes to the same skill and ignores a stale target response', async () => {
+    let finishFirst!: (content: string) => void;
+    vi.mocked(invoke)
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValueOnce('# Supporting file');
+    render(<SelfImprovementBadge review={{ ...created, changes: [
+      { action: 'skill_updated', skill_name: 'test-recipe', file_path: 'D:/global/test-recipe/SKILL.md' },
+      { action: 'skill_updated', skill_name: 'test-recipe', file_path: 'D:/global/test-recipe/scripts/check.ts' },
+    ] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    expect(invoke).toHaveBeenLastCalledWith('read_reflection_skill', { runId: 'run-1', sessionId: 'session-1', skillName: 'test-recipe', filePath: 'D:/global/test-recipe/SKILL.md' });
+    fireEvent.click(screen.getAllByRole('button', { name: /test-recipe .* updated/ })[1]);
+    expect(await screen.findByText('# Supporting file')).toBeTruthy();
+    expect(invoke).toHaveBeenLastCalledWith('read_reflection_skill', { runId: 'run-1', sessionId: 'session-1', skillName: 'test-recipe', filePath: 'D:/global/test-recipe/scripts/check.ts' });
+    await act(async () => { finishFirst('# Stale skill'); });
+    expect(screen.getByText('# Supporting file')).toBeTruthy();
+    expect(screen.queryByText('# Stale skill')).toBeNull();
+  });
+
+
+  it('loads a persisted staged proposal as a diff, guards duplicate approval, and remembers approval on reopen', async () => {
+    let approve!: (change: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return [{ id: 'pending-1', skill_name: 'test-recipe', file_path: 'D:/global/test-recipe/SKILL.md' }];
+      if (command === 'review_proposal_diff') return { id: 'pending-1', skill_name: 'test-recipe', file_path: 'D:/global/test-recipe/SKILL.md', before: 'old', after: 'new', diff: '-old\n+new' };
+      if (command === 'approve_review_proposal') return new Promise((resolve) => { approve = resolve; });
+      if (command === 'read_reflection_skill') return '# Approved skill';
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged', changes: [{ action: 'skill_staged', skill_name: 'test-recipe', pending_id: 'pending-1' }] }} />);
+    const trigger = screen.getByRole('button', { name: /Self-improvement review/ });
+    expect(trigger.textContent).toContain('staged');
+    expect(trigger.textContent).not.toMatch(/created|updated/);
+    fireEvent.click(trigger);
+    expect(await screen.findByText('-old +new')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('list_review_proposals', { sessionId: 'session-1' });
+    expect(invoke).toHaveBeenCalledWith('review_proposal_diff', { sessionId: 'session-1', id: 'pending-1' });
+    const button = screen.getByRole('button', { name: 'Approve proposal' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect((screen.getByRole('button', { name: 'Reject proposal' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'approve_review_proposal')).toHaveLength(1);
+    await act(async () => { approve({ action: 'skill_updated', skill_name: 'test-recipe', file_path: 'D:/global/test-recipe/SKILL.md' }); });
+    expect(await screen.findByText('# Approved skill')).toBeTruthy();
+    expect(invoke).toHaveBeenLastCalledWith('read_reflection_skill', { runId: 'run-1', sessionId: 'session-1', skillName: 'test-recipe', filePath: 'D:/global/test-recipe/SKILL.md' });
+    expect(screen.queryByRole('button', { name: 'Approve proposal' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close skill inspector' }));
+    fireEvent.click(trigger);
+    expect(await screen.findByText('# Approved skill')).toBeTruthy();
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'list_review_proposals')).toHaveLength(1);
+  });
+
+  it('rejects a listed proposal without a pending id, guards both actions, and remembers rejection on reopen', async () => {
+    let reject!: () => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return [{ id: 'listed-id', skill_name: 'test-recipe', file_path: '/skill/SKILL.md' }];
+      if (command === 'review_proposal_diff') return { id: 'listed-id', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: '<script>unsafe</script>', diff: '+<script>unsafe</script>' };
+      if (command === 'reject_review_proposal') return new Promise<void>((resolve) => { reject = resolve; });
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged' }} />);
+    const trigger = screen.getByRole('button', { name: /Self-improvement review/ });
+    expect(trigger.textContent).toContain('staged');
+    expect(trigger.textContent).not.toMatch(/created|updated/);
+    fireEvent.click(trigger);
+    expect(await screen.findByText('+<script>unsafe</script>')).toBeTruthy();
+    expect(screen.getByRole('dialog').querySelector('script')).toBeNull();
+    const button = screen.getByRole('button', { name: 'Reject proposal' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve proposal' }));
+    expect(invoke).toHaveBeenCalledWith('reject_review_proposal', { sessionId: 'session-1', id: 'listed-id' });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'reject_review_proposal')).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'approve_review_proposal')).toBe(false);
+    await act(async () => { reject(); });
+    expect(await screen.findByText('Proposal rejected. No skill changes were applied.')).toBeTruthy();
+    expect(trigger.textContent).toContain('rejected');
+    fireEvent.click(screen.getByRole('button', { name: 'Close skill inspector' }));
+    fireEvent.click(trigger);
+    expect(await screen.findByText('Proposal rejected. No skill changes were applied.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve proposal' })).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['list_review_proposals', 'review_proposal_diff', 'approve_review_proposal', 'reject_review_proposal'] as const)('ignores a stale %s response after retargeting the review', async (pendingCommand) => {
+    let finish!: (value: unknown) => void;
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: 'old', after: 'new', diff: '-old\n+new' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === pendingCommand) return new Promise((resolve) => { finish = resolve; });
+      if (command === 'list_review_proposals') return [proposal];
+      if (command === 'review_proposal_diff') return proposal;
+      if (command === 'read_reflection_skill') return '# Current session';
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const { rerender } = render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged', changes: [{ action: 'skill_staged', skill_name: 'test-recipe', pending_id: 'pending-1' }] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    if (pendingCommand === 'approve_review_proposal' || pendingCommand === 'reject_review_proposal') {
+      fireEvent.click(await screen.findByRole('button', { name: pendingCommand === 'approve_review_proposal' ? 'Approve proposal' : 'Reject proposal' }));
+    }
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    rerender(<SelfImprovementBadge review={{ ...created, run_id: 'run-2', session_id: 'session-2', skill_name: 'current' }} />);
+    expect(await screen.findByText('# Current session')).toBeTruthy();
+    const callCount = vi.mocked(invoke).mock.calls.length;
+    await act(async () => {
+      finish(pendingCommand === 'list_review_proposals' ? [proposal] : pendingCommand === 'review_proposal_diff' ? proposal : { action: 'skill_updated', skill_name: 'test-recipe' });
+    });
+    expect(screen.getByText('# Current session')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Proposal rejected. No skill changes were applied.')).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(callCount);
+    fireEvent.click(screen.getByRole('button', { name: 'Close skill inspector' }));
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    expect(await screen.findByText('# Current session')).toBeTruthy();
+    expect(invoke).toHaveBeenLastCalledWith('read_reflection_skill', { runId: 'run-2', sessionId: 'session-2', skillName: 'current' });
+  });
+
+  it('does not send a duplicate decision after switching away from a pending proposal and back', async () => {
+    let finish!: (value: unknown) => void;
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: 'new', diff: '+new' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return [proposal];
+      if (command === 'review_proposal_diff') return proposal;
+      if (command === 'read_reflection_skill') return '# Other skill';
+      if (command === 'approve_review_proposal') return new Promise((resolve) => { finish = resolve; });
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged', changes: [
+      { action: 'skill_staged', skill_name: 'test-recipe', pending_id: 'pending-1' },
+      { action: 'skill_created', skill_name: 'other' },
+    ] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve proposal' }));
+    fireEvent.click(screen.getByRole('button', { name: /other .* created/ }));
+    expect(await screen.findByText('# Other skill')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /test-recipe .* staged/ }));
+    expect(await screen.findByText('+new')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve proposal' }));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'approve_review_proposal')).toHaveLength(1);
+    await act(async () => { finish({ action: 'skill_created', skill_name: 'test-recipe' }); });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Reject proposal' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it.each(['approve', 'reject'] as const)('blocks duplicate %s after closing and reopening, and ignores the dismissed failure', async (decision) => {
+    let fail!: (reason: string) => void;
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: 'new', diff: '+new' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return [proposal];
+      if (command === 'review_proposal_diff') return proposal;
+      if (command === `${decision}_review_proposal`) return new Promise((_resolve, reject) => { fail = reject; });
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged' }} />);
+    const trigger = screen.getByRole('button', { name: /Self-improvement review/ });
+    const decisionLabel = decision === 'approve' ? 'Approve proposal' : 'Reject proposal';
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('button', { name: decisionLabel }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skill inspector' }));
+    fireEvent.click(trigger);
+    const button = await screen.findByRole('button', { name: decisionLabel });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === `${decision}_review_proposal`)).toHaveLength(1);
+    await act(async () => { fail('Dismissed failure'); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(trigger.textContent).toContain('staged');
+  });
+
+  it('keeps a failed approval staged and allows a scoped retry', async () => {
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: 'new', diff: '+new' };
+    let approvals = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return [proposal];
+      if (command === 'review_proposal_diff') return proposal;
+      if (command === 'approve_review_proposal') {
+        if (++approvals === 1) throw 'Approval failed';
+        return { action: 'skill_created', skill_name: 'test-recipe' };
+      }
+      if (command === 'read_reflection_skill') return '# Approved after retry';
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged' }} />);
+    const trigger = screen.getByRole('button', { name: /Self-improvement review/ });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve proposal' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Approval failed');
+    expect(trigger.textContent).toContain('staged');
+    expect((screen.getByRole('button', { name: 'Approve proposal' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('+new')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve proposal' }));
+    expect(await screen.findByText('# Approved after retry')).toBeTruthy();
+    expect(approvals).toBe(2);
+    expect(trigger.textContent).toContain('created');
+    expect(trigger.textContent).not.toContain('staged');
+  });
+
+  it.each(['missing', 'ambiguous', 'mismatched'] as const)('does not allow decisions on a %s proposal', async (kind) => {
+    const proposal = { id: 'pending-1', skill_name: 'test-recipe', file_path: '/skill/SKILL.md', before: '', after: 'new', diff: '+new' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'list_review_proposals') return kind === 'missing' ? [] : kind === 'ambiguous' ? [proposal, { ...proposal, id: 'pending-2' }] : [proposal];
+      if (command === 'review_proposal_diff') return { ...proposal, id: 'wrong-id' };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    render(<SelfImprovementBadge review={{ ...created, action: 'skill_staged' }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Self-improvement review/ }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve proposal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reject proposal' })).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'read_reflection_skill')).toBe(false);
+  });
+
+  it('shows a multi-change summary and lets the inspector select every scoped skill', async () => {
+    vi.mocked(invoke).mockImplementation(async (_command, args) => `# ${(args as { skillName: string }).skillName}`);
+    render(<SelfImprovementBadge review={{ ...created, skill_name: undefined, summary: 'Two reusable lessons', changes: [
+      { action: 'skill_created', skill_name: 'first', file_path: 'D:/global/first/SKILL.md', summary: 'First lesson' },
+      { action: 'skill_updated', skill_name: 'second', skill_path: 'D:/global/second/SKILL.md' },
+    ] }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Self-improvement review · 2 changes · Two reusable lessons' }));
+    expect(await screen.findByText('# first')).toBeTruthy();
+    expect(screen.getByText('D:/global/first/SKILL.md')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'second · updated' }));
+    expect(await screen.findByText('# second')).toBeTruthy();
+    expect(invoke).toHaveBeenLastCalledWith('read_reflection_skill', { runId: 'run-1', sessionId: 'session-1', skillName: 'second' });
+  });
   it('keeps a fresh inspector unchanged when a dismissed request finishes late', async () => {
     let rejectDismissed!: (reason: string) => void;
     let resolveFresh!: (content: string) => void;

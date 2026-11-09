@@ -608,12 +608,19 @@ const rl=require('readline').createInterface({input:process.stdin});
 rl.on('line',line=>{
  const m=JSON.parse(line);
  if(m.method==='initialize') process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
- if(m.method==='notifications/initialized') { process.stdin.pause(); rl.pause(); setInterval(()=>{},1000); }
+ if(m.method==='fixture/ready') { process.stdout.write(JSON.stringify({id:m.id,result:{ready:true}})+'\n'); process.stdin.pause(); rl.pause(); setInterval(()=>{},1000); }
 });"#;
         let client = McpClient::connect(&server_config(script), &audit_cwd())
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Explicit server handshake separates process startup from blocked-write timing.
+        assert_eq!(
+            client
+                .request("fixture/ready", serde_json::json!({}))
+                .await
+                .unwrap()["ready"],
+            true
+        );
         let params = serde_json::json!({"text":"x".repeat(800_000)});
         let started = tokio::time::Instant::now();
         let result = tokio::time::timeout(
@@ -621,9 +628,11 @@ rl.on('line',line=>{
             client.request_with_timeout("blocked", params, Duration::from_millis(150)),
         )
         .await;
+        let request_elapsed = started.elapsed();
         client.shutdown().await;
         assert!(result.unwrap().unwrap_err().contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(6));
+        // Child-tree cleanup has a separate production bound, not the request deadline.
+        assert!(request_elapsed < Duration::from_secs(6));
         assert!(client.shared.pending.lock().unwrap().is_empty());
         assert!(client.child.lock().await.try_wait().unwrap().is_some());
     }
@@ -663,9 +672,18 @@ require('readline').createInterface({input:process.stdin}).on('line',line=>{
         let child = client.child.clone();
         let reader = Arc::downgrade(&client.reader);
         drop(client);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(reader.upgrade().is_none());
-        assert!(child.lock().await.try_wait().unwrap().is_some());
+        // Poll observable teardown rather than assuming taskkill + process scheduling
+        // always completes within a fixed 200ms on a parallel test runner.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if reader.upgrade().is_none() && child.lock().await.try_wait().unwrap().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("last-client drop must reap the child and reader");
     }
 
     #[test]

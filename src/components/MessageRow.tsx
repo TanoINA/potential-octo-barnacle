@@ -26,6 +26,9 @@ interface MessageRowProps {
   onRetry?: () => void;
   onEditAndResend?: (newContent: string) => void;
   onRollback?: () => void;
+  onRetryMessage?: (messageId: string) => void;
+  onEditMessage?: (messageId: string, newContent: string) => void;
+  onRollbackMessage?: (messageId: string) => void;
   isStreaming?: boolean;
 }
 
@@ -36,6 +39,9 @@ export const MessageRow = memo(function MessageRow({
   onRetry,
   onEditAndResend,
   onRollback,
+  onRetryMessage,
+  onEditMessage,
+  onRollbackMessage,
   isStreaming = false,
 }: MessageRowProps) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
@@ -66,10 +72,11 @@ export const MessageRow = memo(function MessageRow({
 
   const handleSaveEdit = useCallback(() => {
     const trimmed = (editText || '').trim();
-    if (!trimmed || isStreaming || !onEditAndResend) return;
+    if (!trimmed || isStreaming || (!onEditAndResend && !onEditMessage)) return;
     setIsEditing(false);
-    onEditAndResend(trimmed);
-  }, [editText, isStreaming, onEditAndResend]);
+    if (onEditMessage) onEditMessage(message.id, trimmed);
+    else onEditAndResend?.(trimmed);
+  }, [editText, isStreaming, message.id, onEditAndResend, onEditMessage]);
 
   const handleCancelEdit = useCallback(() => {
     setIsEditing(false);
@@ -212,7 +219,8 @@ export const MessageRow = memo(function MessageRow({
       {!isUser && message.councilTurn && (
         <CouncilView
           councilTurn={message.councilTurn}
-          onSelectWinner={(winner) => onSelectCouncilWinner?.(message.id, winner)}
+          isStreaming={Boolean(message.isStreaming)}
+          onSelectWinner={onSelectCouncilWinner ? (winner) => onSelectCouncilWinner(message.id, winner) : undefined}
         />
       )}
 
@@ -312,7 +320,7 @@ export const MessageRow = memo(function MessageRow({
           )}
 
           {/* Edit (User only) */}
-          {isUser && onEditAndResend && (
+          {isUser && (onEditAndResend || onEditMessage) && (
             <button
               type="button"
               onClick={() => {
@@ -329,10 +337,13 @@ export const MessageRow = memo(function MessageRow({
           )}
 
           {/* Retry / Regenerate */}
-          {onRetry && (
+          {(onRetry || onRetryMessage) && (
             <button
               type="button"
-              onClick={onRetry}
+              onClick={() => {
+                if (onRetryMessage) onRetryMessage(message.id);
+                else onRetry?.();
+              }}
               title={isUser ? 'Retry prompt from here' : 'Regenerate this response'}
               aria-label={isUser ? 'Retry prompt' : 'Regenerate response'}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[#21262d] hover:text-[#58a6ff] transition-colors"
@@ -343,10 +354,13 @@ export const MessageRow = memo(function MessageRow({
           )}
 
           {/* Rollback to here */}
-          {onRollback && (
+          {(onRollback || onRollbackMessage) && (
             <button
               type="button"
-              onClick={onRollback}
+              onClick={() => {
+                if (onRollbackMessage) onRollbackMessage(message.id);
+                else onRollback?.();
+              }}
               title="Rollback conversation to this turn"
               aria-label="Rollback to this message"
               className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[#21262d] hover:text-[#f85149] transition-colors"

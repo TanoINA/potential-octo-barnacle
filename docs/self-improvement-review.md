@@ -1,60 +1,131 @@
 # Self-Improvement Review
 
-## Perilaku
+## Reference and scope
 
-Fitur ini opt-in. Buka **Settings → Agent defaults → Agent Intelligence / Reflection**, lalu aktifkan **Enable automatic self-improvement**. Pengaturan `self_improvement_enabled` bernilai `false` untuk konfigurasi baru maupun konfigurasi lama yang belum memiliki field ini.
+The reference implementation is the locally installed Hermes Agent at commit `bf0203a794a`, primarily `agent/background_review.py`, `agent/turn_finalizer.py`, and `agent/agent_init.py`. Aether now uses a tool-driven post-turn skill-review agent, not the former one-shot JSON extractor.
 
-Setelah run utama berhasil dan menggunakan beberapa turn provider atau tools, evaluator terpisah meninjau snapshot turn tersebut. Run gagal, dibatalkan, mencapai batas turn, dan jawaban sederhana tidak memicu review otomatis. Tanpa workspace aktif, review otomatis dilewati; perintah manual menampilkan error yang jelas.
+This ports the skill-review behavior into Aether's Rust/Tauri architecture. It is not a claim of literal parity with every Hermes subsystem. The separate memory-review/USER.md loop, curator, profile router, managed-local idle queue, routed-model context digest, token-usage accounting and focus arguments to `/refine` are not implemented by this change. See the parity table below.
 
-`/review` dan `/reflect` meninjau turn percakapan terakhir yang sudah selesai, termasuk saat mode otomatis nonaktif. Keduanya tidak menambahkan pesan user atau memulai ulang run utama. Provider dan model mengikuti override sesi yang sedang aktif. Satu review per sesi dan jumlah review bersamaan dibatasi.
+## Runtime behavior
 
-## Arsitektur
+- Automatic skill review defaults to enabled for fresh or missing-field settings. An existing explicit `self_improvement_enabled: false` is preserved.
+- `reviewConfig.creationNudgeInterval` defaults to **10 provider iterations**, accumulated across foreground turns in the same session—not ten tool calls or ten successful runs. Zero disables automatic cadence.
+- Iterations count once per outer provider loop, not per retry or individual tool. Attempted skill mutations reset cadence. Reaching the interval consumes/resets the counter before checking eligibility.
+- Eligible reviews start after delivery of a finished, uncancelled, nonempty final response. Runs that already produced foreground skill changes report those changes without launching another review of the same run.
+- `/review`, `/reflect`, and bare `/refine` explicitly review the full completed conversation even when automatic review is disabled. They do not insert a user message or restart the original task. A workspace is not required.
+- Review runs are independent from chat history and bounded to **16 iterations and 120 seconds**. They cannot recursively trigger reviews. Partial applied/staged changes are reported even if a later request fails or the review is cancelled.
+- New foreground work cancels a same-session review. Identity-scoped registry cleanup prevents an old review from removing a successor. There is one review per session, at most four concurrently.
 
-- `AgentSettings` dan `AgentRunRequest`: opt-in yang eksplisit pada kontrak Rust/TypeScript.
-- `agent/reflection.rs`: completion tambahan tanpa tools, prompt khusus, parsing `NO_OP` atau JSON terstruktur, serta penulisan lokal tervalidasi.
-- `agent/runner.rs`: pemicu setelah run sukses, snapshot turn, koordinasi background, dan event.
-- `agent/storage.rs`: hasil review disimpan pada pesan asal; snapshot frontend yang lebih lama tidak boleh menghapus hasil review native.
-- `agent/skills.rs`: `.aether/skills` workspace ikut ditemukan dan diprioritaskan dalam katalog skill.
-- `useAgent.ts`: menerima event terpisah dari stream utama dan mencocokkan `session_id` serta `run_id`, termasuk sesudah `done` atau ketika turn berikutnya sedang berjalan.
-- `SelfImprovementBadge.tsx`: label inline di bawah jawaban assistant; klik membuka isi mentah `SKILL.md` dalam inspector yang mendukung keyboard.
+## What the reviewer learns
 
-## Penyimpanan dan batas keamanan
+The reviewer receives the full available conversation snapshot and prioritizes durable user corrections and preferences:
 
-Skill ditulis ke `<workspace>/.aether/skills/<name>/SKILL.md`. Tidak ada fallback diam-diam ke direktori global. Nama skill harus berupa slug yang aman; traversal, device path Windows, symlink/reparse point, dan target di luar workspace ditolak. File menggunakan YAML frontmatter agar dapat dibaca skill loader. Review tidak mengubah `AGENTS.md` secara otomatis; pelajaran disimpan sebagai skill lokal agar instruksi proyek yang sudah ada tidak ditimpa.
+1. Inspect and patch a skill loaded during the original task.
+2. Update an existing relevant class-level skill.
+3. Add or update topical `references/`, reusable `templates/`, or `scripts/` support files.
+4. Create a new class-level skill only when no existing skill fits.
 
-Review memakai request tambahan ke provider aktif, jadi ada biaya dan pengiriman konteks turn sesuai provider yang dipilih. Evaluator tidak mengeksekusi tools atau perintah dari transkrip. Hasil provider tetap dianggap input tak tepercaya dan divalidasi sebelum ditulis.
+Capture procedures, verified techniques and task-governing preferences—not incident logs, temporary failures, credentials, unresolved attempts presented as successes, or per-session skill proliferation. `Nothing to save` remains valid.
 
-Event `agent:self-improvement` menggunakan payload berikut:
+Same-provider automatic reviews inherit the parent's system/history prefix, tool schemas and completion options. Active provider credentials are redacted, and provider body overrides cannot replace review messages or tools. Explicit reviews reconstruct history; routed reviews use the selected provider with their own options. No provider-cache hit is claimed or measured.
+
+## Restricted tools and mutations
+
+Advertised schemas are not authorization. Dispatch permits only `skills_list`, `skill_view`/`use_skill`, restricted `read_file`/`search_files`, and `skill_manage`. Shell, network, generic writes, delegation and legacy learning shortcuts cannot execute in a review.
+
+`skill_manage` supports:
+
+- `create`: name, description, content.
+- `patch`: name, old_string, new_string; old text must match exactly once.
+- `edit`: name, content containing the complete file.
+- `write_file` / `remove_file`: name and relative support-file path; content for writes.
+
+Before mutating an existing file, the reviewer must freshly read that exact file during the review. Transcript quotations and search snippets do not authorize writes. Reads retain raw bytes, including CRLF, rather than normalized activation text. Successful mutations consume read authorization. Existing metadata/frontmatter is preserved byte-for-byte. Whole-skill deletion is denied in background review.
+
+Manual and global discovered skills can be updated, not only reflection-generated skills. A `.locked` marker in the skill directory or `metadata.aether.locked: true` prevents mutation. Filename validation rejects traversal, ADS/device names, symlink/reparse paths and oversized or unsafe content. Exact raw-content CAS is rechecked after staging immediately before commit. In-process direct, approval and legacy writers share a mutation mutex. This is not handle-relative protection from hostile concurrent OS filesystem swaps.
+
+## Skill destinations and discovery
+
+New skills default to `~/.aether-agent/skills/`. `reviewConfig.createDir` can select an absolute path, `~/...`, or a path relative to `~/.aether-agent`.
+
+Effective discovery precedence is workspace `.aether/skills`, configured skill roots, selected creation root, then default global roots. The custom destination participates in normal catalogs, activation, delegated catalog paths and UI listing without a second configuration entry. Existing skills are updated where discovered.
+
+The parent foreground agent uses the same guarded store for maintenance. Legacy `learn_skill` creation is routed through it; overwrite requests must use fresh-read patch/edit instead. Subagents report proposed maintenance to the parent rather than bypassing approval through legacy writes.
+
+## Approval and durable proposals
+
+`reviewConfig.writeApproval` defaults to false, matching Hermes' default direct-write policy. When enabled, mutations stage durable proposals under `~/.aether-agent/pending/skills/` and do not modify source files or expose staged creations as installed skills.
+
+The review inspector lists changes, displays inert unified diffs, and supports Approve/Reject. Pending records survive restarts. IDs and operations are session-scoped; the native sealed staging snapshot—not client paths—is authority for approval. Approval checks locks and original bytes again; stale source changes leave the proposal pending. Duplicate UI decisions are guarded.
+
+Foreground proposals are associated with their origin run as well. Approval/rejection updates native session history and emits the complete authoritative review event to refresh live state and caches. Native stale-save merging, event merging and restored-cache guards prevent a late staged event from reverting a resolved proposal.
+
+A skill write, pending cleanup and session-history update are not a single cross-file transaction. Partial-success failures are surfaced explicitly. If the origin assistant has not yet been persisted, decision APIs ask the user to wait and retry.
+
+## Settings and events
+
+Settings → Agent defaults → Agent Intelligence / Reflection exposes automatic enablement, iteration interval, approval, creation destination and auxiliary provider selection.
+
+```typescript
+interface ReviewConfig {
+  creationNudgeInterval?: number; // default 10; 0 disables automatic review
+  writeApproval?: boolean;       // default false
+  createDir?: string;
+  auxiliaryProviderId?: string;  // absent: current session provider/model
+}
+```
+
+`agent:self-improvement` retains legacy fields and adds a list of changes:
 
 ```typescript
 {
   run_id: string;
   session_id: string;
-  action: 'skill_created' | 'skill_updated' | 'no_action';
+  action: 'skill_created' | 'skill_updated' | 'skill_staged' | 'no_action';
   skill_name?: string;
   summary?: string;
-  workspace_cwd?: string; // Workspace asal, bukan workspace yang baru dipilih.
+  workspace_cwd?: string;
+  changes?: Array<{
+    action: 'skill_created' | 'skill_updated' | 'skill_staged' | 'no_action';
+    skill_name: string;
+    file_path?: string;
+    skill_path?: string;
+    pending_id?: string;
+    summary?: string;
+  }>;
 }
 ```
 
-`agent:self-improvement-error` melaporkan kegagalan review tanpa mengubah keberhasilan run utama. Inspector hanya membaca skill yang terhubung dengan review tersimpan di sesi itu; nama skill bukan jalur file arbitrer.
+Inspectors authorize reads through stored run/session/change associations, not arbitrary client-supplied paths. Legacy badges and workspace-generated skill reads remain supported. The former JSON extractor is retained only for regression tests, not used by the live runner.
 
-## Struktur dan batas implementasi
+## Parity boundaries
 
-`reflection.rs` menampung evaluator dan penulisan skill secara terpisah. `runner.rs`, `storage.rs`, `useAgent.ts`, dan `ChatCanvas.tsx` sudah berupa modul besar sebelum fitur ini; perubahan lifecycle sengaja tetap berada pada pemilik state yang ada, bukan memindahkan arsitektur di tengah perubahan lokal lain. File tes reflection dipisah dari implementasi; ukurannya berasal dari fixture HTTP nyata dan matriks keamanan filesystem.
+| Hermes skill-review behavior | Aether status |
+|---|---|
+| Default enabled, interval 10 provider iterations across turns | Implemented; existing explicit opt-out retained |
+| Full-conversation, detached, tool-driven reviewer; 16 iterations | Implemented, with an additional 120-second deadline |
+| Update-first learning, user corrections, support files, multiple changes | Implemented |
+| Fresh-read mutation guard, lock, global/custom destination, approval | Implemented with Aether-native paths and stricter immutable frontmatter |
+| Same-provider parent tool/options/history snapshot | Implemented; credentials redacted; no measured cache guarantee |
+| Auxiliary provider | Implemented via an existing configured provider |
+| Foreground priority / identity-safe cancellation | Implemented; no managed-local idle/requeue service |
+| `/refine focus text` | Not implemented; only the bare alias is a review command |
+| Memory/USER.md review, curator, profile lifecycle | Outside this skill-review port |
+| Routed-model digest, aggregate input-token budget, usage attribution | Not implemented; full snapshot may exceed a selected model's context |
+| Arbitrary skill metadata rewrite, whole-skill delete | Deliberately more restrictive |
 
-Penulisan menggunakan resolver, inspeksi reparse, lock proses, snapshot compare, serta atomic rename. Ini mencegah escape pada path/link yang diperiksa dan kehilangan update antar-review dalam satu proses, tetapi bukan sandbox terhadap proses lokal berprivilege setara yang sengaja mengganti parent tepat di sela syscall. Hardening handle-relative lintas platform memerlukan pekerjaan tersendiri.
+## Verification
 
-## Verifikasi
+Tests use deterministic local HTTP providers and disposable filesystem fixtures, not paid credentials. Coverage includes provider tool cycles, exact prefix inheritance, denial of bypasses, cancellation, timeout/budget, partial results, raw-file reads/patches/edits, support files, locks, CAS conflicts, shared writer serialization, durable proposals, foreign session denial, native attachment, late-event ordering, cache restoration, command routing, settings and inspector decisions.
 
-Tes Rust mencakup parsing, `NO_OP`, pemicu opt-in, batas path, penulisan/update, provider mock HTTP lokal, snapshot turn, dan persistence. Tes Vitest mencakup badge/inspector, settings, perintah slash, serta hasil background yang datang setelah run selesai atau ketika run baru dimulai.
+Required final commands:
 
 ```sh
+npm test -- --fileParallelism=false
 cargo test --manifest-path src-tauri/Cargo.toml
-npm test
 npm run build
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
-Completion provider diuji memakai server HTTP lokal deterministik, bukan akun atau API berbayar. Hasil pengujian akhir dicatat terpisah pada laporan implementasi.
+No literal power-loss, live paid-provider, cache-hit, packaged desktop or long-running managed-local scheduling test is implied by these unit/integration suites.

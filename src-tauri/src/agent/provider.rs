@@ -366,7 +366,7 @@ where
                 "/v1/chat/completions",
                 "/chat/completions",
             ),
-            openai_body(provider, messages, tools, options),
+            openai_body(provider, messages, tools, options)?,
         ),
     };
     let client = reqwest::Client::builder()
@@ -629,12 +629,12 @@ fn openai_body(
     messages: &serde_json::Value,
     tools: &serde_json::Value,
     options: &CompletionOptions,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let mut body = serde_json::json!({
         "model": provider.model, "messages": messages, "stream": options.stream,
         "temperature": options.temperature,
     });
-    body["messages"] = normalize_openai_messages(messages, provider.kind);
+    body["messages"] = normalize_openai_messages(messages, provider.kind)?;
     let official = is_official_openai(provider);
     let mut token_key = "max_tokens";
     if official {
@@ -688,7 +688,7 @@ fn openai_body(
         .into();
     }
     merge_extra_body(&mut body, provider);
-    body
+    Ok(body)
 }
 
 fn is_official_openai(provider: &ProviderConfig) -> bool {
@@ -717,69 +717,139 @@ fn validate_chat_model(provider: &ProviderConfig) -> Result<(), String> {
 fn normalize_openai_messages(
     messages: &serde_json::Value,
     kind: ProviderKind,
-) -> serde_json::Value {
-    let Some(entries) = messages.as_array() else {
-        return messages.clone();
-    };
+) -> Result<serde_json::Value, String> {
+    let entries = messages.as_array().ok_or("Messages must be an array")?;
     let mut output = Vec::new();
+    let mut pending_tool_images = Vec::new();
     for entry in entries {
+        if entry.get("role").and_then(|v| v.as_str()) != Some("tool")
+            && !pending_tool_images.is_empty()
+        {
+            output.push(serde_json::json!({"role":"user","content":std::mem::take(&mut pending_tool_images)}));
+        }
         let mut message = entry.clone();
         if kind != ProviderKind::Deepseek {
             if let Some(object) = message.as_object_mut() {
                 object.remove("reasoning_content");
             }
         }
-        let Some(blocks) = entry.get("content").and_then(|value| value.as_array()) else {
+        let content = entry.get("content").unwrap_or(&serde_json::Value::Null);
+        let Some(blocks) = content.as_array() else {
+            if !content.is_string() && !content.is_null() {
+                return Err("Message content must be text or an array of supported blocks".into());
+            }
             output.push(message);
             continue;
         };
+        let role = entry.get("role").and_then(|v| v.as_str()).unwrap_or("user");
         let native = blocks.iter().any(|block| {
             matches!(
-                block.get("type").and_then(|value| value.as_str()),
-                Some("thinking" | "redacted_thinking" | "tool_use" | "tool_result")
+                block.get("type").and_then(|v| v.as_str()),
+                Some("image" | "thinking" | "redacted_thinking" | "tool_use" | "tool_result")
             )
         });
-        if !native {
-            output.push(message);
-            continue;
-        }
-        let mut text = String::new();
+        let mut parts = Vec::new();
+        let mut result_images = Vec::new();
         let mut calls = message
             .get("tool_calls")
-            .and_then(|value| value.as_array())
+            .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
         let mut results = Vec::new();
         for block in blocks {
-            match block.get("type").and_then(|value| value.as_str()) {
-                Some("text") => text.push_str(block.get("text").and_then(|value| value.as_str()).unwrap_or_default()),
-                Some("tool_use") => {
-                    let id = block.get("id").and_then(|value| value.as_str()).unwrap_or_default();
-                    if !calls.iter().any(|call| call.get("id").and_then(|value| value.as_str()) == Some(id)) {
+            match block.get("type").and_then(|v| v.as_str()) {
+                Some("text" | "image" | "image_url") => parts.push(openai_content_part(block)?),
+                Some("thinking" | "redacted_thinking") if role == "assistant" => {}
+                Some("tool_use") if role == "assistant" => {
+                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                    if !calls
+                        .iter()
+                        .any(|call| call.get("id").and_then(|v| v.as_str()) == Some(id))
+                    {
                         calls.push(serde_json::json!({"id":id,"type":"function","function":{
                             "name":block.get("name").cloned().unwrap_or_default(),
                             "arguments":block.get("input").cloned().unwrap_or_else(|| serde_json::json!({})).to_string()
                         }}));
                     }
                 }
-                Some("tool_result") => results.push(serde_json::json!({
-                    "role":"tool", "tool_call_id":block.get("tool_use_id").cloned().unwrap_or_default(),
-                    "content":text_from_value(block.get("content").unwrap_or(&serde_json::Value::Null))
-                })),
-                _ => {}
+                Some("tool_result") if role == "user" => {
+                    let nested = block.get("content").unwrap_or(&serde_json::Value::Null);
+                    let nested = content_to_blocks(nested, false)?;
+                    let converted: Vec<_> = nested
+                        .iter()
+                        .map(openai_content_part)
+                        .collect::<Result<_, _>>()?;
+                    results.push(serde_json::json!({
+                        "role":"tool", "tool_call_id":block.get("tool_use_id").cloned().unwrap_or_default(),
+                        "content":text_from_value(&serde_json::Value::Array(converted.clone()))
+                    }));
+                    result_images.extend(
+                        converted
+                            .into_iter()
+                            .filter(|part| part["type"] == "image_url"),
+                    );
+                }
+                _ => return Err("Unsupported or invalid message content block".into()),
             }
         }
-        message["content"] = text.clone().into();
+        let has_images = parts.iter().any(|part| part["type"] == "image_url");
+        if role == "tool" && has_images {
+            message["content"] = text_from_value(&serde_json::Value::Array(parts.clone())).into();
+            output.push(message);
+            let images: Vec<_> = parts
+                .into_iter()
+                .filter(|part| part["type"] == "image_url")
+                .collect();
+            pending_tool_images.extend(images);
+            continue;
+        }
+        if !native {
+            output.push(message);
+            continue;
+        }
+        // OpenAI tool messages accept text only. Preserve tool-result images in a
+        // following user message, after ALL results, never as serialized fake text.
+        result_images.extend(parts);
+        let parts = result_images;
+        let has_images = parts.iter().any(|part| part["type"] == "image_url");
+        let text = text_from_value(&serde_json::Value::Array(parts.clone()));
+        message["content"] = if has_images {
+            parts.into()
+        } else {
+            text.clone().into()
+        };
         if !calls.is_empty() {
             message["tool_calls"] = calls.into();
         }
-        // Results must precede any new user text in a mixed native block list.
-        output.extend(results.iter().cloned());
-        if results.is_empty() || !text.is_empty() || message.get("tool_calls").is_some() {
+        let has_results = !results.is_empty();
+        output.extend(results);
+        if !has_results || !text.is_empty() || has_images || message.get("tool_calls").is_some() {
             output.push(message);
         }
     }
-    output.into()
+    if !pending_tool_images.is_empty() {
+        output.push(serde_json::json!({"role":"user","content":pending_tool_images}));
+    }
+    Ok(output.into())
+}
+
+fn openai_content_part(block: &serde_json::Value) -> Result<serde_json::Value, String> {
+    match block.get("type").and_then(|v| v.as_str()) {
+        Some("text") if block.get("text").is_some_and(|v| v.is_string()) => Ok(block.clone()),
+        Some("image") => {
+            let url = image_source_url(block.get("source").ok_or("Image source is required")?)?;
+            Ok(serde_json::json!({"type":"image_url","image_url":{"url":url}}))
+        }
+        Some("image_url") => {
+            let url = block
+                .pointer("/image_url/url")
+                .and_then(|v| v.as_str())
+                .ok_or("Image URL is required")?;
+            image_source_from_url(url)?;
+            Ok(block.clone())
+        }
+        _ => Err("Unsupported or invalid message content block".into()),
+    }
 }
 
 fn anthropic_body(
@@ -1031,14 +1101,19 @@ fn convert_anthropic_messages(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         if role == "system" {
-            if let Some(text) = content.as_str() {
-                system.push(text.to_string());
+            let blocks = content_to_blocks(&content, false)?;
+            if blocks.iter().any(|block| block["type"] != "text") {
+                return Err("Anthropic system content supports text only".into());
+            }
+            let text = text_from_value(&serde_json::Value::Array(blocks));
+            if !text.is_empty() {
+                system.push(text);
             }
             continue;
         }
         let (target_role, blocks) = match role {
             "assistant" => {
-                let mut blocks = content_to_blocks(&content);
+                let mut blocks = content_to_blocks(&content, true)?;
                 if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
                     for call in calls {
                         let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
@@ -1067,10 +1142,10 @@ fn convert_anthropic_messages(
                 "user",
                 vec![serde_json::json!({
                     "type":"tool_result", "tool_use_id":message.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("call"),
-                    "content":text_from_value(&content),
+                    "content":anthropic_tool_content(&content)?,
                 })],
             ),
-            _ => ("user", content_to_blocks(&content)),
+            _ => ("user", content_to_blocks(&content, false)?),
         };
         if let Some(last) = output.last_mut() {
             if last.get("role").and_then(|v| v.as_str()) == Some(target_role) {
@@ -1085,17 +1160,151 @@ fn convert_anthropic_messages(
     Ok((system.join("\n\n"), output))
 }
 
-fn content_to_blocks(content: &serde_json::Value) -> Vec<serde_json::Value> {
-    match content {
-        serde_json::Value::Array(items) => items.clone(),
-        value => {
-            let text = text_from_value(value);
-            if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![serde_json::json!({"type":"text","text":text})]
-            }
+// Adapters validate image envelopes even when callers bypass local attachment validation.
+// Never include the URL/base64 payload in errors (it can contain private image data).
+fn validate_image_data(media_type: &str, data: &str) -> Result<(), String> {
+    if !matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
+        return Err("Unsupported image MIME type; expected PNG, JPEG, WebP or GIF".into());
+    }
+    let bytes = data.as_bytes();
+    let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
+    let digit = |byte: u8| match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    if bytes.is_empty()
+        || !bytes.len().is_multiple_of(4)
+        || padding > 2
+        || bytes[..bytes.len() - padding]
+            .iter()
+            .any(|&byte| digit(byte).is_none())
+        || (padding > 0
+            && digit(bytes[bytes.len() - padding - 1])
+                .is_none_or(|last| last & if padding == 2 { 15 } else { 3 } != 0))
+    {
+        return Err("Malformed base64 image data".into());
+    }
+    Ok(())
+}
+
+fn validate_image_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid image URL")?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Image URLs must use HTTPS without credentials".into());
+    }
+    Ok(())
+}
+
+fn image_source_from_url(url: &str) -> Result<serde_json::Value, String> {
+    if let Some(data_url) = url.strip_prefix("data:") {
+        let (header, data) = data_url.split_once(',').ok_or("Malformed image data URL")?;
+        let mime = header
+            .strip_suffix(";base64")
+            .ok_or("Image data URL must use base64")?;
+        validate_image_data(mime, data)?;
+        Ok(serde_json::json!({"type":"base64","media_type":mime,"data":data}))
+    } else {
+        validate_image_url(url)?;
+        Ok(serde_json::json!({"type":"url","url":url}))
+    }
+}
+
+fn image_source_url(source: &serde_json::Value) -> Result<String, String> {
+    match source.get("type").and_then(|v| v.as_str()) {
+        Some("base64") => {
+            let mime = source
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .ok_or("Image MIME type is required")?;
+            let data = source
+                .get("data")
+                .and_then(|v| v.as_str())
+                .ok_or("Image base64 data is required")?;
+            validate_image_data(mime, data)?;
+            Ok(format!("data:{mime};base64,{data}"))
         }
+        Some("url") => {
+            let url = source
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or("Image URL is required")?;
+            validate_image_url(url)?;
+            Ok(url.to_string())
+        }
+        _ => Err("Unsupported image source type".into()),
+    }
+}
+
+fn anthropic_tool_content(content: &serde_json::Value) -> Result<serde_json::Value, String> {
+    if content.is_string() || content.is_null() {
+        return Ok(content.as_str().unwrap_or_default().into());
+    }
+    Ok(content_to_blocks(content, false)?.into())
+}
+
+fn content_to_blocks(
+    content: &serde_json::Value,
+    assistant: bool,
+) -> Result<Vec<serde_json::Value>, String> {
+    match content {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::String(text) => Ok(if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![serde_json::json!({"type":"text","text":text})]
+        }),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|block| {
+                match block.get("type").and_then(|v| v.as_str()) {
+                    Some("text") if block.get("text").is_some_and(|v| v.is_string()) => {
+                        Ok(block.clone())
+                    }
+                    Some("image_url") => {
+                        let url = block
+                            .pointer("/image_url/url")
+                            .and_then(|v| v.as_str())
+                            .ok_or("Image URL is required")?;
+                        Ok(serde_json::json!({"type":"image","source":image_source_from_url(url)?}))
+                    }
+                    Some("image") => {
+                        image_source_url(block.get("source").ok_or("Image source is required")?)?;
+                        Ok(block.clone())
+                    }
+                    Some("thinking" | "redacted_thinking" | "tool_use") if assistant => {
+                        Ok(block.clone())
+                    }
+                    Some("tool_result") if !assistant => {
+                        let mut result = block.clone();
+                        let nested = block.get("content").unwrap_or(&serde_json::Value::Null);
+                        // Nested tool results are not valid tool-result content.
+                        let converted = anthropic_tool_content(nested)?;
+                        if converted.as_array().is_some_and(|blocks| {
+                            blocks.iter().any(|b| {
+                                b.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                            })
+                        }) {
+                            return Err("Nested tool_result content is unsupported".into());
+                        }
+                        result["content"] = converted;
+                        Ok(result)
+                    }
+                    _ => Err("Unsupported or invalid message content block".into()),
+                }
+            })
+            .collect(),
+        _ => Err("Message content must be text or an array of supported blocks".into()),
     }
 }
 
@@ -1874,7 +2083,8 @@ mod tests {
                 max_tokens: Some(1000),
                 stream: true,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(body["thinking"]["type"], "enabled");
         // Internal ExtraHigh is serialized as the compatible API spelling.
         assert_eq!(body["reasoning_effort"], "xhigh");

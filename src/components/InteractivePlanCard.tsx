@@ -1,26 +1,42 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Circle, Clock, ListTodo } from 'lucide-react';
 
 interface PlanItem {
   id: string;
   status: 'done' | 'in_progress' | 'pending';
   text: string;
+  sourceStatus: PlanItem['status'];
 }
 
 export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) => {
-  const lines = rawPlan.split('\n').filter((l) => l.trim().length > 0);
-
-  const initialItems: PlanItem[] = lines.map((line, idx) => {
-    const match = line.match(/^\s*(?:[-*]|\d+\.)\s*\[([ xX\-~])\]\s*(.*)$/);
-    if (match) {
-      const mark = match[1].trim();
-      const status = mark.toLowerCase() === 'x' ? 'done' : mark === '-' || mark === '~' ? 'in_progress' : 'pending';
-      return { id: `item-${idx}`, status, text: match[2].trim() };
-    }
-    return { id: `item-${idx}`, status: 'pending', text: line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim() };
-  });
+  const initialItems = useMemo(() => {
+    const occurrences = new Map<string, number>();
+    return rawPlan.split('\n').filter((line) => line.trim().length > 0).map((line): PlanItem => {
+      const match = line.match(/^\s*(?:[-*]|\d+\.)\s*\[([ xX\-~])\]\s*(.*)$/);
+      const mark = match?.[1].trim().toLowerCase();
+      const status = mark === 'x' ? 'done' : mark === '-' || mark === '~' ? 'in_progress' : 'pending';
+      const text = match ? match[2].trim() : line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim();
+      const occurrence = occurrences.get(text) ?? 0;
+      occurrences.set(text, occurrence + 1);
+      return { id: text + '#' + occurrence, status, sourceStatus: status, text };
+    });
+  }, [rawPlan]);
 
   const [items, setItems] = useState<PlanItem[]>(initialItems);
+
+  useEffect(() => {
+    setItems((previous) => {
+      const previousById = new Map(previous.map((item) => [item.id, item]));
+      const next = initialItems.map((incoming) => {
+        const existing = previousById.get(incoming.id);
+        // Keep local toggles only while the source status remains unchanged.
+        return existing?.sourceStatus === incoming.sourceStatus ? existing : incoming;
+      });
+      return next.length === previous.length && next.every((item, index) => item === previous[index])
+        ? previous
+        : next;
+    });
+  }, [initialItems]);
 
   const toggleItem = (id: string) => {
     setItems((prev) =>
@@ -37,7 +53,7 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
 
   return (
     <div
-      className="my-3 overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22]/90 shadow-md backdrop-blur-sm"
+      className="my-3 overflow-hidden rounded-lg border border-[#30363d] bg-[#161b22] shadow-sm"
       data-testid="interactive-plan-card"
     >
       <div className="border-b border-[#30363d]/60 bg-[#161b22] px-3.5 py-2.5">
@@ -52,9 +68,16 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
           <span className="font-mono text-[11px] font-medium text-[#58a6ff]">{progressPercent}%</span>
         </div>
         {/* Progress bar */}
-        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#21262d]">
+        <div
+          role="progressbar"
+          aria-label="Plan progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressPercent}
+          className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#21262d]"
+        >
           <div
-            className="h-full rounded-full bg-gradient-to-r from-[#2ea043] to-[#58a6ff] transition-all duration-300"
+            className="h-full rounded-full bg-[#58a6ff] transition-[width] duration-[160ms] ease-out"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
@@ -62,20 +85,24 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
 
       <div className="divide-y divide-[#21262d]/50 p-1.5 bg-[#0d1117]">
         {items.map((item) => (
-          <div
+          <button
             key={item.id}
+            type="button"
+            role="checkbox"
+            aria-checked={item.status === 'done'}
+            aria-label={item.text}
             onClick={() => toggleItem(item.id)}
-            className="flex items-start gap-2.5 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-[#161b22]/60 rounded-lg transition-colors group select-none"
+            className="flex w-full items-start gap-2.5 px-2.5 py-1.5 text-left text-xs cursor-pointer hover:bg-[#161b22]/60 rounded-lg transition-colors group select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58a6ff]"
           >
-            <div className="mt-0.5 shrink-0">
+            <span className="mt-0.5 shrink-0" aria-hidden="true">
               {item.status === 'done' ? (
                 <CheckCircle2 size={13} className="text-[#3fb950]" />
               ) : item.status === 'in_progress' ? (
-                <Clock size={13} className="text-[#f0883e] animate-pulse" />
+                <Clock size={13} className="text-[#f0883e]" />
               ) : (
                 <Circle size={13} className="text-[#6e7681] group-hover:text-[#c9d1d9]" />
               )}
-            </div>
+            </span>
             <span
               className={`leading-relaxed text-[11px] font-sans ${
                 item.status === 'done'
@@ -87,7 +114,7 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
             >
               {item.text}
             </span>
-          </div>
+          </button>
         ))}
       </div>
     </div>

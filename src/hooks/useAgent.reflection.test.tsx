@@ -1,3 +1,4 @@
+import { pagingBackend } from '../test/sessionPaging';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentSettings, SelfImprovementEvent, SessionData } from '../types/agent';
@@ -51,15 +52,41 @@ function deferred<T>() {
 beforeEach(() => {
   mocks.listeners.clear();
   mocks.invoke.mockReset();
-  mocks.invoke.mockImplementation(async (command: string) => {
+  mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
     if (command === 'get_settings') return structuredClone(settings);
     if (command === 'list_sessions') return [initial.session];
     if (command === 'load_session') return structuredClone(initial);
     return undefined;
-  });
+  }));
 });
 
 describe('useAgent reflection', () => {
+  it.each(['/refine explain', '/review explain', '/reflect explain', '/refinement'])('does not treat %s as a bare review alias', async (command) => {
+    const hook = await mounted();
+    await act(async () => { await hook.result.current.sendMessage(command); });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'review_session')).toBe(false);
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'send_message')).toBe(true);
+    expect(hook.result.current.messages.find((message) => message.role === 'user' && message.content === command)).toBeTruthy();
+  });
+
+  it('passes review configuration unchanged to runs while manual review only sends session and provider without a workspace', async () => {
+    const restored = structuredClone(initial);
+    delete restored.session.workspaceCwd;
+    const reviewConfig = { creationNudgeInterval: 0, writeApproval: true, createDir: 'D:/shared', auxiliaryProviderId: 'reviewer' };
+    const backend = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(pagingBackend((command: string, args: unknown) => {
+      if (command === 'get_settings') return Promise.resolve({ ...settings, reviewConfig });
+      if (command === 'load_session') return Promise.resolve(restored);
+      return backend(command, args);
+    }));
+    const hook = await mounted();
+    await act(async () => { expect(await hook.result.current.reviewSession()).toBe(true); });
+    expect(mocks.invoke).toHaveBeenCalledWith('review_session', { sessionId: 'sess-1', provider: { ...provider, model: 'session-model' } });
+    await act(async () => { await hook.result.current.sendMessage('Continue'); });
+    const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
+    expect(request.reviewConfig).toEqual(reviewConfig);
+    expect(request.self_improvement_enabled).toBe(false);
+  });
   it('checkpoints buffered streaming output before done even when animation frames are suspended', async () => {
     const hook = await mounted();
     await act(async () => { await hook.result.current.sendMessage('Long stream'); });
@@ -69,16 +96,22 @@ describe('useAgent reflection', () => {
     try {
       act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'Recover this partial answer' } }));
       await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
-      const checkpoints = mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session');
+      const checkpoints = mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session_delta');
       expect(checkpoints).toHaveLength(1);
-      const snapshot = checkpoints[0][1].data as SessionData;
-      expect(snapshot.session.id).toBe('sess-1');
+      const snapshot = checkpoints[0][1].request;
+      expect(checkpoints[0][1].sessionId).toBe('sess-1');
+      expect(snapshot.messages).toHaveLength(1);
+      expect(snapshot.messages[0].runId).toBe(request.runId);
+      expect(snapshot.artifacts).toEqual([]);
+      expect(snapshot).not.toHaveProperty('historyWindow');
+      expect(snapshot).not.toHaveProperty('session');
+      expect(snapshot.messages.some((message: { id: string }) => initial.messages.some((old) => old.id === message.id))).toBe(false);
       expect(snapshot.messages.at(-1)?.content).toBe('Recover this partial answer');
       expect(snapshot.messages.at(-1)?.segments?.at(-1)?.text).toBe('Recover this partial answer');
       expect(snapshot.messages.at(-1)?.isStreaming).toBe(true);
       expect(hook.result.current.isStreaming).toBe(true);
       await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session_delta')).toHaveLength(1);
     } finally {
       hook.unmount();
       vi.useRealTimers();
@@ -91,7 +124,7 @@ describe('useAgent reflection', () => {
     const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
     const pending = deferred<void>();
     const backend = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation((command: string, args: unknown) => command === 'checkpoint_session' ? pending.promise : backend(command, args));
+    mocks.invoke.mockImplementation(pagingBackend((command: string, args: unknown) => command === 'checkpoint_session_delta' ? pending.promise : backend(command, args)));
     vi.useFakeTimers();
     try {
       act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'first' } }));
@@ -100,7 +133,7 @@ describe('useAgent reflection', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(50); });
       hook.unmount();
       await act(async () => { pending.resolve(); await vi.advanceTimersByTimeAsync(5000); });
-      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session_delta')).toHaveLength(1);
     } finally { vi.useRealTimers(); }
   });
 
@@ -114,8 +147,12 @@ describe('useAgent reflection', () => {
     try {
       act(() => event({ type: 'chunk', data: { runId: request.runId, sessionId: 'sess-1', text: 'Offscreen partial' } }));
       await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
-      const checkpoint = mocks.invoke.mock.calls.find(([name]) => name === 'checkpoint_session')?.[1].data as SessionData;
-      expect(checkpoint.session.id).toBe('sess-1');
+      const checkpointCall = mocks.invoke.mock.calls.find(([name]) => name === 'checkpoint_session_delta')![1];
+      const checkpoint = checkpointCall.request;
+      expect(checkpointCall.sessionId).toBe('sess-1');
+      expect(checkpoint.messages).toHaveLength(1);
+      expect(checkpoint.artifacts).toEqual([]);
+      expect(checkpoint).not.toHaveProperty('historyWindow');
       expect(checkpoint.messages.at(-1)?.content).toBe('Offscreen partial');
       expect(hook.result.current.currentSessionId).toBe(viewed);
       act(() => {
@@ -123,14 +160,14 @@ describe('useAgent reflection', () => {
         event({ type: 'done', data: { runId: request.runId, sessionId: 'sess-1', cancelled: false } });
       });
       await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session')).toHaveLength(1);
-      const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session').at(-1)?.[1].data as SessionData;
+      expect(mocks.invoke.mock.calls.filter(([name]) => name === 'checkpoint_session_delta')).toHaveLength(1);
+      const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session_page').at(-1)?.[1].data as SessionData;
       expect(saved.messages.at(-1)?.content).toBe('Offscreen partial finished');
       expect(saved.messages.at(-1)?.runStatus).toBe('completed');
     } finally { hook.unmount(); vi.useRealTimers(); }
   });
 
-  it.each(['/review', '/reflect'])('routes %s without adding chat messages and uses the session provider', async (command) => {
+  it.each(['/refine', '/review', '/reflect'])('routes %s without adding chat messages and uses the session provider', async (command) => {
     const hook = await mounted();
     await act(async () => { await hook.result.current.sendMessage(command); });
     const call = mocks.invoke.mock.calls.find(([name]) => name === 'review_session');
@@ -138,7 +175,7 @@ describe('useAgent reflection', () => {
     expect(call?.[1]).toEqual({ sessionId: 'sess-1', provider: { ...provider, model: 'session-model' } });
     expect(hook.result.current.messages).toHaveLength(2);
     expect(mocks.invoke.mock.calls.some(([name]) => name === 'send_message')).toBe(false);
-    const saveIndex = mocks.invoke.mock.calls.findIndex(([name]) => name === 'save_session');
+    const saveIndex = mocks.invoke.mock.calls.findIndex(([name]) => name === 'save_session_page');
     const reviewIndex = mocks.invoke.mock.calls.findIndex(([name]) => name === 'review_session');
     expect(saveIndex).toBeLessThan(reviewIndex);
   });
@@ -148,8 +185,10 @@ describe('useAgent reflection', () => {
     await act(async () => { await hook.result.current.sendMessage('First follow-up'); });
     const first = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
     expect(first.self_improvement_enabled).toBe(false);
-    act(() => event({ type: 'done', data: { runId: first.runId, sessionId: 'sess-1', cancelled: false } }));
-    await act(async () => { await hook.result.current.sendMessage('Second follow-up'); });
+    await act(async () => { event({ type: 'done', data: { runId: first.runId, sessionId: 'sess-1', cancelled: false } }); });
+    expect(hook.result.current.runStatus?.phase).toBe('completed');
+    await act(async () => { expect(await hook.result.current.sendMessage('Second follow-up')).toBe(true); });
+    expect(hook.result.current.messages.at(-1)?.runId).not.toBe(first.runId);
     const payload: SelfImprovementEvent = {
       run_id: first.runId, session_id: 'sess-1', action: 'skill_created', skill_name: 'parser-recipe',
     };
@@ -158,7 +197,7 @@ describe('useAgent reflection', () => {
     expect(hook.result.current.messages.at(-1)?.selfImprovement).toBeUndefined();
     act(() => review({ ...payload, session_id: 'other-session', skill_name: 'wrong-session' }));
     expect(hook.result.current.messages.find((message) => message.runId === first.runId)?.selfImprovement).toEqual(payload);
-    await waitFor(() => expect(mocks.invoke.mock.calls.some(([name, args]) => name === 'save_session' && args.data.messages.some((message: { selfImprovement?: SelfImprovementEvent }) => message.selfImprovement?.skill_name === 'parser-recipe'))).toBe(true));
+    await waitFor(() => expect(mocks.invoke.mock.calls.some(([name, args]) => name === 'save_session_page' && args.data.messages.some((message: { selfImprovement?: SelfImprovementEvent }) => message.selfImprovement?.skill_name === 'parser-recipe'))).toBe(true));
   });
 
   it('blocks reflection for failed and cancelled completed streams', async () => {
@@ -177,12 +216,12 @@ describe('useAgent reflection', () => {
     const other = structuredClone(initial);
     other.session.id = 'sess-2';
     store.set('sess-2', other);
-    mocks.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: Record<string, unknown>) => {
       if (command === 'save_session') { const data = args.data as SessionData; store.set(data.session.id, structuredClone(data)); }
       if (command === 'load_session') return structuredClone(store.get(args.sessionId as string));
       if (command === 'list_sessions') return [...store.values()].map((data) => data.session);
       return undefined;
-    });
+    }));
     await act(async () => { await hook.result.current.sendMessage('A long task'); });
     const request = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
     act(() => event({ type: 'tool_update', data: { runId: request.runId, sessionId: 'sess-1', tool: { id: 'running-tool', name: 'run_command', args: {}, status: 'running' } } }));
@@ -223,12 +262,14 @@ describe('useAgent reflection', () => {
     const other = structuredClone(initial);
     other.session.id = 'sess-2';
     let resolveLoad!: (data: SessionData) => void;
-    mocks.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: Record<string, unknown>) => {
       if (command === 'list_sessions') return [other.session, initial.session];
-      if (command === 'load_session' && args.sessionId === 'sess-2') return other;
+      if (command === 'load_session' && args.sessionId !== 'sess-1') return { ...other, session: { ...other.session, id: args.sessionId as string } };
       if (command === 'load_session' && args.sessionId === 'sess-1') return new Promise<SessionData>((resolve) => { resolveLoad = resolve; });
       return undefined;
-    });
+    }));
+    // Clean sessions are now cached: evict the origin so this still exercises an in-flight native reload.
+    for (let i = 0; i < 7; i++) await act(async () => { await hook.result.current.switchSession(`evict-${i}`); });
     await act(async () => { await hook.result.current.switchSession('sess-2'); });
     let navigation!: Promise<void>;
     act(() => { navigation = hook.result.current.switchSession('sess-1'); });
@@ -239,13 +280,152 @@ describe('useAgent reflection', () => {
     expect(hook.result.current.messages[1].selfImprovement).toEqual(payload);
   });
 
+  it.each(['skill_created', 'skill_updated', 'no_action'] as const)('does not resurrect cached staged changes over a native %s resolution on navigation', async (action) => {
+    const hook = await mounted();
+    const staged: SelfImprovementEvent = {
+      run_id: 'old-run', session_id: 'sess-2', action: 'skill_staged',
+      changes: [{ action: 'skill_staged', skill_name: 'parser', pending_id: 'pending-parser' }],
+    };
+    const resolved = { ...staged, action, skill_name: action === 'no_action' ? undefined : 'parser', changes: [{ ...staged.changes![0], action, summary: 'Native approval result' }] };
+    const other = structuredClone(initial);
+    other.session.id = 'sess-2';
+    other.messages[1].selfImprovement = resolved;
+    const store = new Map<string, SessionData>([['sess-1', structuredClone(initial)], ['sess-2', other]]);
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'save_session') { const data = args.data as SessionData; store.set(data.session.id, structuredClone(data)); }
+      if (command === 'load_session') return structuredClone(store.get(args.sessionId as string));
+      if (command === 'list_sessions') return [...store.values()].map((data) => data.session);
+      return undefined;
+    }));
+    // An old IPC event is cached while the session is offscreen; native disk already has approval.
+    act(() => review(staged));
+    await act(async () => { await hook.result.current.switchSession('sess-2'); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+    act(() => review(staged));
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+    await act(async () => { await hook.result.current.switchSession('sess-1'); });
+    expect(store.get('sess-2')?.messages[1].selfImprovement).toEqual(resolved);
+    await act(async () => { await hook.result.current.switchSession('sess-2'); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+  });
+
+  it.each(['cached resolution', 'new pending entry', 'manual review', 'no cache'] as const)('preserves %s while restoring review status', async (scenario) => {
+    const hook = await mounted();
+    const staged = { action: 'skill_staged' as const, skill_name: 'parser', pending_id: 'pending-parser' };
+    const resolved = { ...staged, action: 'skill_updated' as const };
+    const extra = { action: 'skill_staged' as const, skill_name: 'new-skill', pending_id: 'pending-new' };
+    const base: SelfImprovementEvent = { run_id: 'old-run', session_id: 'sess-2', action: 'skill_staged', changes: [staged] };
+    const native: SelfImprovementEvent = scenario === 'new pending entry' ? { ...base, action: 'skill_updated', changes: [resolved] } : base;
+    const cached: SelfImprovementEvent = scenario === 'cached resolution'
+      ? { ...base, action: 'skill_updated', changes: [resolved] }
+      : scenario === 'manual review' ? { ...base, action: 'skill_created', skill_name: 'manual-skill', changes: [{ action: 'skill_created', skill_name: 'manual-skill' }] }
+      : { ...base, changes: [staged, extra] };
+    const expected = scenario === 'no cache' ? native : scenario === 'new pending entry'
+      ? { ...cached, action: 'skill_updated', skill_name: 'parser', changes: [resolved, extra] } : cached;
+    const other = structuredClone(initial);
+    other.session.id = 'sess-2';
+    other.messages[1].selfImprovement = native;
+    const backend = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(pagingBackend((command: string, args: Record<string, unknown>) => {
+      if (command === 'load_session' && args.sessionId === 'sess-2') return Promise.resolve(structuredClone(other));
+      return backend(command, args);
+    }));
+    if (scenario !== 'no cache') act(() => review(cached));
+    await act(async () => { await hook.result.current.switchSession('sess-2'); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(expected);
+  });
+
+  it.each([
+    ['live', 'skill_created'], ['live', 'skill_updated'], ['live', 'no_action'],
+    ['cache', 'skill_created'], ['cache', 'skill_updated'], ['cache', 'no_action'],
+  ] as const)('preserves %s resolution %s after a late staged event and navigation', async (location, action) => {
+    const hook = await mounted();
+    const sessionId = location === 'live' ? 'sess-1' : 'sess-2';
+    const other = structuredClone(initial);
+    other.session.id = 'sess-2';
+    // Keep native loads stale so navigation must use the guarded live state/cache.
+    const backend = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(pagingBackend((command: string, args: Record<string, unknown>) => {
+      if (command === 'load_session' && args.sessionId === 'sess-2') return Promise.resolve(structuredClone(other));
+      return backend(command, args);
+    }));
+    const staged: SelfImprovementEvent = {
+      run_id: 'old-run', session_id: sessionId, action: 'skill_staged',
+      changes: [{ action: 'skill_staged', skill_name: 'parser', pending_id: 'pending-parser' }],
+    };
+    const resolved: SelfImprovementEvent = {
+      ...staged, action, skill_name: action === 'no_action' ? undefined : 'parser',
+      changes: [{ ...staged.changes![0], action, summary: 'Resolved pending change' }],
+    };
+    act(() => review(staged));
+    act(() => review(resolved));
+    act(() => review(staged));
+    if (location === 'cache') await act(async () => { await hook.result.current.switchSession(sessionId); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+    if (location === 'live') {
+      await waitFor(() => {
+        const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session_page').at(-1)?.[1].data as SessionData;
+        expect(saved.messages[1].selfImprovement).toEqual(resolved);
+      });
+    }
+    act(() => hook.result.current.newSession());
+    await act(async () => { await hook.result.current.switchSession(sessionId); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+  });
+
+  it('replaces a resolved review with a new manual review without pending IDs', async () => {
+    const hook = await mounted();
+    const staged: SelfImprovementEvent = {
+      run_id: 'old-run', session_id: 'sess-1', action: 'skill_staged',
+      changes: [{ action: 'skill_staged', skill_name: 'parser', pending_id: 'pending-parser' }],
+    };
+    const resolved: SelfImprovementEvent = {
+      ...staged, action: 'skill_updated', skill_name: 'parser',
+      changes: [{ ...staged.changes![0], action: 'skill_updated' }],
+    };
+    const manual: SelfImprovementEvent = {
+      run_id: 'old-run', session_id: 'sess-1', action: 'skill_created', skill_name: 'manual-skill',
+      changes: [{ action: 'skill_created', skill_name: 'manual-skill' }],
+    };
+    act(() => review(staged));
+    act(() => review(resolved));
+    act(() => review(manual));
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(manual);
+    act(() => hook.result.current.newSession());
+    await act(async () => { await hook.result.current.switchSession('sess-1'); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(manual);
+  });
+  it('publishes native approval events live and persists their resolved status across navigation', async () => {
+    const hook = await mounted();
+    const store = new Map<string, SessionData>([['sess-1', structuredClone(initial)]]);
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'save_session') { const data = args.data as SessionData; store.set(data.session.id, structuredClone(data)); }
+      if (command === 'load_session') return structuredClone(store.get(args.sessionId as string));
+      if (command === 'list_sessions') return [...store.values()].map((data) => data.session);
+      return undefined;
+    }));
+    const staged: SelfImprovementEvent = {
+      run_id: 'old-run', session_id: 'sess-1', action: 'skill_staged',
+      changes: [{ action: 'skill_staged', skill_name: 'parser', pending_id: 'pending-parser' }],
+    };
+    const resolved: SelfImprovementEvent = { ...staged, action: 'skill_updated', changes: [{ ...staged.changes![0], action: 'skill_updated' }] };
+    act(() => review(staged));
+    act(() => review(resolved));
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+    await waitFor(() => expect(store.get('sess-1')?.messages[1].selfImprovement).toEqual(resolved));
+    act(() => hook.result.current.newSession());
+    await act(async () => { await hook.result.current.switchSession('sess-1'); });
+    expect(hook.result.current.messages[1].selfImprovement).toEqual(resolved);
+    expect(store.get('sess-1')?.messages[1].selfImprovement).toEqual(resolved);
+  });
+
   it('never starts review when persisting the completed turn fails', async () => {
     const hook = await mounted();
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'save_session') throw new Error('disk full');
       if (command === 'list_sessions') return [initial.session];
       return undefined;
-    });
+    }));
     await act(async () => { await hook.result.current.sendMessage('/review'); });
     expect(mocks.invoke.mock.calls.some(([name]) => name === 'review_session')).toBe(false);
     expect(hook.result.current.lastError).toContain('disk full');
@@ -253,12 +433,12 @@ describe('useAgent reflection', () => {
 
   it('keeps initialization loading and rejects sends until the restored session finishes loading', async () => {
     let resolveLoad!: (value: SessionData) => void;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'get_settings') return structuredClone(settings);
       if (command === 'list_sessions') return [initial.session];
       if (command === 'load_session') return new Promise<SessionData>((resolve) => { resolveLoad = resolve; });
       return undefined;
-    });
+    }));
     const hook = renderHook(() => useAgent());
     await waitFor(() => expect(resolveLoad).toBeTypeOf('function'));
     expect(hook.result.current.isLoading).toBe(true);
@@ -272,12 +452,12 @@ describe('useAgent reflection', () => {
   it('routes concurrent council output to the origin while another viewed run can stop independently', async () => {
     const hook = await mounted();
     const store = new Map<string, SessionData>([['sess-1', structuredClone(initial)]]);
-    mocks.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: Record<string, unknown>) => {
       if (command === 'save_session') { const value = args.data as SessionData; store.set(value.session.id, structuredClone(value)); }
       if (command === 'load_session') return structuredClone(store.get(args.sessionId as string));
       if (command === 'list_sessions') return [...store.values()].map((value) => value.session);
       return undefined;
-    });
+    }));
     await act(async () => { await hook.result.current.sendMessage('compare', undefined, { council: true, candidateA: { provider }, candidateB: { provider: { ...provider, model: 'other-model' } } }); });
     const council = mocks.invoke.mock.calls.find(([name]) => name === 'send_council_message')?.[1];
     expect(council.requestA.workspaceCwd).toBe('D:/project');
@@ -309,17 +489,22 @@ describe('useAgent reflection', () => {
   it('never lets a late origin start failure reset a different viewed run', async () => {
     const hook = await mounted();
     let rejectStart!: (error: Error) => void;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'list_sessions') return [initial.session];
       if (command === 'send_message' && !rejectStart) return new Promise<void>((_, reject) => { rejectStart = reject; });
       return undefined;
-    });
+    }));
     let sending!: Promise<boolean>;
     act(() => { sending = hook.result.current.sendMessage('slow A'); });
     await waitFor(() => expect(rejectStart).toBeTypeOf('function'));
     act(() => hook.result.current.newSession());
     await act(async () => { await hook.result.current.sendMessage('fast B'); });
-    const runB = mocks.invoke.mock.calls.filter(([name]) => name === 'send_message').at(-1)?.[1].request;
+    const sends = mocks.invoke.mock.calls.filter(([name]) => name === 'send_message');
+    expect(sends).toHaveLength(2);
+    const runB = sends.at(-1)![1].request;
+    expect(runB.sessionId).toBe(hook.result.current.currentSessionId);
+    expect(runB.sessionId).not.toBe('sess-1');
+    expect(mocks.invoke).toHaveBeenCalledWith('load_session_page', { sessionId: runB.sessionId, limit: 1 });
     await act(async () => { rejectStart(new Error('origin failed')); await sending; });
     expect(hook.result.current.isStreaming).toBe(true);
     act(() => event({ type: 'chunk', data: { runId: runB.runId, sessionId: runB.sessionId, text: 'B alive' } }));
@@ -330,11 +515,11 @@ describe('useAgent reflection', () => {
   it('cancels a starting run before delayed persistence can launch it', async () => {
     const hook = await mounted();
     let resolveSave!: () => void;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'save_session' && !resolveSave) return new Promise<void>((resolve) => { resolveSave = resolve; });
       if (command === 'list_sessions') return [initial.session];
       return undefined;
-    });
+    }));
     let sending!: Promise<boolean>;
     act(() => { sending = hook.result.current.sendMessage('pending start'); });
     await waitFor(() => expect(resolveSave).toBeTypeOf('function'));
@@ -343,9 +528,11 @@ describe('useAgent reflection', () => {
     expect(mocks.invoke.mock.calls.some(([name]) => name === 'send_message')).toBe(false);
     expect(hook.result.current.messages.at(-1)?.runStatus).toBe('cancelled');
     expect(hook.result.current.isStreaming).toBe(false);
-    expect(hook.result.current.stopRequested).toBe(true);
+    expect(hook.result.current.stopRequested).toBe(false);
+    expect(hook.result.current.runStatus?.phase).toBe('cancelled');
     act(() => hook.result.current.updateRunConfig({ thinking: true }));
-    expect(hook.result.current.stopRequested).toBe(true);
+    expect(hook.result.current.stopRequested).toBe(false);
+    expect(hook.result.current.runStatus?.phase).toBe('cancelled');
     await act(async () => { await hook.result.current.sendMessage('explicit resume'); });
     expect(hook.result.current.stopRequested).toBe(false);
     act(() => hook.result.current.updateRunConfig({ thinking: false }));
@@ -359,11 +546,16 @@ describe('useAgent reflection', () => {
     const oldRun = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
     act(() => event({ type: 'chunk', data: { runId: oldRun.runId, sessionId: 'sess-1', text: 'old buffered text' } }));
     let resolveSave!: () => void;
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === 'save_session' && !resolveSave) return new Promise<void>((resolve) => { resolveSave = resolve; });
+    let stored = structuredClone(initial);
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string, args: { data: SessionData }) => {
+      if (command === 'load_session') return stored;
+      if (command === 'save_session') {
+        stored = structuredClone(args.data);
+        if (!resolveSave) return new Promise<void>((resolve) => { resolveSave = resolve; });
+      }
       if (command === 'list_sessions') return [initial.session];
       return undefined;
-    });
+    }));
     let editing!: Promise<boolean>;
     act(() => { editing = hook.result.current.editAndResendMessage('user-1', 'edited A'); });
     await waitFor(() => expect(resolveSave).toBeTypeOf('function'));
@@ -377,11 +569,11 @@ describe('useAgent reflection', () => {
     const hook = await mounted();
     const compacted = structuredClone(initial);
     compacted.messages = [{ id: 'summary', role: 'system', content: 'summary only', timestamp: 3 }];
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'list_sessions') return [initial.session];
       if (command === 'compact_session') return compacted;
       return undefined;
-    });
+    }));
     await act(async () => { await hook.result.current.sendMessage('one more'); });
     const run = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
     act(() => event({ type: 'done', data: { runId: run.runId, sessionId: 'sess-1', cancelled: false } }));
@@ -394,17 +586,19 @@ describe('useAgent reflection', () => {
     const hook = await mounted();
     await act(async () => { await hook.result.current.sendMessage('offscreen'); });
     const run = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request;
+    // Leave buffered work to flush at navigation; a clean origin no longer saves redundantly.
+    act(() => event({ type: 'chunk', data: { runId: run.runId, sessionId: 'sess-1', text: 'final ' } }));
     let release!: () => void;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'save_session' && !release) return new Promise<void>((resolve) => { release = resolve; });
       if (command === 'list_sessions') return [initial.session];
       if (command === 'load_session') return structuredClone(initial);
       return undefined;
-    });
+    }));
     act(() => hook.result.current.newSession());
     await waitFor(() => expect(release).toBeTypeOf('function'));
     act(() => {
-      event({ type: 'chunk', data: { runId: run.runId, sessionId: 'sess-1', text: 'final answer' } });
+      event({ type: 'chunk', data: { runId: run.runId, sessionId: 'sess-1', text: 'answer' } });
       event({ type: 'done', data: { runId: run.runId, sessionId: 'sess-1', cancelled: false } });
     });
     await act(async () => { await hook.result.current.switchSession('sess-1'); });
@@ -419,12 +613,12 @@ describe('useAgent reflection', () => {
       { id: 'new', title: 'New', type: 'code', content: '', timestamp: 3 },
       { id: 'old', title: 'Old', type: 'code', content: '', timestamp: 2 },
     ];
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'get_settings') return structuredClone(settings);
       if (command === 'list_sessions') return [restored.session];
       if (command === 'load_session') return restored;
       return undefined;
-    });
+    }));
     const hook = await mounted();
     expect(hook.result.current.activeArtifactId).toBe('new');
     act(() => hook.result.current.setActiveArtifactId('old'));
@@ -439,10 +633,10 @@ describe('useAgent reflection', () => {
     const secondSave = deferred<void>();
     const saves = [firstSave, secondSave];
     let saveCount = 0;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'save_settings' && saveCount < saves.length) return saves[saveCount++].promise;
       return undefined;
-    });
+    }));
     const first = { ...settings, temperature: 0.1 };
     const second = { ...settings, temperature: 0.2 };
     let savingFirst!: Promise<unknown>;
@@ -466,10 +660,10 @@ describe('useAgent reflection', () => {
   it('merges fetched models into current settings instead of the pre-fetch snapshot', async () => {
     const hook = await mounted();
     const fetched = deferred<string[]>();
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'fetch_provider_models') return fetched.promise;
       return undefined;
-    });
+    }));
     let refreshing!: Promise<string[]>;
     act(() => { refreshing = hook.result.current.refreshModels(provider.id); });
     await act(async () => { await hook.result.current.updateSettings({ ...settings, temperature: 0.25, favoriteModels: ['new-favorite'] }); });
@@ -481,11 +675,11 @@ describe('useAgent reflection', () => {
   it('does not select a custom model into a session navigated to during settings persistence', async () => {
     const hook = await mounted();
     const saved = deferred<void>();
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'save_settings') return saved.promise;
       if (command === 'list_sessions') return [initial.session];
       return undefined;
-    });
+    }));
     let adding!: Promise<void>;
     act(() => { adding = hook.result.current.addCustomModel(provider.id, 'custom-model'); });
     act(() => hook.result.current.newSession());
@@ -511,12 +705,12 @@ describe('useAgent reflection', () => {
     const changed = deferred<string>();
     vi.mocked(open).mockResolvedValueOnce('D:/selected');
     let started = false;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
       if (command === 'set_workspace_cwd' && !started) { started = true; return changed.promise; }
       if (command === 'list_sessions') return [initial.session];
       if (command === 'load_session') return structuredClone(initial);
       return undefined;
-    });
+    }));
     let changing!: Promise<void>;
     act(() => { changing = operation === 'select' ? hook.result.current.selectWorkspace() : hook.result.current.clearWorkspace(); });
     await waitFor(() => expect(started).toBe(true));
@@ -526,7 +720,7 @@ describe('useAgent reflection', () => {
     expect(hook.result.current.currentSessionId).toBe(nextId);
     expect(hook.result.current.workspaceCwd).toBe('');
     const expected = operation === 'select' ? 'D:/selected' : undefined;
-    const originSaves = mocks.invoke.mock.calls.filter(([name, args]) => name === 'save_session' && args.data.session.id === 'sess-1');
+    const originSaves = mocks.invoke.mock.calls.filter(([name, args]) => name === 'save_session_page' && args.data.session.id === 'sess-1');
     expect(originSaves.at(-1)?.[1].data.session.workspaceCwd).toBe(expected);
     await act(async () => { await hook.result.current.switchSession('sess-1'); });
     expect(hook.result.current.workspaceCwd).toBe(expected ?? '');
@@ -569,13 +763,14 @@ describe('useAgent reflection', () => {
     const renamed = structuredClone(initial);
     renamed.session.title = 'Native title';
     renamed.messages = [];
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === 'rename_session') return renamed;
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
+      if (command === 'rename_session_summary') return renamed.session;
       if (command === 'list_sessions') return [renamed.session];
+      if (command === 'load_session') return structuredClone(initial);
       return undefined;
-    });
+    }));
     await act(async () => { await hook.result.current.renameSession('sess-1', 'Native title'); });
-    expect(mocks.invoke).toHaveBeenCalledWith('rename_session', { sessionId: 'sess-1', title: 'Native title' });
+    expect(mocks.invoke).toHaveBeenCalledWith('rename_session_summary', { sessionId: 'sess-1', title: 'Native title' });
     expect(hook.result.current.sessionTitle).toBe('Native title');
     expect(hook.result.current.messages).toHaveLength(2);
   });
@@ -588,13 +783,13 @@ describe('useAgent reflection', () => {
     updated.session.pinned = true;
     updated.session.pinnedAt = 10;
     updated.messages = [];
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === 'rename_session') return updated;
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
+      if (command === 'rename_session_summary') return updated.session;
       if (command === 'toggle_pin_session') return updated.session;
       if (command === 'list_sessions') return [updated.session];
       if (command === 'load_session') return structuredClone(initial);
       return undefined;
-    });
+    }));
     act(() => hook.result.current.newSession());
     await act(async () => {
       if (operation === 'rename') await hook.result.current.renameSession('sess-1', 'Origin renamed');
@@ -606,7 +801,7 @@ describe('useAgent reflection', () => {
     else {
       act(() => hook.result.current.updateRunConfig({ thinking: false }));
       await waitFor(() => {
-        const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session').at(-1)?.[1].data as SessionData;
+        const saved = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session_page').at(-1)?.[1].data as SessionData;
         expect(saved.session).toMatchObject({ pinned: true, pinnedAt: 10 });
       });
     }
@@ -621,9 +816,16 @@ describe('useAgent reflection', () => {
       const hook = await mounted();
       await act(async () => { await hook.result.current.sendMessage('Summarize the repo'); });
       const runId = mocks.invoke.mock.calls.find(([name]) => name === 'send_message')?.[1].request.runId as string;
-      // Failed run with no assistant output: the notification must not echo the user prompt.
+      // Failed runs are silent; successful completion must never echo the prompt.
+      vi.mocked(showDesktopNotification).mockClear();
       now.mockReturnValue(10_000);
-      act(() => event({ type: 'done', data: { runId, sessionId: 'sess-1', cancelled: false, successful: false } }));
+      await act(async () => { event({ type: 'done', data: { runId, sessionId: 'sess-1', cancelled: false, successful: false } }); });
+      expect(showDesktopNotification).not.toHaveBeenCalled();
+      now.mockReturnValue(11_000);
+      await act(async () => { expect(await hook.result.current.sendMessage('Summarize the repo')).toBe(true); });
+      const nextRun = mocks.invoke.mock.calls.filter(([name]) => name === 'send_message').at(-1)![1].request.runId;
+      now.mockReturnValue(20_000);
+      await act(async () => { event({ type: 'done', data: { runId: nextRun, sessionId: 'sess-1', cancelled: false, successful: true } }); });
       expect(showDesktopNotification).toHaveBeenCalledWith(
         'AetherAgent: Task Complete',
         expect.not.stringContaining('Summarize the repo'),

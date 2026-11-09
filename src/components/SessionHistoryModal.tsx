@@ -1,6 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, Clock, Download, FileText, Terminal, X } from 'lucide-react';
-import type { ChatMessage } from '../types/agent';
+import type { ChatMessage, DeepSearchResult } from '../types/agent';
 import { useModalAccessibility } from '../hooks/useModalAccessibility';
 
 interface SessionHistoryModalProps {
@@ -9,6 +9,9 @@ interface SessionHistoryModalProps {
   sessionTitle: string;
   sessionId: string;
   messages: ChatMessage[];
+  onSearch?: (query: string) => Promise<DeepSearchResult[]>;
+  onSelectResult?: (result: DeepSearchResult) => Promise<boolean>;
+  onSelectMessage?: (messageId: string) => Promise<boolean>;
   onCompact: () => void;
   onExport: (format: 'json' | 'markdown' | 'html') => void;
 }
@@ -19,9 +22,45 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
   sessionTitle,
   sessionId,
   messages,
+  onSearch,
+  onSelectResult,
+  onSelectMessage,
   onCompact,
   onExport,
 }) => {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<DeepSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+  const selectionRef = useRef(0);
+  useEffect(() => {
+    selectionRef.current += 1;
+    return () => { selectionRef.current += 1; };
+  }, [open, sessionId]);
+  useEffect(() => {
+    const request = ++requestRef.current;
+    setResults([]); setSearchError(null); setSearching(false);
+    if (!open || !query.trim() || !onSearch) return;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void onSearch(query).then((found) => {
+        if (requestRef.current === request) setResults(found);
+      }).catch((error) => {
+        if (requestRef.current === request) setSearchError(String(error));
+      }).finally(() => { if (requestRef.current === request) setSearching(false); });
+    }, 200);
+    return () => { clearTimeout(timer); requestRef.current += 1; };
+  }, [open, query, onSearch]);
+  const select = async (action: () => Promise<boolean>) => {
+    setSearchError(null);
+    const request = ++selectionRef.current;
+    try {
+      const opened = await action();
+      if (selectionRef.current !== request) return;
+      if (opened) onClose(); else setSearchError('Could not open message. Refresh search results and try again.');
+    } catch (error) { if (selectionRef.current === request) setSearchError(String(error)); }
+  };
   const dialogRef = useModalAccessibility<HTMLDivElement>(open, onClose);
   const stats = useMemo(() => {
     let userTurns = 0;
@@ -77,7 +116,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+      className="ui-overlay-enter fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
@@ -86,7 +125,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
         aria-modal="true"
         aria-label="Session history and context"
         tabIndex={-1}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-2xl overflow-hidden"
+        className="ui-panel-enter flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-lg overflow-hidden"
       >
         {/* Header */}
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#30363d] px-4 bg-[#0d1117]">
@@ -106,6 +145,31 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+          {onSearch && (
+            <section aria-label="Search history" className="space-y-2">
+              <input aria-label="Search all conversations" placeholder="Search all conversations?" value={query}
+                onChange={(event) => setQuery(event.target.value)} className="w-full rounded border border-[#30363d] bg-[#0d1117] p-2" />
+              {searching && <div role="status">Searching?</div>}
+              {searchError && <div role="alert">{searchError}</div>}
+              {!searching && query.trim() && !results.length && !searchError && <div>No results</div>}
+              {results.map((result) => (
+                <button key={result.sessionId} type="button" className="block w-full rounded border border-[#30363d] p-2 text-left"
+                  onClick={() => { if (onSelectResult) void select(() => onSelectResult(result)); }}>
+                  <strong>{result.sessionTitle}</strong>
+                  <span className="block whitespace-pre-wrap">{result.snippet.replace(/<\/?mark>/g, '')}</span>
+                  <span>{result.matchMessageId ? 'Jump to matching message' : 'Open conversation'} ? {result.matchCount} matches</span>
+                </button>
+              ))}
+            </section>
+          )}
+          {onSelectMessage && !query.trim() && (
+            <section aria-label="Loaded messages" className="max-h-36 overflow-y-auto space-y-1">
+              <div className="text-[#8b949e]">Loaded window ? search above to find older messages</div>
+              {messages.map((message) => <button type="button" key={message.id}
+                className="block w-full truncate rounded p-1 text-left hover:bg-[#21262d]"
+                onClick={() => void select(() => onSelectMessage(message.id))}>{message.role}: {message.content.slice(0, 120) || message.id}</button>)}
+            </section>
+          )}
           {/* Session Overview */}
           <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3 space-y-1.5">
             <div className="text-[11px] font-semibold text-[#8b949e]">SESSION TITLE</div>

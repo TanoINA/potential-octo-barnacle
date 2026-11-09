@@ -12,6 +12,7 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onTogglePinSession?: (id: string) => void;
+  onOpenSearchResult?: (result: DeepSearchResult) => Promise<boolean>;
   onDeepSearch?: (query: string) => Promise<DeepSearchResult[]>;
   onExportSession: (id: string, format: 'json' | 'markdown' | 'html') => void;
   onOpenSettings: () => void;
@@ -26,7 +27,7 @@ interface SidebarProps {
   onCommitWorkspace?: (message: string) => Promise<string>;
 }
 
-const SNIPPET_HIGHLIGHT_CLASS = 'bg-[#d29922]/30 text-[#f0883e] font-semibold px-0.5 rounded';
+const SNIPPET_HIGHLIGHT_CLASS = 'bg-[#3f3f46] text-[#f4f4f5] font-medium px-0.5 rounded-lg';
 
 /**
  * Renders a deep-search snippet safely. The backend (SQLite FTS `snippet()`)
@@ -74,6 +75,7 @@ export const Sidebar = memo(function Sidebar({
   onRenameSession,
   onTogglePinSession,
   onDeepSearch,
+  onOpenSearchResult,
   onExportSession,
   onOpenSettings,
   onOpenArtifactsLibrary,
@@ -188,7 +190,7 @@ export const Sidebar = memo(function Sidebar({
     const deepResult = deepResults[session.id];
 
     return (
-      <div key={session.id} className={`group relative mb-0.5 rounded-md border ${active ? 'border-[#58a6ff]/35 bg-[#1f6feb]/15' : 'border-transparent hover:bg-[#161b22]'}`}>
+      <div key={session.id} className={`group relative mb-1 rounded-lg border ${active ? 'border-[#45454b] bg-[#27272a] text-[#f4f4f5]' : 'border-transparent hover:bg-[#1c1c1f]'}`}>
         {renaming ? (
           <div className="flex items-center gap-1 p-1.5">
             <input
@@ -200,16 +202,16 @@ export const Sidebar = memo(function Sidebar({
                 if (event.key === 'Enter') commitRename(session.id);
                 if (event.key === 'Escape') setRenamingId(null);
               }}
-              className="min-w-0 flex-1 rounded border border-[#58a6ff] bg-[#0d1117] px-2 py-1 text-xs outline-none"
+              className="min-w-0 flex-1 rounded-lg border border-[#d4d4d8] bg-[#141416] px-2 py-1 text-[13px] outline-none"
               aria-label="Session title"
             />
-            <button type="button" className="icon-button" onClick={() => commitRename(session.id)} aria-label="Save title"><Check size={13} /></button>
+            <button type="button" className="icon-button rounded-lg text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5]" onClick={() => commitRename(session.id)} aria-label="Save title"><Check size={13} /></button>
           </div>
         ) : deleteId === session.id ? (
-          <div className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] text-[#f85149]">
+          <div className="flex items-center gap-1.5 px-2.5 py-2 text-[13px] text-[#f85149]">
             <span className="flex-1">Delete this chat?</span>
-            <button type="button" className="rounded bg-[#da3633] px-2 py-1 text-white" onClick={() => { onDeleteSession(session.id); setDeleteId(null); }}>Delete</button>
-            <button type="button" className="text-[#8b949e]" onClick={() => setDeleteId(null)}>Cancel</button>
+            <button type="button" className="rounded-lg bg-[#da3633] px-2 py-1 text-white" onClick={() => { onDeleteSession(session.id); setDeleteId(null); }}>Delete</button>
+            <button type="button" className="rounded-lg px-2 py-1 text-[#a1a1aa] hover:bg-[#343438]" onClick={() => setDeleteId(null)}>Cancel</button>
           </div>
         ) : (
           <div className="flex items-center">
@@ -221,25 +223,27 @@ export const Sidebar = memo(function Sidebar({
                   onTogglePinSession(session.id);
                   return;
                 }
-                onSelectSession(session.id);
+                if (deepResult && onOpenSearchResult) void onOpenSearchResult(deepResult);
+                else onSelectSession(session.id);
               }}
-              className="min-w-0 flex-1 px-2.5 py-2 text-left"
+              aria-current={active ? 'page' : undefined}
+              className="min-w-0 flex-1 rounded-lg px-2.5 py-2 text-left"
               title={session.pinned ? 'Pinned chat (Shift+Click to unpin)' : 'Shift+Click to pin chat to top'}
             >
               <span className="flex items-center gap-2">
                 {session.pinned ? (
-                  <Pin size={12} className="shrink-0 text-[#d29922]" />
+                  <Pin size={12} className="shrink-0 text-[#a1a1aa]" />
                 ) : (
-                  <MessageSquare size={13} className={`shrink-0 ${active ? 'text-[#58a6ff]' : 'text-[#6e7681]'}`} />
+                  <MessageSquare size={13} className={`shrink-0 ${active ? 'text-[#d4d4d8]' : 'text-[#92929c]'}`} />
                 )}
-                <span className="truncate text-xs">{session.title || 'Untitled'}</span>
+                <span className="truncate text-[13px]">{session.title || 'Untitled'}</span>
               </span>
               {session.preview && !deepResult && (
-                <span className="ml-5 mt-0.5 block truncate text-[10px] text-[#6e7681]">{session.preview}</span>
+                <span className="ml-5 mt-0.5 block truncate text-xs text-[#92929c]">{session.preview}</span>
               )}
               {deepResult?.snippet && (
                 <div
-                  className="ml-5 mt-1 rounded border border-[#30363d]/60 bg-[#0d1117] px-2 py-1 font-mono text-[10px] text-[#8b949e] line-clamp-2 leading-tight"
+                  className="ml-5 mt-1 rounded-lg border border-[#343438]/60 bg-[#141416] px-2 py-1 text-xs text-[#a1a1aa] line-clamp-2 leading-relaxed"
                 >
                   {renderSnippetWithHighlights(deepResult.snippet)}
                 </div>
@@ -248,7 +252,7 @@ export const Sidebar = memo(function Sidebar({
             <button
               type="button"
               data-session-menu-trigger
-              className="icon-button mr-1 opacity-0 focus:opacity-100 group-hover:opacity-100"
+              className="icon-button rounded-lg text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5] mr-1 opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-[#343438]"
               onClick={(event) => {
                 if (menuId === session.id) {
                   setMenuId(null);
@@ -271,25 +275,25 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
         {menuId === session.id && createPortal(
-          <div data-session-menu className="fixed z-[60] w-44 rounded-md border border-[#30363d] bg-[#161b22] p-1 shadow-2xl" style={menuPosition}>
+          <div data-session-menu className="fixed z-[60] w-44 rounded-lg border border-[#343438] bg-[#1c1c1f] p-1 shadow-lg" style={menuPosition}>
             {onTogglePinSession && (
               <button
                 type="button"
-                className="session-action"
+                className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]"
                 onClick={() => {
                   onTogglePinSession(session.id);
                   setMenuId(null);
                 }}
               >
-                <Pin size={12} className={session.pinned ? 'text-[#d29922]' : ''} />
+                <Pin size={12} className={session.pinned ? 'text-[#a1a1aa]' : ''} />
                 {session.pinned ? 'Unpin chat' : 'Pin chat to top'}
               </button>
             )}
-            <button type="button" className="session-action" onClick={() => { setRenamingId(session.id); setRenameValue(session.title); setMenuId(null); }}><Pencil size={12} /> Rename</button>
-            <button type="button" className="session-action" onClick={() => { onExportSession(session.id, 'html'); setMenuId(null); }}><Download size={12} /> Export HTML (.html)</button>
-            <button type="button" className="session-action" onClick={() => { onExportSession(session.id, 'markdown'); setMenuId(null); }}><Download size={12} /> Export Markdown</button>
-            <button type="button" className="session-action" onClick={() => { onExportSession(session.id, 'json'); setMenuId(null); }}><Download size={12} /> Export JSON</button>
-            <button type="button" className="session-action text-[#f85149]" onClick={() => { setDeleteId(session.id); setMenuId(null); }}><Trash2 size={12} /> Delete</button>
+            <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { setRenamingId(session.id); setRenameValue(session.title); setMenuId(null); }}><Pencil size={12} /> Rename</button>
+            <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'html'); setMenuId(null); }}><Download size={12} /> Export HTML (.html)</button>
+            <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'markdown'); setMenuId(null); }}><Download size={12} /> Export Markdown</button>
+            <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'json'); setMenuId(null); }}><Download size={12} /> Export JSON</button>
+            <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa] text-[#f85149]" onClick={() => { setDeleteId(session.id); setMenuId(null); }}><Trash2 size={12} /> Delete</button>
           </div>,
           document.body,
         )}
@@ -298,25 +302,25 @@ export const Sidebar = memo(function Sidebar({
   };
 
   return (
-    <aside className={`${overlay ? 'fixed inset-y-0 left-0 z-40 shadow-2xl' : 'relative'} flex h-full w-64 shrink-0 flex-col border-r border-[#30363d] bg-[#0d1117] text-[#e6edf3]`}>
-      <div className="flex h-11 items-center justify-between border-b border-[#30363d] px-3">
+    <aside className={`${overlay ? 'ui-sidebar-enter fixed inset-y-0 left-0 z-40 shadow-xl' : 'relative'} flex h-full w-64 shrink-0 flex-col [&_button]:focus-visible:outline [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[#a1a1aa] border-r border-[#343438] bg-[#141416] text-[#e4e4e7]`}>
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-[#343438] px-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22]">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#343438] bg-[#1c1c1f]">
             <AetherLogo size={15} />
           </div>
-          <span className="text-xs font-semibold tracking-wide text-[#e6edf3]">AetherAgent</span>
+          <span className="text-[13px] font-semibold text-[#e4e4e7]">AetherAgent</span>
         </div>
-        <button type="button" onClick={onNewSession} className="icon-button" aria-label="New chat" title="New chat (Ctrl+N)"><Plus size={16} /></button>
+        <button type="button" onClick={onNewSession} className="icon-button rounded-lg text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5]" aria-label="New chat" title="New chat (Ctrl+N)"><Plus size={16} /></button>
       </div>
 
       <div className="space-y-2 p-3">
         <div className="flex items-center gap-1.5">
-          <button type="button" onClick={onNewSession} className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md border border-[#30363d] bg-[#161b22] py-2 text-xs font-medium hover:bg-[#21262d] transition-colors"><Plus size={14} /> New chat</button>
+          <button type="button" onClick={onNewSession} className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border border-[#343438] bg-[#1c1c1f] py-2 text-[13px] font-medium hover:bg-[#27272a] transition-colors"><Plus size={14} /> New chat</button>
           {onOpenArtifactsLibrary && (
             <button
               type="button"
               onClick={onOpenArtifactsLibrary}
-              className="flex items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] p-2 text-xs text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] transition-colors"
+              className="flex items-center justify-center rounded-lg border border-[#343438] bg-[#1c1c1f] p-2 text-[13px] text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5] transition-colors"
               title="Artifacts Library"
               aria-label="Open global artifacts library"
             >
@@ -324,42 +328,43 @@ export const Sidebar = memo(function Sidebar({
             </button>
           )}
         </div>
-        <label className="flex items-center gap-2 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 focus-within:border-[#58a6ff]">
-          <Search size={13} className={isDeepSearching ? 'text-[#58a6ff] animate-pulse' : 'text-[#6e7681]'} />
+        <label aria-busy={isDeepSearching} className="flex items-center gap-2 rounded-lg border border-[#343438] bg-[#1c1c1f] px-2.5 focus-within:border-[#d4d4d8]">
+          <Search size={13} className={isDeepSearching ? 'text-[#d4d4d8]' : 'text-[#92929c]'} />
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search messages and artifacts"
             placeholder="Search messages & artifacts"
-            className="h-8 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[#6e7681]"
+            className="h-8 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[#92929c]"
           />
-          {search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={12} className="text-[#8b949e]" /></button>}
+          {search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search" className="rounded-lg p-1 hover:bg-[#343438]"><X size={12} className="text-[#a1a1aa]" /></button>}
         </label>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {filtered.length === 0 ? (
-          <div className="px-3 py-8 text-center text-xs text-[#6e7681]">{search ? 'No matching conversations' : 'No saved conversations yet'}</div>
+          <div className="px-3 py-8 text-center text-[13px] text-[#92929c]">{search ? 'No matching conversations' : 'No saved conversations yet'}</div>
         ) : (
           <>
             {pinnedSessions.length > 0 && (
               <div className="mb-3">
-                <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#d29922]">
+                <div className="flex items-center justify-between px-2 py-1 text-xs font-medium text-[#a1a1aa]">
                   <span className="flex items-center gap-1.5">
-                    <Pin size={11} className="text-[#d29922]" />
+                    <Pin size={11} className="text-[#a1a1aa]" />
                     <span>Pinned ({pinnedSessions.length})</span>
                   </span>
-                  <span className="text-[9px] font-normal normal-case text-[#8b949e]">Shift-click to toggle</span>
+                  <span className="text-xs font-normal normal-case text-[#a1a1aa]">Shift-click to toggle</span>
                 </div>
                 {pinnedSessions.map(renderSessionItem)}
               </div>
             )}
 
             <div>
-              <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e7681]">
+              <div className="flex items-center justify-between px-2 py-1 text-xs font-medium text-[#92929c]">
                 <span>Recent conversations ({recentSessions.length})</span>
               </div>
               {recentSessions.length === 0 && pinnedSessions.length > 0 && (
-                <div className="px-3 py-3 text-center text-[11px] text-[#6e7681]">All matching chats are pinned above</div>
+                <div className="px-3 py-3 text-center text-[13px] text-[#92929c]">All matching chats are pinned above</div>
               )}
               {recentSessions.map(renderSessionItem)}
             </div>
@@ -367,22 +372,22 @@ export const Sidebar = memo(function Sidebar({
         )}
       </div>
 
-      <div className="border-t border-[#30363d] p-3">
+      <div className="border-t border-[#343438] p-3">
         {workspaceCwd ? (
-          <div className="mb-2 flex w-full flex-col gap-1 rounded-md border border-[#30363d] bg-[#161b22] p-2 text-left group">
+          <div className="mb-2 flex w-full flex-col gap-1 rounded-lg border border-[#343438] bg-[#1c1c1f] p-2 text-left group">
             <div className="flex items-center gap-1.5 w-full">
               <button
                 type="button"
                 onClick={onSelectWorkspace}
-                className="flex items-center gap-2 min-w-0 flex-1 hover:text-white transition-colors"
+                className="flex items-center gap-2 min-w-0 flex-1 rounded-lg p-1 hover:bg-[#27272a] hover:text-white transition-colors"
                 title={workspaceCwd}
               >
-                <Folder size={14} className="shrink-0 text-[#d29922]" />
+                <Folder size={14} className="shrink-0 text-[#a1a1aa]" />
                 <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate text-[11px] font-medium text-[#e6edf3]">
+                  <span className="block truncate text-[13px] font-medium text-[#e4e4e7]">
                     {workspaceCwd.split(/[\\/]/).filter(Boolean).pop()}
                   </span>
-                  <span className="block text-[9px] text-[#6e7681]">Active workspace</span>
+                  <span className="block text-xs text-[#92929c]">Active workspace</span>
                 </span>
               </button>
               {onClearWorkspace && (
@@ -392,7 +397,7 @@ export const Sidebar = memo(function Sidebar({
                     e.stopPropagation();
                     onClearWorkspace();
                   }}
-                  className="p-1 text-[#6e7681] hover:text-[#f85149] rounded transition-colors"
+                  className="p-1 text-[#92929c] hover:bg-[#27272a] hover:text-[#f85149] rounded-lg transition-colors"
                   title="Detach workspace from this chat"
                   aria-label="Detach workspace"
                 >
@@ -402,18 +407,18 @@ export const Sidebar = memo(function Sidebar({
             </div>
 
             {gitStatus?.isRepo && (
-              <div className="mt-1 border-t border-[#30363d]/50 pt-1.5" data-testid="sidebar-git-section">
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="flex items-center gap-1 font-mono text-[#8b949e]">
-                    <GitBranch size={11} className="text-[#8b949e]" />
-                    <span className="truncate max-w-[100px] text-[#c9d1d9]" title={`Branch: ${gitStatus.branch}`}>{gitStatus.branch}</span>
+              <div className="mt-1 border-t border-[#343438]/50 pt-1.5" data-testid="sidebar-git-section">
+                <div className="flex items-center justify-between text-[13px]">
+                  <span className="flex items-center gap-1 font-mono text-[#a1a1aa]">
+                    <GitBranch size={11} className="text-[#a1a1aa]" />
+                    <span className="truncate max-w-[80px] text-[#d4d4d8]" title={`Branch: ${gitStatus.branch}`}>{gitStatus.branch}</span>
                   </span>
                   <button
                     type="button"
                     onClick={() => setGitDrawerOpen((v) => !v)}
-                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium transition-colors ${
+                    className={`inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 font-medium transition-colors ${
                       gitStatus.hasChanges
-                        ? 'bg-[#d29922]/15 text-[#d29922] hover:bg-[#d29922]/25'
+                        ? 'bg-[#d29922]/15 text-[#a1a1aa] hover:bg-[#d29922]/25'
                         : 'bg-[#3fb950]/15 text-[#3fb950] hover:bg-[#3fb950]/25'
                     }`}
                     title={gitStatus.summary}
@@ -425,14 +430,14 @@ export const Sidebar = memo(function Sidebar({
                 </div>
 
                 {gitDrawerOpen && (
-                  <div className="mt-2 rounded border border-[#30363d] bg-[#0d1117] p-2 text-xs" data-testid="git-drawer">
-                    <div className="mb-1.5 flex items-center justify-between text-[10px] text-[#8b949e]">
-                      <span className="font-semibold uppercase tracking-wider">Changes ({gitStatus.files.length})</span>
+                  <div className="mt-2 rounded-lg border border-[#343438] bg-[#141416] p-2 text-[13px]" data-testid="git-drawer">
+                    <div className="mb-1.5 flex items-center justify-between text-[13px] text-[#a1a1aa]">
+                      <span className="font-medium">Changes ({gitStatus.files.length})</span>
                       {onRefreshGitStatus && (
                         <button
                           type="button"
                           onClick={() => void onRefreshGitStatus()}
-                          className="hover:text-[#58a6ff] transition-colors"
+                          className="rounded-lg p-1 hover:bg-[#27272a] hover:text-[#f4f4f5] transition-colors"
                           title="Refresh git status"
                           aria-label="Refresh git status"
                         >
@@ -443,22 +448,22 @@ export const Sidebar = memo(function Sidebar({
                     {gitStatus.files.length > 0 ? (
                       <div className="max-h-28 overflow-y-auto space-y-1 mb-2 scrollbar-thin">
                         {gitStatus.files.map((file) => (
-                          <div key={file.path} className="flex items-center gap-1.5 text-[10px]">
-                            <span className={`font-mono text-[9px] font-bold px-1 rounded ${
-                              file.status === 'M' ? 'bg-[#d29922]/20 text-[#d29922]' :
+                          <div key={file.path} className="flex items-center gap-1.5 text-[13px]">
+                            <span className={`font-mono text-[13px] font-bold px-1 rounded-lg ${
+                              file.status === 'M' ? 'bg-[#d29922]/20 text-[#a1a1aa]' :
                               file.status === 'D' ? 'bg-[#f85149]/20 text-[#f85149]' :
                               'bg-[#3fb950]/20 text-[#3fb950]'
                             }`}>
                               {file.status}
                             </span>
-                            <span className="truncate text-[#c9d1d9]" title={file.path}>
+                            <span className="truncate text-[#d4d4d8]" title={file.path}>
                               {file.path}
                             </span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <div className="py-1 text-[10px] text-[#8b949e]">Working tree clean</div>
+                      <div className="py-1 text-[13px] text-[#a1a1aa]">Working tree clean</div>
                     )}
 
                     {onCommitWorkspace && gitStatus.hasChanges && (
@@ -468,7 +473,7 @@ export const Sidebar = memo(function Sidebar({
                           value={commitMsg}
                           onChange={(e) => setCommitMsg(e.target.value)}
                           placeholder="Commit message…"
-                          className="w-full rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[11px] text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-[#58a6ff]"
+                          className="w-full rounded-lg border border-[#343438] bg-[#1c1c1f] px-2 py-1 text-[13px] text-[#e4e4e7] placeholder:text-[#92929c] outline-none focus:border-[#d4d4d8]"
                           onKeyDown={(e) => {
                             if (e.nativeEvent.isComposing) return;
                             if (e.key === 'Enter' && (commitMsg || '').trim() && !isCommitting) {
@@ -480,9 +485,9 @@ export const Sidebar = memo(function Sidebar({
                           type="button"
                           disabled={!(commitMsg || '').trim() || isCommitting}
                           onClick={() => void handleCommit()}
-                          className="w-full flex items-center justify-center gap-1.5 rounded bg-[#238636] py-1 text-[10px] font-medium text-white hover:bg-[#2ea043] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-[#45454b] bg-[#343438] py-1 text-[13px] font-medium text-white hover:bg-[#45454b] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                         >
-                          {isCommitting ? <Loader2 size={10} className="animate-spin" /> : <GitCommit size={10} />}
+                          {isCommitting ? <Loader2 size={10} className="text-current" /> : <GitCommit size={10} />}
                           <span>{isCommitting ? 'Committing…' : 'Commit all changes'}</span>
                         </button>
                       </div>
@@ -496,22 +501,22 @@ export const Sidebar = memo(function Sidebar({
           <button
             type="button"
             onClick={onSelectWorkspace}
-            className="mb-2 flex w-full items-center gap-2 rounded-md border border-dashed border-[#30363d] bg-[#161b22]/40 px-2.5 py-2 text-left hover:border-[#58a6ff]/50 hover:bg-[#21262d] transition-colors"
+            className="mb-2 flex w-full items-center gap-2 rounded-lg border border-dashed border-[#343438] bg-[#1c1c1f]/40 px-2.5 py-2 text-left hover:border-[#d4d4d8]/50 hover:bg-[#27272a] transition-colors"
             title="Click to select a workspace folder"
           >
-            <FolderPlus size={14} className="shrink-0 text-[#8b949e]" />
+            <FolderPlus size={14} className="shrink-0 text-[#a1a1aa]" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px] text-[#8b949e]">No workspace</span>
-              <span className="block text-[9px] text-[#6e7681]">Click to open folder</span>
+              <span className="block truncate text-[13px] text-[#a1a1aa]">No workspace</span>
+              <span className="block text-xs text-[#92929c]">Click to open folder</span>
             </span>
           </button>
         )}
         <div className="flex items-center gap-1">
-          <button type="button" onClick={onOpenSettings} className="min-w-0 flex-1 rounded px-1.5 py-1 text-left hover:bg-[#161b22]">
-            <span className="block truncate text-[10px] text-[#8b949e]">{effectiveConfig?.provider.name || 'No provider'}</span>
-            <span className="block truncate font-mono text-[10px] text-[#58a6ff]">{effectiveConfig?.provider.model || 'Configure model'}</span>
+          <button type="button" onClick={onOpenSettings} className="min-w-0 flex-1 rounded-lg px-1.5 py-1 text-left hover:bg-[#1c1c1f]">
+            <span className="block truncate text-[13px] text-[#a1a1aa]">{effectiveConfig?.provider.name || 'No provider'}</span>
+            <span className="block truncate font-mono text-xs text-[#d4d4d8]">{effectiveConfig?.provider.model || 'Configure model'}</span>
           </button>
-          <button type="button" onClick={onOpenSettings} className="icon-button" aria-label="Open settings"><Settings size={15} /></button>
+          <button type="button" onClick={onOpenSettings} className="icon-button rounded-lg text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5]" aria-label="Open settings"><Settings size={15} /></button>
         </div>
       </div>
     </aside>

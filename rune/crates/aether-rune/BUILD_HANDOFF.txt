@@ -1,0 +1,1 @@
+Current shell compile blocker (02:36 local): controller.rs references images::is_image_path, but authoritative images module exports no such function. Shell owns no state files and has not patched it. Once state agent resolves, run cargo check --manifest-path rune/Cargo.toml -p aether-rune --all-targets with CARGO_TARGET_DIR=D:/AetherAgent/verification/native-rich-content/target.

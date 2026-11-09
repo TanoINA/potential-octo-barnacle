@@ -3,17 +3,24 @@
 @tailwind utilities;
 
 :root {
+  --ui-canvas: #0d1117;
+  --ui-surface: #161b22;
+  --ui-border: #30363d;
+  --ui-text: #e6edf3;
+  --ui-muted: #8b949e;
+  --ui-focus: #58a6ff;
+  --ui-ease: cubic-bezier(0.2, 0, 0, 1);
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0d1117;
-  color: #e6edf3;
+  background: var(--ui-canvas);
+  color: var(--ui-text);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { background: #0d1117; }
+body { background: var(--ui-canvas); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
@@ -52,7 +59,7 @@ button:disabled { cursor: not-allowed; }
 ::-webkit-scrollbar-thumb:hover { background: #484f58; border: 2px solid transparent; background-clip: padding-box; }
 
 button:focus-visible, select:focus-visible, a:focus-visible {
-  outline: 2px solid #58a6ff;
+  outline: 2px solid var(--ui-focus);
   outline-offset: 2px;
 }
 
@@ -60,7 +67,51 @@ input:focus-visible, textarea:focus-visible {
   outline: none !important;
 }
 
+/* Rumus panjang bergulir di dalam bubble, bukan memperlebar seluruh chat. */
+.markdown-content .katex { font-size: 1.08em; }
+.markdown-content .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 0.45rem 0;
+  margin: 0.75rem 0;
+  text-align: left;
+}
+.markdown-content .katex-display > .katex { text-align: left; }
+.markdown-content .katex-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Hanya permukaan yang baru dibuka bergerak; posisi baris virtual tetap utuh.
+   Tanpa forwards, transform selesai dilepas agar fixed child tidak terperangkap. */
+.ui-enter { animation: ui-rise 160ms var(--ui-ease); }
+.ui-panel-enter { animation: ui-rise 160ms var(--ui-ease); }
+.ui-menu { animation: ui-rise 140ms var(--ui-ease); }
+.ui-overlay-enter { animation: ui-fade 140ms ease-out; }
+.ui-drawer-enter { animation: ui-drawer 180ms var(--ui-ease); }
+.ui-sidebar-enter { animation: ui-sidebar 180ms var(--ui-ease); }
+
+@keyframes ui-rise {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ui-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ui-drawer {
+  from { opacity: 0; transform: translateX(4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes ui-sidebar {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
 }
 

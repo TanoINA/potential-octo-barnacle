@@ -1,0 +1,97 @@
+﻿import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { pagingBackend } from '../test/sessionPaging';
+import type { AgentEvent, SessionData } from '../types/agent';
+import { useAgent } from './useAgent';
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: {payload: unknown}) => void>() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name: string, handler: (event: {payload: unknown}) => void) => { mocks.listeners.set(name, handler); return () => mocks.listeners.delete(name); }) }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock('../utils/audioChime', () => ({ playTaskCompleteChime: vi.fn(), showDesktopNotification: vi.fn() }));
+const initial: SessionData = { session: { id: 'origin', title: 'Origin', createdAt: 1, updatedAt: 1, messageCount: 0 }, messages: [], artifacts: [] };
+const provider = { id: 'p', name: 'P', kind: 'openai', baseUrl: '', apiKey: '', model: 'm' };
+let saveAck: Promise<void> | undefined;
+function event(payload: AgentEvent) { mocks.listeners.get('agent-event')!({ payload }); }
+beforeEach(() => { saveAck = undefined; mocks.listeners.clear(); mocks.invoke.mockReset(); mocks.invoke.mockImplementation(pagingBackend(async (name: string) => {
+ if (name === 'get_settings') return { providers: [provider], activeProviderId: 'p', skillPaths: [], mcpServers: [], maxTurns: 5, self_improvement_enabled: false };
+ if (name === 'list_sessions') return [initial.session];
+ if (name === 'load_session') return structuredClone(initial);
+ if (name === 'save_session') return saveAck;
+})); });
+afterEach(cleanup);
+it('tracks scoped tool/provider phases and remains saving until final acknowledgement', async () => {
+ const hook = renderHook(useAgent);
+ await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => { await hook.result.current.sendMessage('hello'); });
+ const scope = { sessionId: 'origin', runId: hook.result.current.messages.at(-1)!.runId! };
+ expect(hook.result.current.runStatus).toMatchObject({ phase: 'waiting_provider', ...scope, origin: 'chat' });
+ act(() => event({ type: 'tool_update', data: { ...scope, runId: 'stale', tool: {id: 't', name: 'write_file', args: {}, status: 'running'} } }));
+ expect(hook.result.current.runStatus?.phase).toBe('waiting_provider');
+ act(() => event({ type: 'tool_update', data: { ...scope, tool: {id: 't', name: 'write_file', args: {}, status: 'running'} } }));
+ expect(hook.result.current.runStatus?.phase).toBe('running_tool');
+ act(() => event({ type: 'tool_update', data: { ...scope, tool: {id: 't', name: 'write_file', args: {}, status: 'done', filesChanged: [{path:'a', additions:1, deletions:0}]} } }));
+ expect(hook.result.current.runStatus?.phase).toBe('waiting_provider');
+ let resolve!: () => void; saveAck = new Promise<void>(r => { resolve = r; });
+ await act(async () => event({ type: 'done', data: {...scope, cancelled: false} }));
+ expect(hook.result.current.runStatus).toMatchObject({ phase: 'saving_results', outcome: {answer:'completed', filesChanged:true, verification:'not_run'} });
+ await act(async () => { resolve(); });
+ expect(hook.result.current.runStatus?.phase).toBe('completed');
+ await act(async () => { hook.result.current.newSession(); });
+ act(() => event({ type:'error', data:{...scope, message:'stale error'} }));
+ expect(hook.result.current.runStatus).toBeNull();
+});
+it('prepares images under an origin scope and cancellation invalidates the pending send', async () => {
+ const hook = renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ let resolve!: (value: unknown[]) => void;
+ const original = mocks.invoke.getMockImplementation()!;
+ mocks.invoke.mockImplementation((name: string, args: unknown) => name === 'prepare_image_attachments' ? new Promise(r => {resolve = r;}) : original(name,args));
+ let sending!: Promise<boolean>;
+ act(() => { sending = hook.result.current.sendMessage('image', [{id:'image',path:'a.png',name:'a.png',isDir:false}]); });
+ expect(hook.result.current.runStatus?.phase).toBe('preparing_attachments');
+ await act(async () => { await hook.result.current.stopAgent(); });
+ expect(hook.result.current.runStatus?.phase).toBe('cancelled');
+ await act(async () => { resolve([]); expect(await sending).toBe(false); });
+ expect(mocks.invoke.mock.calls.some(([name]) => name === 'send_message')).toBe(false);
+});
+it.each(['cancelled', 'error', 'command'] as const)('records %s without inventing verification and reports save failures separately', async kind => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => { await hook.result.current.sendMessage('work'); });
+ const scope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ if (kind === 'command') act(() => event({type:'tool_update',data:{...scope,tool:{id:'test',name:'run_command',args:{command:'npm test'},status:'done',exitCode:0,result:'all tests passed'}}}));
+ if (kind === 'error') act(() => event({type:'error',data:{...scope,message:'provider broke'}}));
+ let reject!: (error: Error) => void; saveAck=new Promise<void>((_,r)=>{reject=r;});
+ await act(async () => event({type:'done',data:{...scope,cancelled:kind === 'cancelled'}}));
+ expect(hook.result.current.runStatus?.phase).toBe('saving_results');
+ expect(hook.result.current.runStatus?.outcome?.answer).toBe(kind === 'command' ? 'completed' : kind);
+ expect(hook.result.current.runStatus?.outcome?.verification).toBe(kind === 'command' ? 'unknown' : 'not_run');
+ if (kind === 'command') expect(hook.result.current.runStatus?.outcome?.filesChanged).toBeUndefined();
+ await act(async () => { reject(new Error('disk full')); });
+ expect(hook.result.current.runStatus).toMatchObject({phase:'error',saveFailed:true});
+});
+it('does not label streamed pending tool arguments as actual tool execution', async () => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => { await hook.result.current.sendMessage('work'); });
+ const scope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ act(() => event({type:'tool_update',data:{...scope,tool:{id:'pending',name:'write_file',args:{},status:'pending'}}}));
+ expect(hook.result.current.runStatus?.phase).toBe('receiving_answer');
+});
+it('keeps active origin status out of a different viewed session and never persists runtime clocks', async () => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => {await hook.result.current.sendMessage('work');});
+ const scope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ await act(async () => {hook.result.current.newSession();});
+ act(() => {event({type:'tool_update',data:{...scope,tool:{id:'t',name:'read_file',args:{},status:'running'}}});});
+ expect(hook.result.current.runStatus).toBeNull();
+ await act(async () => {event({type:'done',data:{...scope,cancelled:true}});});
+ expect(hook.result.current.runStatus).toBeNull();
+ const saves=mocks.invoke.mock.calls.filter(([name])=>name === 'save_session_page').map(([,args])=>args.data);
+ expect(saves.at(-1).messages.at(-1).runStatus).toBe('cancelled');
+ expect(saves.at(-1).runStatus).toBeUndefined();
+ expect(saves.at(-1).phaseSince).toBeUndefined();
+});
+it('removes the run surface when the viewed conversation is cleared', async () => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => {await hook.result.current.sendMessage('work');});
+ await act(async () => {hook.result.current.clearCurrentSession();});
+ expect(hook.result.current.runStatus).toBeNull();
+});

@@ -13,12 +13,18 @@ interface DiffLine {
   type: 'unchanged' | 'modified' | 'added' | 'deleted' | 'hunk';
 }
 
+const MAX_WORD_DIFF_CHARACTERS = 8000;
+
 /**
  * Basic word-level diff highlight helper.
  * Highlights words that differ between old and new strings.
  */
 function renderWordDiff(oldText: string, newText: string, isNew: boolean): React.ReactNode {
   if (!oldText && !newText) return ' ';
+  // Batasi sorotan sebelum tokenisasi tanpa memotong teks baris.
+  if (oldText.length + newText.length > MAX_WORD_DIFF_CHARACTERS) {
+    return isNew ? newText : oldText;
+  }
   if (!oldText) return <span className="bg-[#238636]/35 rounded px-0.5">{newText}</span>;
   if (!newText) return <span className="bg-[#da3633]/35 rounded px-0.5">{oldText}</span>;
 

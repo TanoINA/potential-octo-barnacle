@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { normalizeMathDelimiters, remarkPreserveMathCode } from './markdownMath';
 import { Copy, Check, ExternalLink, FileText } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { InteractivePlanCard } from './InteractivePlanCard';
+import { safeEncodeURIComponent } from '../utils/encoding';
 
 interface MarkdownRendererProps {
   content: string;
@@ -23,152 +28,159 @@ const safeUrlTransform = (url: string) => {
   return url;
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) => {
-  const cleanedContent = useMemo(() => stripProseEmojis(content), [content]);
+const remarkPlugins = [remarkGfm, remarkMath, remarkPreserveMathCode];
+const rehypePlugins: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
+  [rehypeKatex, { trust: false, strict: 'ignore', maxExpand: 1000, maxSize: 20, errorColor: '#f85149' }],
+];
+const markdownComponents: Components = {
+  p({ children }) {
+    return <p className="mb-2.5 last:mb-0 leading-6">{children}</p>;
+  },
+  strong({ children }) {
+    return <strong className="font-semibold text-white">{children}</strong>;
+  },
+  em({ children }) {
+    return <em className="italic text-[#c9d1d9]">{children}</em>;
+  },
+  ul({ children }) {
+    return <ul className="list-disc list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol className="list-decimal list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ol>;
+  },
+  li({ children }) {
+    return <li className="leading-6 pl-1">{children}</li>;
+  },
+  blockquote({ children }) {
+    return (
+      <blockquote className="border-l-2 border-[#58a6ff] pl-3 py-1 italic text-[#8b949e] my-2.5 bg-[#0d1117]/50 rounded-r">
+        {children}
+      </blockquote>
+    );
+  },
+  a({ href, children }) {
+    const isWeb = Boolean(href && /^(https?:\/\/|mailto:)/i.test(href));
+    const handleClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (!href) return;
+      let target = href;
+      try {
+        target = decodeURIComponent(href);
+      } catch {
+        try {
+          target = decodeURI(href);
+        } catch {
+          // keep original
+        }
+      }
+      if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+        invoke('open_path_or_url', { pathOrUrl: target }).catch((err) => {
+          console.error('Failed to open link or file', err);
+        });
+      } else {
+        window.open(target, '_blank', 'noopener,noreferrer');
+      }
+    };
+
+    return (
+      <a
+        href={href}
+        onClick={handleClick}
+        data-file-link="true"
+        data-file-path={href}
+        className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
+        title={isWeb ? `Open web link: ${href ?? ''}` : `Open file: ${href ?? ''}`}
+      >
+        {children}
+        {isWeb ? (
+          <ExternalLink size={11} className="shrink-0 opacity-70" />
+        ) : (
+          <FileText size={11} className="shrink-0 opacity-70 text-[#a371f7]" />
+        )}
+      </a>
+    );
+  },
+  h1({ children }) {
+    return <h1 className="text-base font-bold text-white mt-4 mb-2 pb-1 border-b border-[#30363d]">{children}</h1>;
+  },
+  h2({ children }) {
+    return <h2 className="text-sm font-semibold text-white mt-3.5 mb-1.5">{children}</h2>;
+  },
+  h3({ children }) {
+    return <h3 className="text-xs font-semibold text-[#58a6ff] mt-3 mb-1">{children}</h3>;
+  },
+  hr() {
+    return <hr className="border-t border-[#30363d] my-3" />;
+  },
+  table({ children }) {
+    return (
+      <div className="overflow-x-auto my-3 rounded-lg border border-[#30363d] bg-[#0d1117] shadow-sm">
+        <table className="w-full text-left border-collapse text-xs select-text">{children}</table>
+      </div>
+    );
+  },
+  thead({ children }) {
+    return <thead className="bg-[#161b22] border-b border-[#30363d] text-[#8b949e] font-semibold tracking-wider text-[11px] uppercase">{children}</thead>;
+  },
+  tbody({ children }) {
+    return <tbody className="divide-y divide-[#30363d]/50 bg-[#0d1117]">{children}</tbody>;
+  },
+  tr({ children }) {
+    return <tr className="even:bg-[#161b22]/30 hover:bg-[#1f242c]/50 transition-colors">{children}</tr>;
+  },
+  th({ children, style }) {
+    return <th style={style} className="px-3.5 py-2.5 text-xs font-semibold text-[#c9d1d9] border-b border-[#30363d]">{children}</th>;
+  },
+  td({ children, style }) {
+    return <td style={style} className="px-3.5 py-2 text-xs text-[#e6edf3] leading-5">{children}</td>;
+  },
+  code({ className, children, ...props }) {
+    const isInline = !className && !String(children).includes('\n');
+    if (isInline) {
+      return (
+        <code
+          className="bg-[#0d1117] text-[#79c0ff] px-1.5 py-0.5 rounded font-mono text-[12px] border border-[#30363d]/70 font-normal"
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    }
+
+    const codeText = String(children).replace(/\n$/, '');
+    return <CodeBlock codeText={codeText} className={className === 'language-literal-math' ? 'language-math' : className} />;
+  },
+};
+
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
+  const cleanedContent = useMemo(() => normalizeMathDelimiters(stripProseEmojis(content)), [content]);
 
   return (
     <div className="markdown-content text-[13px] leading-6 select-text text-[#e6edf3]">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
         urlTransform={safeUrlTransform}
-        components={{
-          p({ children }) {
-            return <p className="mb-2.5 last:mb-0 leading-6">{children}</p>;
-          },
-          strong({ children }) {
-            return <strong className="font-semibold text-white">{children}</strong>;
-          },
-          em({ children }) {
-            return <em className="italic text-[#c9d1d9]">{children}</em>;
-          },
-          ul({ children }) {
-            return <ul className="list-disc list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ul>;
-          },
-          ol({ children }) {
-            return <ol className="list-decimal list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ol>;
-          },
-          li({ children }) {
-            return <li className="leading-6 pl-1">{children}</li>;
-          },
-          blockquote({ children }) {
-            return (
-              <blockquote className="border-l-2 border-[#58a6ff] pl-3 py-1 italic text-[#8b949e] my-2.5 bg-[#0d1117]/50 rounded-r">
-                {children}
-              </blockquote>
-            );
-          },
-          a({ href, children }) {
-            const isWeb = Boolean(href && /^(https?:\/\/|mailto:)/i.test(href));
-            const handleClick = (e: React.MouseEvent) => {
-              e.preventDefault();
-              if (!href) return;
-              let target = href;
-              try {
-                target = decodeURIComponent(href);
-              } catch {
-                try {
-                  target = decodeURI(href);
-                } catch {
-                  // keep original
-                }
-              }
-              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                invoke('open_path_or_url', { pathOrUrl: target }).catch((err) => {
-                  console.error('Failed to open link or file', err);
-                });
-              } else {
-                window.open(target, '_blank', 'noopener,noreferrer');
-              }
-            };
-
-            return (
-              <a
-                href={href}
-                onClick={handleClick}
-                data-file-link="true"
-                data-file-path={href}
-                className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
-                title={isWeb ? `Open web link: ${href ?? ''}` : `Open file: ${href ?? ''}`}
-              >
-                {children}
-                {isWeb ? (
-                  <ExternalLink size={11} className="shrink-0 opacity-70" />
-                ) : (
-                  <FileText size={11} className="shrink-0 opacity-70 text-[#a371f7]" />
-                )}
-              </a>
-            );
-          },
-          h1({ children }) {
-            return <h1 className="text-base font-bold text-white mt-4 mb-2 pb-1 border-b border-[#30363d]">{children}</h1>;
-          },
-          h2({ children }) {
-            return <h2 className="text-sm font-semibold text-white mt-3.5 mb-1.5">{children}</h2>;
-          },
-          h3({ children }) {
-            return <h3 className="text-xs font-semibold text-[#58a6ff] mt-3 mb-1">{children}</h3>;
-          },
-          hr() {
-            return <hr className="border-t border-[#30363d] my-3" />;
-          },
-          table({ children }) {
-            return (
-              <div className="overflow-x-auto my-3 rounded-lg border border-[#30363d] bg-[#0d1117] shadow-sm">
-                <table className="w-full text-left border-collapse text-xs select-text">{children}</table>
-              </div>
-            );
-          },
-          thead({ children }) {
-            return <thead className="bg-[#161b22] border-b border-[#30363d] text-[#8b949e] font-semibold tracking-wider text-[11px] uppercase">{children}</thead>;
-          },
-          tbody({ children }) {
-            return <tbody className="divide-y divide-[#30363d]/50 bg-[#0d1117]">{children}</tbody>;
-          },
-          tr({ children }) {
-            return <tr className="even:bg-[#161b22]/30 hover:bg-[#1f242c]/50 transition-colors">{children}</tr>;
-          },
-          th({ children, style }) {
-            return <th style={style} className="px-3.5 py-2.5 text-xs font-semibold text-[#c9d1d9] border-b border-[#30363d]">{children}</th>;
-          },
-          td({ children, style }) {
-            return <td style={style} className="px-3.5 py-2 text-xs text-[#e6edf3] leading-5">{children}</td>;
-          },
-          code({ className, children, ...props }) {
-            const isInline = !className && !String(children).includes('\n');
-            if (isInline) {
-              return (
-                <code
-                  className="bg-[#0d1117] text-[#79c0ff] px-1.5 py-0.5 rounded font-mono text-[12px] border border-[#30363d]/70 font-normal"
-                  {...props}
-                >
-                  {children}
-                </code>
-              );
-            }
-
-            const codeText = String(children).replace(/\n$/, '');
-            return <CodeBlock codeText={codeText} className={className} />;
-          },
-        }}
+        components={markdownComponents}
       >
         {cleanedContent}
       </ReactMarkdown>
     </div>
   );
-};
+});
 
 function CodeBlock({ codeText, className }: { codeText: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
   const lang = className ? className.replace('language-', '') : '';
 
-  if (lang === 'plan') {
-    return <InteractivePlanCard rawPlan={codeText} />;
-  }
-
   useEffect(() => () => {
     if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
   }, []);
+
+  if (lang === 'plan') {
+    return <InteractivePlanCard rawPlan={codeText} />;
+  }
 
   const handleCopy = async () => {
     try {
@@ -194,7 +206,7 @@ function CodeBlock({ codeText, className }: { codeText: string; className?: stri
     <div
       data-code-block="true"
       data-code-lang={lang}
-      data-code-content={encodeURIComponent(codeText)}
+      data-code-content={safeEncodeURIComponent(codeText)}
       className="relative my-3 rounded-xl bg-[#0d1117] border border-[#30363d] overflow-hidden group shadow-sm"
     >
       <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#161b22] border-b border-[#30363d] text-[11px] text-[#8b949e] font-mono">

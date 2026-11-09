@@ -17,6 +17,7 @@ type SettingsTab = 'providers' | 'agent' | 'integrations';
 
 
 interface SettingsModalProps {
+  onAbout?: () => void;
 
   settings: AgentSettings;
 
@@ -66,9 +67,9 @@ function parseEnv(value: string): Record<string, string> {
 
 
 
-export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps) {
+export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsModalProps) {
 
-  const [form, setForm] = useState<AgentSettings>(() => structuredClone(settings));
+  const [form, setForm] = useState<AgentSettings>(() => ({ ...structuredClone(settings), self_improvement_enabled: settings.self_improvement_enabled ?? true }));
 
   const [envDrafts, setEnvDrafts] = useState<Record<string, string>>(() => Object.fromEntries(settings.mcpServers.map((server) => [server.id, envText(server)])));
 
@@ -293,14 +294,15 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
 
   return (
 
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <div className="ui-overlay-enter fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
 
-      <section ref={dialogRef} tabIndex={-1} className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-2xl" role="dialog" aria-modal="true" aria-label="AetherAgent settings">
+      <section ref={dialogRef} tabIndex={-1} className="ui-panel-enter flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-lg" role="dialog" aria-modal="true" aria-label="AetherAgent settings">
 
         <header className="flex items-center justify-between border-b border-[#30363d] bg-[#0d1117] px-4 py-3">
 
           <div><h2 className="text-sm font-semibold">Settings</h2><p className="text-[11px] text-[#8b949e]">Providers, agent defaults, skills, and MCP</p></div>
 
+          {onAbout && <button type="button" className="toolbar-button" onClick={onAbout} disabled={saving}>About AetherAgent</button>}
           <button type="button" className="icon-button" onClick={onClose} disabled={saving} aria-label="Close settings"><X size={16} /></button>
 
         </header>
@@ -591,15 +593,35 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
 
                 <label className="flex items-center gap-2 text-xs">
 
-                  <input type="checkbox" className="accent-[#58a6ff]" checked={form.self_improvement_enabled ?? false} aria-describedby="reflection-settings-description" onChange={(event) => setForm({ ...form, self_improvement_enabled: event.target.checked })} />
+                  <input type="checkbox" className="accent-[#58a6ff]" checked={form.self_improvement_enabled ?? true} aria-describedby="reflection-settings-description" onChange={(event) => setForm({ ...form, self_improvement_enabled: event.target.checked })} />
 
                   Enable automatic self-improvement
 
                 </label>
 
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs">Creation nudge interval
+                    <input aria-label="Creation nudge interval" type="number" min={0} step={1} className="settings-input" value={form.reviewConfig?.creationNudgeInterval ?? 10} onChange={(event) => setForm({ ...form, reviewConfig: { ...form.reviewConfig, creationNudgeInterval: Math.max(0, Math.floor(Number(event.target.value) || 0)) } })} />
+                    <span className="block text-[11px] text-[#8b949e]">Provider iterations across turns between reviews. 0 disables automatic reviews.</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="accent-[#58a6ff]" checked={form.reviewConfig?.writeApproval ?? false} onChange={(event) => setForm({ ...form, reviewConfig: { ...form.reviewConfig, writeApproval: event.target.checked } })} />
+                    Require approval before writing skills
+                  </label>
+                  <label className="space-y-1 text-xs">Review provider
+                    <select className="settings-input" value={form.reviewConfig?.auxiliaryProviderId ?? ''} onChange={(event) => setForm({ ...form, reviewConfig: { ...form.reviewConfig, auxiliaryProviderId: event.target.value || undefined } })}>
+                      <option value="">Use current provider</option>
+                      {form.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs">Skill creation directory
+                    <input type="text" className="settings-input" placeholder="Default global skills directory" value={form.reviewConfig?.createDir ?? ''} onChange={(event) => setForm({ ...form, reviewConfig: { ...form.reviewConfig, createDir: event.target.value || undefined } })} />
+                  </label>
+                </div>
+
                 <p id="reflection-settings-description" className="text-[11px] leading-5 text-[#8b949e]">
 
-                  Off by default. After a successful run with multiple turns or tool activity, automatic reflection makes an extra request to the active provider and may create or update local SKILL.md files in .aether/skills. The /review and /reflect commands work on demand even when automatic self-improvement is disabled.
+                  Automatic reflection uses a creation nudge interval (default 10 provider iterations across turns; 0 disables automatic reviews). It makes an extra request to the active provider or selected review provider and can continue for up to 16 review iterations and may create or update SKILL.md files in the global skills directory or your chosen directory. Enable write approval to stage proposals before any skill writes. No workspace is required. The /review, /reflect and /refine commands work on demand even when automatic self-improvement is disabled.
 
                 </p>
 
@@ -800,4 +822,3 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
   );
 
 }
-

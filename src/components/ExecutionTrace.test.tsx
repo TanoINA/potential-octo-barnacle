@@ -1,11 +1,127 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolCallItem } from '../types/agent';
 import { ExecutionTrace } from './ExecutionTrace';
 
 function tool(overrides: Partial<ToolCallItem> = {}): ToolCallItem {
   return { id: 'tool-1', name: 'write_file', args: { path: 'report.txt' }, status: 'error', result: 'Permission denied', ...overrides };
 }
+
+describe('ExecutionTrace command encoding safety', () => {
+  it.each([
+    ['lone high surrogate', 'Write-Output \uD800', 'Write-Output \uFFFD'],
+    ['lone low surrogate', 'Write-Output \uDC00', 'Write-Output \uFFFD'],
+    ['mixed surrogates', 'Write-Output \uD83D\uDE80\uD800\uD83D\uDE80\uDC00', 'Write-Output \uD83D\uDE80\uFFFD\uD83D\uDE80\uFFFD'],
+    ['valid surrogate pair', 'Write-Output \uD83D\uDE80', 'Write-Output \uD83D\uDE80'],
+  ])('renders a raw partial JSON command containing %s', (_, command, expected) => {
+    const raw = '{"command":"' + command;
+    const { container } = render(<ExecutionTrace toolCalls={[tool({ name: 'run_command', args: {}, argumentsRaw: raw, status: 'running', result: '' })]} />);
+    const row = container.querySelector('[data-code-block="true"]');
+    expect(row).not.toBeNull();
+    expect(decodeURIComponent(row!.getAttribute('data-code-content')!)).toBe(expected);
+    expect(row!.getAttribute('data-code-lang')).toBe('powershell');
+    expect(row!.textContent).toContain(command);
+    expect(container.querySelector('pre[data-selectable-text="true"]')?.textContent).toBe(raw);
+  });
+});
+
+describe('ExecutionTrace render stability', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not reparse static arguments on elapsed ticks or unchanged tool identities', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const staticRaw = JSON.stringify({ path: 'trace-render-static.txt', marker: 'trace-render-static' });
+    const activeRaw = JSON.stringify({ path: 'trace-render-active.txt', marker: 'trace-render-active' });
+    const staticTool = tool({ id: 'static', name: 'read_file', args: {}, argumentsRaw: staticRaw, status: 'done', result: 'Static result' });
+    const activeTool = tool({ id: 'active', name: 'read_file', args: {}, argumentsRaw: activeRaw, status: 'running', startedAt: 7_000, result: '' });
+    const realParse = JSON.parse;
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation((...args: Parameters<typeof JSON.parse>) => realParse(...args));
+    const countParses = (raw: string) => parse.mock.calls.filter(([input]) => input === raw).length;
+    const { rerender } = render(<ExecutionTrace toolCalls={[staticTool, activeTool]} />);
+    expect(countParses(staticRaw)).toBeGreaterThan(0);
+    expect(countParses(activeRaw)).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Reading trace-render-active.txt.*3s/ })).toBeTruthy();
+    parse.mockClear();
+
+    for (let elapsed = 4; elapsed <= 6; elapsed += 1) {
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(screen.getByRole('button', { name: new RegExp(`Reading trace-render-active.txt.*${elapsed}s`) })).toBeTruthy();
+      expect(countParses(staticRaw)).toBe(0);
+      expect(countParses(activeRaw)).toBe(0);
+    }
+
+    rerender(<ExecutionTrace toolCalls={[staticTool, activeTool]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Read trace-render-static.txt' }));
+    expect(screen.getByText('Static result')).toBeTruthy();
+    expect(countParses(staticRaw)).toBe(0);
+    expect(countParses(activeRaw)).toBe(0);
+
+    const updatedRaw = JSON.stringify({ path: 'trace-render-updated.txt', marker: 'trace-render-updated' });
+    rerender(<ExecutionTrace toolCalls={[staticTool, { ...activeTool, argumentsRaw: updatedRaw }]} />);
+    expect(screen.getByRole('button', { name: /Reading trace-render-updated.txt.*6s/ })).toBeTruthy();
+    expect(countParses(updatedRaw)).toBeGreaterThan(0);
+    expect(countParses(staticRaw)).toBe(0);
+    expect(countParses(activeRaw)).toBe(0);
+    parse.mockClear();
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByRole('button', { name: /Reading trace-render-updated.txt.*7s/ })).toBeTruthy();
+    expect(countParses(updatedRaw)).toBe(0);
+    expect(countParses(staticRaw)).toBe(0);
+
+    const header = screen.getByRole('button', { name: /2 steps in progress/ });
+    fireEvent.click(header);
+    fireEvent.click(header);
+    expect(screen.getByText('Static result')).toBeTruthy();
+    expect(countParses(staticRaw)).toBe(0);
+    expect(countParses(updatedRaw)).toBe(0);
+  });
+
+  it('ticks only visible active durations once per second without remapping the trace', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const tools = [
+      tool({ id: 'static', name: 'read_file', args: { path: 'static.txt' }, status: 'done' }),
+      tool({ id: 'active', name: 'read_file', args: { path: 'active.txt' }, status: 'running', startedAt: 7_000 }),
+      tool({ id: 'pending', name: 'read_file', args: { path: 'pending.txt' }, status: 'pending', startedAt: 9_000 }),
+    ];
+    const map = vi.spyOn(tools, 'map');
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const { rerender, unmount } = render(<ExecutionTrace toolCalls={tools} isStreaming />);
+    expect(interval.mock.calls.map(([, delay]) => delay)).toEqual([1000, 1000]);
+    expect(vi.getTimerCount()).toBe(2);
+    map.mockClear();
+
+    act(() => { vi.advanceTimersByTime(999); });
+    expect(screen.getByRole('button', { name: /Reading active.txt.*3s/ })).toBeTruthy();
+    expect(map).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByRole('button', { name: /Reading active.txt.*4s/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Reading pending.txt.*2s/ })).toBeTruthy();
+    expect(map).not.toHaveBeenCalled();
+
+    const header = screen.getByRole('button', { name: /3 steps in progress/ });
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => { vi.advanceTimersByTime(2000); });
+    fireEvent.click(header);
+    expect(vi.getTimerCount()).toBe(2);
+    expect(screen.getByRole('button', { name: /Reading active.txt.*6s/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Reading pending.txt.*4s/ })).toBeTruthy();
+
+    rerender(<ExecutionTrace toolCalls={tools.map((item) => ({ ...item, status: 'done' as const, durationMs: 500 }))} isStreaming />);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByText('500ms')).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+    rerender(<ExecutionTrace toolCalls={tools} isStreaming />);
+    expect(vi.getTimerCount()).toBe(2);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('ExecutionTrace truthful details', () => {
   it.each([

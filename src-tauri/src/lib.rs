@@ -4,12 +4,32 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tokio::io::AsyncWriteExt;
 
 mod agent;
+use agent::events::{AgentHost, EventSink};
 use agent::runner::AgentRunner;
 use agent::storage;
 use agent::types::{
-    AgentRunRequest, AgentSettings, McpServerConfig, ProviderConfig, Session, SessionData,
-    SkillInfo,
+    AgentRunRequest, AgentSettings, Artifact, McpServerConfig, ProviderConfig, Session,
+    SessionData, SessionPage, SessionWindow, SkillInfo,
 };
+
+/// Desktop-only adapter; the shared backend never depends on Tauri or a WebView.
+struct TauriEventSink(AppHandle);
+
+impl EventSink for TauriEventSink {
+    fn emit(&self, topic: &str, payload: serde_json::Value) -> Result<(), String> {
+        self.0.emit(topic, payload).map_err(|error| error.to_string())
+    }
+}
+
+impl From<AppHandle> for AgentHost {
+    fn from(app: AppHandle) -> Self {
+        Self::new(TauriEventSink(app))
+    }
+}
+
+fn host(app: AppHandle) -> AgentHost {
+    app.into()
+}
 
 pub struct AppState {
     pub workspace_cwd: Mutex<String>,
@@ -45,8 +65,10 @@ fn validate_council_scope(a: &AgentRunRequest, b: &AgentRunRequest) -> Result<()
 async fn send_message(
     app: AppHandle,
     state: State<'_, AppState>,
-    request: AgentRunRequest,
+    mut request: AgentRunRequest,
 ) -> Result<(), String> {
+    storage::hydrate_run_history(&mut request).await?;
+    agent::images::validate_request_images(&request.messages, &request.provider)?;
     let cwd = state
         .workspace_cwd
         .lock()
@@ -57,7 +79,7 @@ async fn send_message(
     let cancel = runner.begin(&request.run_id, &request.session_id)?;
     let run_id = request.run_id.clone();
     tokio::spawn(async move {
-        runner.run(app, cwd, request, cancel).await;
+        runner.run(host(app), cwd, request, cancel).await;
         runner.finish(&run_id);
     });
     Ok(())
@@ -67,9 +89,14 @@ async fn send_message(
 async fn send_council_message(
     app: AppHandle,
     state: State<'_, AppState>,
-    request_a: AgentRunRequest,
-    request_b: AgentRunRequest,
+    mut request_a: AgentRunRequest,
+    mut request_b: AgentRunRequest,
 ) -> Result<(), String> {
+    validate_council_scope(&request_a, &request_b)?;
+    storage::hydrate_run_history(&mut request_a).await?;
+    storage::hydrate_run_history(&mut request_b).await?;
+    agent::images::validate_request_images(&request_a.messages, &request_a.provider)?;
+    agent::images::validate_request_images(&request_b.messages, &request_b.provider)?;
     let cwd = state
         .workspace_cwd
         .lock()
@@ -87,7 +114,7 @@ async fn send_council_message(
     let run_id = request_a.run_id.clone();
     tokio::spawn(async move {
         runner
-            .run_council(app, cwd, request_a, request_b, cancel)
+            .run_council(host(app), cwd, request_a, request_b, cancel)
             .await;
         runner.finish(&run_id);
     });
@@ -101,7 +128,72 @@ async fn review_session(
     session_id: String,
     provider: ProviderConfig,
 ) -> Result<(), String> {
-    state.runner.review_session(app, session_id, provider).await
+    state.runner.review_session(host(app), session_id, provider).await
+}
+
+// Keep this in sync with review::creation_root; relative configuration is home-,
+// not workspace-relative. The review module owns its implementation.
+fn review_creation_root(config: &agent::types::ReviewConfig) -> Result<std::path::PathBuf, String> {
+    agent::skills::review_creation_root(config)
+}
+
+fn linked_review_change<'a>(
+    data: &'a SessionData,
+    skill_name: &str,
+    run_id: Option<&str>,
+    file_path: Option<&str>,
+) -> Result<
+    (
+        &'a agent::types::SelfImprovementEvent,
+        Option<&'a agent::types::SelfImprovementChange>,
+    ),
+    String,
+> {
+    for review in data
+        .messages
+        .iter()
+        .rev()
+        .filter_map(|m| m.self_improvement.as_ref())
+    {
+        if review.session_id != data.session.id || run_id.is_some_and(|id| id != review.run_id) {
+            continue;
+        }
+        let changes: Vec<_> = review
+            .changes
+            .iter()
+            .filter(|change| {
+                if change.skill_name != skill_name {
+                    return false;
+                }
+                file_path.is_none_or(|requested| {
+                    change.file_path.as_deref() == Some(requested)
+                        || change
+                            .skill_path
+                            .as_ref()
+                            .zip(change.file_path.as_ref())
+                            .is_some_and(|(root, target)| {
+                                !std::path::Path::new(requested).is_absolute()
+                                    && std::path::Path::new(root).join(requested)
+                                        == std::path::Path::new(target)
+                            })
+                })
+            })
+            .collect();
+        if changes.len() > 1 && changes.iter().any(|c| c.file_path != changes[0].file_path) {
+            return Err("Multiple reviewed files match this skill; select a file_path".into());
+        }
+        if let Some(change) = changes.first() {
+            return Ok((review, Some(*change)));
+        }
+        // Only genuinely legacy events authorize the workspace-generated fallback.
+        if review.changes.is_empty()
+            && review.skill_name.as_deref() == Some(skill_name)
+            && file_path.is_none()
+        {
+            return Ok((review, None));
+        }
+    }
+    Err("This skill file is not associated with a review in the selected session".into())
 }
 
 #[tauri::command]
@@ -109,25 +201,212 @@ async fn read_reflection_skill(
     session_id: String,
     skill_name: String,
     run_id: Option<String>,
+    file_path: Option<String>,
 ) -> Result<String, String> {
     let data = storage::load_session(&session_id).await?;
-    let review = data
-        .messages
-        .iter()
-        .filter_map(|message| message.self_improvement.as_ref())
-        .find(|review| {
-            review.skill_name.as_deref() == Some(skill_name.as_str())
-                && run_id.as_ref().is_none_or(|id| id == &review.run_id)
-        })
-        .ok_or("This skill is not associated with a review in the selected session")?;
+    let (review, change) =
+        linked_review_change(&data, &skill_name, run_id.as_deref(), file_path.as_deref())?;
     let cwd = review
         .workspace_cwd
         .as_ref()
-        .or(data.session.workspace_cwd.as_ref())
-        .ok_or("The session has no workspace")?;
-    agent::reflection::read_generated_skill(cwd, &skill_name).await
+        .or(data.session.workspace_cwd.as_ref());
+    let Some(change) = change else {
+        return agent::reflection::read_generated_skill(
+            cwd.ok_or("The session has no workspace")?,
+            &skill_name,
+        )
+        .await;
+    };
+    let settings = storage::load_settings().await?;
+    let mut store = agent::review_skills::ReviewSkillStore::new(
+        cwd.map(String::as_str).unwrap_or(""),
+        &settings.skill_paths,
+        review_creation_root(&settings.review_config)?,
+        agent::review_pending::pending_root()?,
+        settings.review_config.write_approval,
+        &review.run_id,
+        &session_id,
+    )
+    .await?;
+    let target = change
+        .file_path
+        .as_deref()
+        .ok_or("The reviewed change has no linked file")?;
+    let root = change
+        .skill_path
+        .as_deref()
+        .ok_or("The reviewed change has no skill directory")?;
+    let relative = std::path::Path::new(target)
+        .strip_prefix(root)
+        .map_err(|_| "The reviewed file is outside its skill directory")?;
+    let relative = relative
+        .to_str()
+        .ok_or("Invalid reviewed file path")?
+        .replace('\\', "/");
+    let view = store
+        .execute(
+            "skill_view",
+            &serde_json::json!({"name":skill_name,"file_path":relative}),
+        )
+        .await?;
+    // Name collisions or changed catalog precedence must never show another file.
+    if view["file_path"].as_str().map(std::path::Path::new) != Some(std::path::Path::new(target)) {
+        return Err("The discovered skill does not match the reviewed file".into());
+    }
+    view["content"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "Skill content unavailable".into())
 }
 
+#[tauri::command]
+async fn list_review_proposals(session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    storage::load_session(&session_id).await?;
+    agent::review_pending::list_pending(&agent::review_pending::pending_root()?, &session_id).await
+}
+
+#[tauri::command]
+async fn review_proposal_diff(session_id: String, id: String) -> Result<serde_json::Value, String> {
+    agent::review_pending::pending_diff(&agent::review_pending::pending_root()?, &id, &session_id)
+        .await
+}
+
+fn validate_pending_session(
+    data: &SessionData,
+    session_id: &str,
+    run_id: &str,
+    id: &str,
+) -> Result<(), String> {
+    if data.session.id != session_id || run_id.is_empty() {
+        return Err("Pending proposal session/run mismatch".into());
+    }
+    let linked = data
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .filter_map(|m| m.self_improvement.as_ref())
+        .any(|e| {
+            e.session_id == session_id
+                && e.run_id == run_id
+                && e.changes
+                    .iter()
+                    .any(|c| c.pending_id.as_deref() == Some(id))
+        });
+    if linked
+        || data.messages.iter().any(|m| {
+            m.role == "assistant"
+                && (m.run_id.as_deref() == Some(run_id) || m.id == run_id)
+                && m.self_improvement
+                    .as_ref()
+                    .is_none_or(|e| e.session_id == session_id && e.run_id == run_id)
+        })
+    {
+        return Ok(());
+    }
+    Err("The originating assistant turn is not saved; wait for the run to finish and retry".into())
+}
+
+/// Select the entire authoritative event, not a synthetic single-change update.
+fn resolved_review_event<'a>(
+    data: &'a SessionData,
+    session_id: &str,
+    run_id: &str,
+    id: &str,
+) -> Result<&'a agent::types::SelfImprovementEvent, String> {
+    use agent::types::SelfImprovementAction;
+    if data.session.id == session_id {
+        if let Some(event) = data
+            .messages
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .filter_map(|m| m.self_improvement.as_ref())
+            .find(|e| {
+                e.session_id == session_id
+                    && e.run_id == run_id
+                    && e.changes.iter().any(|c| {
+                        c.pending_id.as_deref() == Some(id)
+                            && c.action != SelfImprovementAction::SkillStaged
+                    })
+            })
+        {
+            return Ok(event);
+        }
+    }
+    Err("Resolved proposal event is unavailable in native history".into())
+}
+
+async fn emit_resolved_review(
+    app: &AppHandle,
+    session_id: &str,
+    run_id: &str,
+    id: &str,
+) -> Result<(), String> {
+    let data = storage::load_session(session_id).await?;
+    app.emit(
+        "agent:self-improvement",
+        resolved_review_event(&data, session_id, run_id, id)?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+async fn validate_review_proposal(session_id: &str, id: &str) -> Result<String, String> {
+    let root = agent::review_pending::pending_root()?;
+    let proposal = agent::review_pending::pending_diff(&root, id, session_id).await?;
+    let run_id = proposal["run_id"]
+        .as_str()
+        .ok_or("Pending proposal has no run")?;
+    let data = storage::load_session(session_id).await?;
+    validate_pending_session(&data, session_id, run_id, id)?;
+    // Revalidate against sealed staging authority and merge under SESSION_IO_LOCK
+    // before either decision removes the native pending record.
+    storage::attach_pending_link(&root, id, session_id).await?;
+    Ok(run_id.to_owned())
+}
+
+#[tauri::command]
+async fn approve_review_proposal(
+    app: AppHandle,
+    session_id: String,
+    id: String,
+) -> Result<agent::types::SelfImprovementChange, String> {
+    let run_id = validate_review_proposal(&session_id, &id).await?;
+    let mut change = agent::review_pending::approve_pending(&agent::review_pending::pending_root()?, &id, &session_id)
+        .await.map_err(|error| format!("Approval did not complete: {error}. A skill write may already have occurred if pending cleanup failed; inspect the file before retrying."))?;
+    change.pending_id = Some(id.clone());
+    // Do not report an applied mutation as an unapplied failure.
+    let refresh = async {
+        storage::resolve_review_proposal(&session_id, &id, Some(change.clone())).await?;
+        emit_resolved_review(&app, &session_id, &run_id, &id).await
+    }
+    .await;
+    if let Err(error) = refresh {
+        change.summary = Some(format!("{}; WARNING: skill operation completed, but review history could not be saved or refreshed: {error}", change.summary.as_deref().unwrap_or("Approved review change")));
+    }
+    Ok(change)
+}
+
+#[tauri::command]
+async fn reject_review_proposal(
+    app: AppHandle,
+    session_id: String,
+    id: String,
+) -> Result<(), String> {
+    let run_id = validate_review_proposal(&session_id, &id).await?;
+    agent::review_pending::reject_pending(
+        &agent::review_pending::pending_root()?,
+        &id,
+        &session_id,
+    )
+    .await?;
+    let refresh = async {
+        storage::resolve_review_proposal(&session_id, &id, None).await?;
+        emit_resolved_review(&app, &session_id, &run_id, &id).await
+    }
+    .await;
+    refresh.map_err(|error| {
+        format!("Proposal rejected, but review history could not be saved or refreshed: {error}")
+    })
+}
 #[tauri::command]
 fn abort_agent(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
     state.runner.abort(&run_id)
@@ -144,6 +423,14 @@ async fn save_settings(settings: AgentSettings) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn warm_session_index(
+    limit: usize,
+    budget_ms: u64,
+) -> Result<agent::session_pages::WarmIndexResult, String> {
+    agent::history_maintenance::warm_session_index(limit, budget_ms).await
+}
+
+#[tauri::command]
 async fn list_sessions() -> Result<Vec<Session>, String> {
     storage::list_sessions().await
 }
@@ -154,8 +441,96 @@ async fn load_session(session_id: String) -> Result<SessionData, String> {
 }
 
 #[tauri::command]
+async fn load_session_page(
+    session_id: String,
+    before: Option<usize>,
+    limit: usize,
+    revision: Option<String>,
+) -> Result<SessionPage, String> {
+    storage::load_session_page(&session_id, before, limit, revision).await
+}
+
+#[tauri::command]
+async fn load_session_around(
+    session_id: String,
+    message_id: String,
+    limit: usize,
+) -> Result<SessionPage, String> {
+    storage::load_session_around(&session_id, &message_id, limit).await
+}
+
+#[tauri::command]
+async fn save_session_page(
+    data: SessionData,
+    window: SessionWindow,
+) -> Result<SessionWindow, String> {
+    storage::save_session_page(data, window).await
+}
+
+#[tauri::command]
+async fn recover_save_ack(
+    session_id: String,
+    proof: storage::CommittedSaveProof,
+) -> Result<SessionPage, String> {
+    storage::recover_save_ack(&session_id, proof).await
+}
+
+#[tauri::command]
+async fn refresh_session_window(
+    session_id: String,
+    data: SessionData,
+    window: SessionWindow,
+    allow_metadata: bool,
+    review_run_id: Option<String>,
+) -> Result<SessionWindow, String> {
+    storage::refresh_session_window(
+        &session_id,
+        data,
+        window,
+        allow_metadata,
+        review_run_id.as_deref(),
+    )
+    .await
+}
+#[tauri::command]
+async fn checkpoint_session_page(
+    data: SessionData,
+    window: SessionWindow,
+) -> Result<SessionWindow, String> {
+    storage::checkpoint_session_page(data, window).await
+}
+
+#[tauri::command]
+async fn read_message_image_inputs(
+    session_id: String,
+    message_id: String,
+) -> Result<Vec<agent::types::ImageInput>, String> {
+    storage::read_message_image_inputs(&session_id, &message_id).await
+}
+
+#[tauri::command]
+async fn read_session_artifact(
+    session_id: String,
+    artifact_id: String,
+) -> Result<Artifact, String> {
+    storage::read_session_artifact(&session_id, &artifact_id).await
+}
+
+#[tauri::command]
+async fn rename_session_summary(session_id: String, title: String) -> Result<Session, String> {
+    storage::rename_session_summary(&session_id, &title).await
+}
+#[tauri::command]
 async fn save_session(data: SessionData) -> Result<(), String> {
     storage::save_session(data).await
+}
+
+#[tauri::command]
+async fn checkpoint_session_delta(
+    session_id: String,
+    request: agent::types::CheckpointDelta,
+) -> Result<agent::types::CheckpointAck, String> {
+    storage::checkpoint_session_delta(&session_id, request).await
 }
 
 #[tauri::command]
@@ -449,7 +824,12 @@ async fn list_skills(
         .lock()
         .map_err(|_| "Workspace lock is unavailable")?
         .clone();
-    let paths = agent::skills::workspace_skill_paths(&cwd, paths.as_deref().unwrap_or_default());
+    let settings = storage::load_settings().await?;
+    let paths = agent::skills::effective_skill_paths(
+        &cwd,
+        paths.as_deref().unwrap_or(&settings.skill_paths),
+        &settings.review_config,
+    )?;
     Ok(agent::skills::load_skills(&paths).await)
 }
 
@@ -574,16 +954,30 @@ fn inspect_paths(paths: Vec<String>) -> Vec<agent::types::AttachedContext> {
 }
 
 #[tauri::command]
+async fn prepare_image_attachments(
+    attachments: Vec<agent::types::AttachedContext>,
+) -> Result<Vec<agent::types::ImageInput>, String> {
+    tokio::task::spawn_blocking(move || agent::images::prepare_attachments(&attachments))
+        .await
+        .map_err(|e| format!("Image preparation task failed: {e}"))?
+}
+
+#[tauri::command]
 async fn save_pasted_attachment(
     state: State<'_, AppState>,
     name: String,
     bytes: Vec<u8>,
+    expected_workspace: Option<String>,
 ) -> Result<agent::types::AttachedContext, String> {
     let cwd = state
         .workspace_cwd
         .lock()
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
+    // Reject a workspace switch during the frontend file read, then bind the
+    // destination before the asynchronous write (never re-read global state).
+    validate_memory_workspace(expected_workspace.as_deref(), &cwd)?;
+    let cwd = bind_workspace(expected_workspace.as_deref(), &cwd)?;
     storage::save_attachment(Some(&cwd), &name, &bytes).await
 }
 
@@ -941,7 +1335,7 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .args(["-a", "Terminal", &target_dir.to_string_lossy()])
+            .args(["-a", "Terminal", &valid_dir.to_string_lossy()])
             .spawn()
             .map_err(|e| format!("Failed to open terminal: {e}"))?;
         Ok(())
@@ -949,11 +1343,11 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         std::process::Command::new("x-terminal-emulator")
-            .current_dir(&target_dir)
+            .current_dir(&valid_dir)
             .spawn()
             .or_else(|_| {
                 std::process::Command::new("terminal")
-                    .current_dir(&target_dir)
+                    .current_dir(&valid_dir)
                     .spawn()
             })
             .map_err(|e| format!("Failed to open terminal: {e}"))?;
@@ -988,12 +1382,36 @@ async fn get_background_task_output(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "diagnostics")]
+    if let Err(error) = agent::native_smoke::enter() {
+        eprintln!("Diagnostic mode rejected: {error}");
+        std::process::exit(2);
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    if std::env::args().skip(1).any(|arg| {
+        arg.starts_with("--diagnostic") || arg.starts_with("--smoke-test") || arg == "--data-dir"
+    }) {
+        eprintln!("Diagnostic flags require a build with --features diagnostics");
+        std::process::exit(2);
+    }
+    let context = tauri::generate_context!();
+    #[cfg(feature = "diagnostics")]
+    let mut context = context;
+    #[cfg(feature = "diagnostics")]
+    if let Some(root) = agent::native_smoke::profile() {
+        for window in &mut context.config_mut().app.windows {
+            window.data_directory = Some(root.join("webview-profile"));
+            window.title = "AetherAgent ? isolated diagnostic profile".into();
+        }
+    }
     let initial_cwd = storage::load_workspace_sync();
     agent::skills::init_skills_environment();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(agent::release::ReleaseState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -1009,6 +1427,10 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            #[cfg(feature = "diagnostics")]
+            if agent::native_smoke::profile().is_some() {
+                return Ok(());
+            }
             if let Ok(shortcut) = "Alt+Space".parse::<Shortcut>() {
                 let _ = app.global_shortcut().register(shortcut);
             }
@@ -1019,17 +1441,36 @@ pub fn run() {
             runner: Arc::new(AgentRunner::new()),
         })
         .invoke_handler(tauri::generate_handler![
+            agent::release::get_release_info,
+            agent::release::check_release_update,
+            agent::release::install_release_update,
+            agent::release::restart_after_update,
             send_message,
             review_session,
             read_reflection_skill,
+            list_review_proposals,
+            review_proposal_diff,
+            approve_review_proposal,
+            reject_review_proposal,
             send_council_message,
             abort_agent,
             get_settings,
             save_settings,
             list_sessions,
+            warm_session_index,
             load_session,
+            load_session_page,
+            load_session_around,
+            save_session_page,
+            recover_save_ack,
+            refresh_session_window,
+            checkpoint_session_page,
+            read_session_artifact,
+            read_message_image_inputs,
+            rename_session_summary,
             save_session,
             checkpoint_session,
+            checkpoint_session_delta,
             rename_session,
             toggle_pin_session,
             list_all_artifacts,
@@ -1058,6 +1499,7 @@ pub fn run() {
             save_workspace_agents_md,
             inspect_paths,
             save_pasted_attachment,
+            prepare_image_attachments,
             open_path_or_url,
             reveal_in_explorer,
             open_terminal,
@@ -1065,13 +1507,186 @@ pub fn run() {
             kill_background_task,
             get_background_task_output
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running AetherAgent application");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_preflight_precedes_run_registration_and_runner_side_effects() {
+        let ipc = include_str!("lib.rs");
+        let single = ipc
+            .split("async fn send_message(")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]")
+            .next()
+            .unwrap();
+        let council = ipc
+            .split("async fn send_council_message(")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]")
+            .next()
+            .unwrap();
+        let validation = "validate_request_images(&request.messages, &request.provider)?";
+        assert!(
+            single
+                .find(validation)
+                .is_some_and(|i| i < single.find("runner.begin(").unwrap()),
+            "single IPC must validate before begin"
+        );
+        for candidate in ["request_a", "request_b"] {
+            let validation =
+                format!("validate_request_images(&{candidate}.messages, &{candidate}.provider)?");
+            assert!(
+                council
+                    .find(&validation)
+                    .is_some_and(|i| i < council.find("runner.begin(").unwrap()),
+                "both council candidates must validate before begin"
+            );
+        }
+        let runner = include_str!("agent/runner.rs");
+        let single = runner
+            .split("pub async fn run(")
+            .nth(1)
+            .unwrap()
+            .split("let mcp_servers")
+            .next()
+            .unwrap();
+        let council = runner
+            .split("pub async fn run_council(")
+            .nth(1)
+            .unwrap()
+            .split("let default_prompt")
+            .next()
+            .unwrap();
+        assert!(single.contains("validate_request_images(&request.messages, &request.provider)"));
+        for candidate in ["request_a", "request_b"] {
+            assert!(council.contains(&format!(
+                "validate_request_images(&{candidate}.messages, &{candidate}.provider)"
+            )));
+        }
+        let council_history = runner
+            .split("pub async fn run_council(")
+            .nth(1)
+            .unwrap()
+            .split("let empty_tools_a")
+            .next()
+            .unwrap();
+        assert!(council_history.contains("append_history_message(&mut conv_a, message)"));
+        assert!(council_history.contains("append_history_message(&mut conv_b, message)"));
+        for entry in [single, council] {
+            assert!(entry.contains("emitter.error(error)"));
+            assert!(entry.contains("emitter.done(false, false)"));
+        }
+        let message: agent::types::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"image", "role":"user", "content":"describe", "timestamp":1,
+            "imageInputs":[{"sourcePath":"missing.png", "mediaType":"image/png", "data":"iVBORw0KGgo="}]
+        })).unwrap();
+        for model in ["deepseek-chat", "deepseek-reasoner"] {
+            let provider = ProviderConfig {
+                model: model.into(),
+                ..Default::default()
+            };
+            let error =
+                agent::images::validate_request_images(std::slice::from_ref(&message), &provider)
+                    .unwrap_err();
+            assert!(
+                error.contains(model)
+                    && error.contains("text-only")
+                    && error.contains("vision-capable")
+            );
+        }
+        let mut malformed = message;
+        malformed.image_inputs.as_mut().unwrap()[0].data = "not base64".into();
+        assert!(
+            agent::images::validate_request_images(&[malformed], &ProviderConfig::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn review_proposal_event_selection_and_pending_run_validation_are_scoped() {
+        let mut data: SessionData = serde_json::from_value(serde_json::json!({
+            "session":{"id":"session","title":"Test","createdAt":1,"updatedAt":1,"messageCount":1},
+            "messages":[{"id":"message","runId":"run","role":"assistant","content":"done","timestamp":1}],"artifacts":[]
+        })).unwrap();
+        assert!(validate_pending_session(&data, "session", "run", "pending").is_ok());
+        assert!(
+            validate_pending_session(&data, "session", "unsaved", "pending")
+                .unwrap_err()
+                .contains("wait")
+        );
+        assert!(validate_pending_session(&data, "foreign", "run", "pending").is_err());
+        data.messages[0].role = "user".into();
+        assert!(validate_pending_session(&data, "session", "run", "pending").is_err());
+        data.messages[0].role = "assistant".into();
+        data.messages[0].self_improvement = Some(serde_json::from_value(serde_json::json!({
+            "run_id":"run","session_id":"session","action":"skill_updated","summary":"keep summary","workspace_cwd":"workspace",
+            "changes":[{"action":"skill_updated","skill_name":"one","pending_id":"pending"},
+                       {"action":"skill_staged","skill_name":"two","pending_id":"other"}]
+        })).unwrap());
+        let event = resolved_review_event(&data, "session", "run", "pending").unwrap();
+        assert_eq!(Some(event), data.messages[0].self_improvement.as_ref());
+        assert_eq!(event.changes.len(), 2);
+        assert!(resolved_review_event(&data, "session", "run", "other").is_err());
+        assert!(resolved_review_event(&data, "foreign", "run", "pending").is_err());
+        assert!(resolved_review_event(&data, "session", "foreign", "pending").is_err());
+        assert!(resolved_review_event(&data, "session", "run", "missing").is_err());
+        data.messages[0].self_improvement.as_mut().unwrap().changes[0].action =
+            agent::types::SelfImprovementAction::NoAction;
+        assert!(resolved_review_event(&data, "session", "run", "pending").is_ok());
+    }
+    #[test]
+    fn review_link_lookup_is_session_run_and_exact_file_scoped() {
+        let data: SessionData = serde_json::from_value(serde_json::json!({
+            "session":{"id":"session","title":"Test","createdAt":1,"updatedAt":1,"messageCount":1},
+            "messages":[{"id":"message","role":"assistant","content":"reviewed","timestamp":1,
+                "selfImprovement":{"run_id":"run","session_id":"session","action":"skill_updated","skill_name":"legacy",
+                    "changes":[
+                        {"action":"skill_updated","skill_name":"manual","skill_path":"/skills/manual","file_path":"/skills/manual/SKILL.md"},
+                        {"action":"skill_created","skill_name":"manual","skill_path":"/skills/manual","file_path":"/skills/manual/references/notes.md"}
+                    ]}}],"artifacts":[]
+        })).unwrap();
+        assert!(linked_review_change(&data, "manual", Some("run"), None).is_err());
+        let (_, change) =
+            linked_review_change(&data, "manual", Some("run"), Some("references/notes.md"))
+                .unwrap();
+        assert_eq!(
+            change.unwrap().file_path.as_deref(),
+            Some("/skills/manual/references/notes.md")
+        );
+        assert!(linked_review_change(
+            &data,
+            "manual",
+            Some("foreign"),
+            Some("references/notes.md")
+        )
+        .is_err());
+        assert!(linked_review_change(&data, "manual", None, Some("/outside/secret")).is_err());
+        assert!(linked_review_change(&data, "legacy", None, None).is_err());
+        let mut foreign = data.clone();
+        foreign.session.id = "foreign".into();
+        assert!(
+            linked_review_change(&foreign, "manual", None, Some("references/notes.md")).is_err()
+        );
+        let mut legacy = data;
+        legacy.messages[0]
+            .self_improvement
+            .as_mut()
+            .unwrap()
+            .changes
+            .clear();
+        assert!(linked_review_change(&legacy, "legacy", None, None)
+            .unwrap()
+            .1
+            .is_none());
+        assert!(linked_review_change(&legacy, "legacy", None, Some("SKILL.md")).is_err());
+    }
 
     #[test]
     fn memory_workspace_binding_rejects_stale_editor_without_fallback() {

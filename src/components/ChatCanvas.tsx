@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RunStatusBar } from './RunStatusBar';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
+  LoaderCircle,
   AtSign,
   ChevronDown,
   BookOpen,
@@ -40,9 +42,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult, ExecutionMode } from '../types/agent';
 import { MessageRow } from './MessageRow';
-import { AetherLogo } from './AetherLogo';
-import { SubagentTreeCard } from './SubagentTreeCard';
-import { BackgroundTasksCard } from './BackgroundTasksCard';
+import { AttachmentPreview } from './AttachmentPreview';
+import { ActivityTray } from './ActivityTray';
 import { TimelineScrubber } from './TimelineScrubber';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 
@@ -80,6 +81,16 @@ const EXECUTION_MODES: Array<{
 
 interface ChatCanvasProps {
   messages: import('../types/agent').ChatMessage[];
+  isSessionLoading?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => Promise<void>;
+  onLoadLatestMessages?: () => void | Promise<void>;
+  hasOlderMessages?: boolean;
+  totalMessageCount?: number;
+  historyError?: string | null;
+  isHistoryPreview?: boolean;
+  jumpToMessage?: { messageId: string; request: number } | null;
+  runStatus?: import('../hooks/useAgentLiveSession').RunStatus | null;
   isStreaming: boolean;
   stopRequested: boolean;
   onSendMessage: (
@@ -90,6 +101,7 @@ interface ChatCanvasProps {
       candidateA?: { provider: import('../types/agent').ProviderConfig; thinking?: boolean; reasoningEffort?: import('../types/agent').ReasoningEffort };
       candidateB?: { provider: import('../types/agent').ProviderConfig; thinking?: boolean; reasoningEffort?: import('../types/agent').ReasoningEffort };
       executionMode?: ExecutionMode;
+      imageInputs?: import('../types/agent').ImageInput[];
     },
   ) => Promise<boolean>;
   onStop: () => void;
@@ -133,6 +145,7 @@ interface ChatCanvasProps {
   onSelectModel?: (providerId: string, model: string) => void;
   onRenameSession?: (sessionId: string, title: string) => Promise<void>;
   currentSessionId?: string | null;
+  workspaceCwd?: string;
 }
 
 export interface SlashItem {
@@ -149,8 +162,9 @@ const COMMAND_ITEMS: SlashItem[] = [
   { id: 'cmd_plan', category: 'COMMANDS', command: '/plan', description: 'Formulate an interactive step-by-step execution plan', usage: 'Formulate execution plan\n/plan <task goal>', iconType: 'terminal', needsPrompt: true },
   { id: 'cmd_tasks', category: 'COMMANDS', command: '/tasks', description: 'List and inspect active background tasks and processes', usage: 'Manage background tasks\n/tasks', iconType: 'terminal' },
   { id: 'cmd_export', category: 'COMMANDS', command: '/export', description: 'Export this conversation transcript to Markdown (.md)', usage: 'Export conversation\n/export', iconType: 'terminal' },
-  { id: 'cmd_review', category: 'COMMANDS', command: '/review', description: 'Review the latest completed turn for reusable lessons', iconType: 'terminal' },
-  { id: 'cmd_reflect', category: 'COMMANDS', command: '/reflect', description: 'Review the latest completed turn (alias of /review)', iconType: 'terminal' },
+  { id: 'cmd_review', category: 'COMMANDS', command: '/review', description: 'Review the full conversation for reusable lessons', iconType: 'terminal' },
+  { id: 'cmd_refine', category: 'COMMANDS', command: '/refine', description: 'Review the full conversation (alias of /review)', iconType: 'terminal' },
+  { id: 'cmd_reflect', category: 'COMMANDS', command: '/reflect', description: 'Review the full conversation (alias of /review)', iconType: 'terminal' },
   {
     id: 'cmd_compact',
     category: 'COMMANDS',
@@ -297,8 +311,21 @@ interface QueuedPrompt {
   sessionId: string | null | undefined;
 }
 
+const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
+type QueueSessionId = QueuedPrompt['sessionId'];
+
 export function ChatCanvas({
   messages,
+  isSessionLoading = false,
+  loadingOlderMessages = false,
+  onLoadOlderMessages,
+  onLoadLatestMessages,
+  hasOlderMessages = false,
+  totalMessageCount = messages.length,
+  historyError,
+  isHistoryPreview = false,
+  jumpToMessage,
+  runStatus,
   isStreaming,
   stopRequested,
   onSendMessage,
@@ -342,6 +369,7 @@ export function ChatCanvas({
   onSelectModel,
   onRenameSession,
   currentSessionId,
+  workspaceCwd = '',
 }: ChatCanvasProps) {
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -351,20 +379,101 @@ export function ChatCanvas({
   const [councilModelA, setCouncilModelA] = useState<{ providerId: string; model: string } | null>(null);
   const [councilModelB, setCouncilModelB] = useState<{ providerId: string; model: string } | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
-  const [stoppedWithQueue, setStoppedWithQueue] = useState(false);
-  const dispatchingQueueRef = useRef<string | null>(null);
-  const queueSessionRef = useRef(currentSessionId);
-  queueSessionRef.current = currentSessionId;
+  const [sessionQueues, setSessionQueues] = useState(() => new Map<QueueSessionId, QueuedPrompt[]>());
+  const [pausedQueues, setPausedQueues] = useState(() => new Set<QueueSessionId>());
+  const queuedPrompts = sessionQueues.get(currentSessionId) ?? EMPTY_QUEUED_PROMPTS;
+  const stoppedWithQueue = pausedQueues.has(currentSessionId);
+  const dispatchingQueueRef = useRef(new Map<QueueSessionId, string>());
+  const updateSessionQueue = useCallback((sessionId: QueueSessionId, update: (items: QueuedPrompt[]) => QueuedPrompt[]) => {
+    setSessionQueues((previous) => {
+      const items = update(previous.get(sessionId) ?? EMPTY_QUEUED_PROMPTS);
+      const next = new Map(previous);
+      if (items.length) next.set(sessionId, items);
+      else next.delete(sessionId);
+      return next;
+    });
+  }, []);
+  const setQueuedPrompts = useCallback((update: (items: QueuedPrompt[]) => QueuedPrompt[]) => {
+    updateSessionQueue(currentSessionId, update);
+  }, [currentSessionId, updateSessionQueue]);
+  const pauseSessionQueue = useCallback((sessionId: QueueSessionId, paused: boolean) => {
+    setPausedQueues((previous) => {
+      if (previous.has(sessionId) === paused) return previous;
+      const next = new Set(previous);
+      if (paused) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  }, []);
+  const setStoppedWithQueue = useCallback((paused: boolean) => {
+    pauseSessionQueue(currentSessionId, paused);
+  }, [currentSessionId, pauseSessionQueue]);
+  const preparedImageInputsRef = useRef(new Map<string, import('../types/agent').ImageInput>());
 
-  // Queue items are scoped to their origin. Navigation must never dispatch a
-  // previous view's item merely because the new view is idle.
+  const [pendingAttachments, setPendingAttachments] = useState(0);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const attachmentScopeRef = useRef({ sessionId: currentSessionId, workspace: workspaceCwd, generation: 0, pending: 0 });
+  const attachmentMountedRef = useRef(true);
+  // Update synchronously: a completion must not sneak in before the reset effect.
+  if (attachmentScopeRef.current.sessionId !== currentSessionId || attachmentScopeRef.current.workspace !== workspaceCwd) {
+    attachmentScopeRef.current = { sessionId: currentSessionId, workspace: workspaceCwd, generation: attachmentScopeRef.current.generation + 1, pending: 0 };
+  }
+  type AttachmentOrigin = Pick<typeof attachmentScopeRef.current, 'sessionId' | 'workspace' | 'generation'>;
+  const isAttachmentOrigin = useCallback((origin: AttachmentOrigin) => {
+    const scope = attachmentScopeRef.current;
+    return attachmentMountedRef.current && scope.sessionId === origin.sessionId && scope.workspace === origin.workspace && scope.generation === origin.generation;
+  }, []);
+  const invalidateAttachments = useCallback(() => {
+    attachmentScopeRef.current.generation += 1;
+    attachmentScopeRef.current.pending = 0;
+    setPendingAttachments(0);
+    setAttachmentError(null);
+  }, []);
+  const beginAttachments = useCallback(() => {
+    const scope = attachmentScopeRef.current;
+    scope.pending += 1;
+    setPendingAttachments(scope.pending);
+    setAttachmentError(null);
+    return { sessionId: scope.sessionId, workspace: scope.workspace, generation: scope.generation };
+  }, []);
+  const finishAttachments = useCallback((origin: AttachmentOrigin) => {
+    if (!isAttachmentOrigin(origin)) return;
+    const scope = attachmentScopeRef.current;
+    scope.pending = Math.max(0, scope.pending - 1);
+    setPendingAttachments(scope.pending);
+  }, [isAttachmentOrigin]);
+  const reportAttachmentError = useCallback((origin: AttachmentOrigin, error: unknown) => {
+    if (isAttachmentOrigin(origin)) setAttachmentError('Could not attach file: ' + String(error));
+  }, [isAttachmentOrigin]);
+  const appendAttachments = useCallback((origin: AttachmentOrigin, contexts: AttachedContext[]) => {
+    if (!isAttachmentOrigin(origin)) return;
+    setAttachedContexts((prev) => {
+      if (!isAttachmentOrigin(origin)) return prev;
+      const existing = new Set(prev.map((context) => context.path));
+      return [...prev, ...contexts.filter((context) => {
+        if (existing.has(context.path)) return false;
+        existing.add(context.path);
+        return true;
+      })];
+    });
+  }, [isAttachmentOrigin]);
   useEffect(() => {
-    setQueuedPrompts([]);
-    setStoppedWithQueue(false);
-    dispatchingQueueRef.current = null;
-  }, [currentSessionId]);
+    attachmentMountedRef.current = true;
+    return () => {
+      attachmentMountedRef.current = false;
+      attachmentScopeRef.current.generation += 1;
+      attachmentScopeRef.current.pending = 0;
+    };
+  }, []);
+  useEffect(() => {
+    setAttachedContexts([]);
+    preparedImageInputsRef.current.clear();
+    setPendingAttachments(0);
+    setAttachmentError(null);
+    setIsDraggingOver(false);
+  }, [currentSessionId, workspaceCwd]);
 
+  // Antrean dan status jeda dimiliki sesi asal, bukan tampilan yang sedang dibuka.
   useEffect(() => {
     if (stopRequested) setStoppedWithQueue(true);
   }, [stopRequested]);
@@ -377,21 +486,21 @@ export function ChatCanvas({
     const item = queuedPrompts.find((q) => q.id === id);
     if (!item) return;
     setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
+    invalidateAttachments();
     setInput(item.prompt);
-    if (item.attachments) {
-      setAttachedContexts(item.attachments);
-    }
+    preparedImageInputsRef.current = new Map((item.options.imageInputs ?? []).map((image) => [image.sourcePath, { ...image }]));
+    setAttachedContexts(item.attachments ?? []);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
-  }, [queuedPrompts]);
+  }, [queuedPrompts, setQueuedPrompts, invalidateAttachments]);
 
   useEffect(() => {
     const handleInsertPrompt = (e: Event) => {
       const customEvent = e as CustomEvent<{ text: string; autoSend?: boolean }>;
       if (!customEvent.detail?.text) return;
       const { text, autoSend } = customEvent.detail;
-      if (autoSend && !isStreaming && !isReviewing) {
+      if (autoSend && !isStreaming && !isReviewing && attachmentScopeRef.current.pending === 0) {
         void onSendMessage(text);
       } else {
         setInput((prev) => (prev ? `${prev}\n\n${text}` : text));
@@ -406,6 +515,7 @@ export function ChatCanvas({
     };
 
     const handleClearComposer = () => {
+      invalidateAttachments();
       setInput('');
       setAttachedContexts([]);
       if (textareaRef.current) {
@@ -429,7 +539,7 @@ export function ChatCanvas({
 
   const handleRemoveQueued = useCallback((id: string) => {
     setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
-  }, []);
+  }, [setQueuedPrompts]);
 
   const availableModelsList = useMemo(() => {
     if (!settings) return [];
@@ -474,6 +584,24 @@ export function ChatCanvas({
   const [fileOptions, setFileOptions] = useState<string[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [attachedContexts, setAttachedContexts] = useState<AttachedContext[]>([]);
+  const previewAttachmentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const attachment of attachedContexts) {
+      if (!attachment.isDir && /\.(png|jpe?g|gif|webp)$/i.test(attachment.path)) {
+        ids.add(attachment.id);
+        if (ids.size === 4) break;
+      }
+    }
+    return ids;
+  }, [attachedContexts]);
+  useEffect(() => {
+    // Removing a file permanently drops its cached bytes, even if re-added later.
+    for (const path of preparedImageInputsRef.current.keys()) {
+      if (!attachedContexts.some((attachment) => !attachment.isDir && attachment.path === path)) {
+        preparedImageInputsRef.current.delete(path);
+      }
+    }
+  }, [attachedContexts]);
   const [addContextOpen, setAddContextOpen] = useState(false);
   const [skillsMenuOpen, setSkillsMenuOpen] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
@@ -518,147 +646,100 @@ export function ChatCanvas({
     setIsDraggingOver(false);
   };
 
+  // The origin is captured before file reads and reused for every native call.
+  const prepareAttachmentFiles = useCallback(async (files: File[], origin: AttachmentOrigin, pasted: boolean) => {
+    const contexts: AttachedContext[] = [];
+    const native = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+    for (const file of files) {
+      if (!isAttachmentOrigin(origin)) return;
+      const osPath = (file as any).path;
+      if (native && typeof osPath === 'string' && osPath.trim()) {
+        const inspected = await invoke<AttachedContext[]>('inspect_paths', { paths: [osPath] });
+        if (!isAttachmentOrigin(origin)) return;
+        if (inspected.length) {
+          contexts.push(...inspected);
+          continue;
+        }
+      }
+      let filename = file.name;
+      if (pasted && (!filename || filename === 'image.png' || filename === 'blob')) {
+        const ext = file.type.includes('jpeg') ? 'jpg' : file.type.includes('webp') ? 'webp' : 'png';
+        filename = 'pasted_image_' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '.' + ext;
+      }
+      if (native) {
+        // Tolak sebelum ArrayBuffer dan array IPC memperbesar penggunaan memori.
+        const maxBytes = 25 * 1024 * 1024;
+        if (file.size > maxBytes) throw new Error('Attachment exceeds the 25 MiB limit');
+        const buffer = await file.arrayBuffer();
+        if (!isAttachmentOrigin(origin)) return;
+        if (buffer.byteLength > maxBytes) throw new Error('Attachment exceeds the 25 MiB limit');
+        const attachment = await invoke<AttachedContext>('save_pasted_attachment', {
+          name: filename,
+          bytes: Array.from(new Uint8Array(buffer)),
+          expectedWorkspace: origin.workspace,
+        });
+        if (!isAttachmentOrigin(origin)) return;
+        contexts.push(attachment);
+        continue;
+      }
+      // Browser-only context placeholders are intentional; native failures never
+      // fall back to a filename pretending to be a saved workspace attachment.
+      contexts.push({
+        id: 'ctx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+        name: filename,
+        path: osPath || filename,
+        isDir: !pasted && !file.name.includes('.') && file.size === 0,
+      });
+    }
+    appendAttachments(origin, contexts);
+  }, [appendAttachments, isAttachmentOrigin]);
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
-    const droppedFiles = Array.from(e.dataTransfer?.files || []);
-    if (droppedFiles.length === 0) return;
-
-    const realPaths = droppedFiles
-      .map((f) => (f as any).path)
-      .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
-
-    if (realPaths.length > 0 && typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-      try {
-        const contexts = await invoke<AttachedContext[]>('inspect_paths', { paths: realPaths });
-        setAttachedContexts((prev) => {
-          const existing = new Set(prev.map((c) => c.path));
-          const unique = contexts.filter((c) => !existing.has(c.path));
-          return [...prev, ...unique];
-        });
-        return;
-      } catch (err) {
-        console.warn('Failed to inspect dropped paths from HTML5 drop', err);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (!files.length) return;
+    const origin = beginAttachments();
+    try {
+      const paths = files.map((file) => (file as any).path).filter((path): path is string => typeof path === 'string' && Boolean(path.trim()));
+      if (paths.length === files.length && (window as any).__TAURI_INTERNALS__) {
+        const contexts = await invoke<AttachedContext[]>('inspect_paths', { paths });
+        if (!isAttachmentOrigin(origin)) return;
+        appendAttachments(origin, contexts);
+      } else {
+        await prepareAttachmentFiles(files, origin, false);
+        if (!isAttachmentOrigin(origin)) return;
       }
+    } catch (error) {
+      reportAttachmentError(origin, error);
+    } finally {
+      finishAttachments(origin);
     }
-
-    const newContexts: AttachedContext[] = [];
-    for (const f of droppedFiles) {
-      if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-        try {
-          const buf = await f.arrayBuffer();
-          const att = await invoke<AttachedContext>('save_pasted_attachment', {
-            name: f.name,
-            bytes: Array.from(new Uint8Array(buf)),
-          });
-          newContexts.push(att);
-          continue;
-        } catch {
-          // fallback
-        }
-      }
-      const fullPath = (f as any).path || f.name;
-      const isDir = !f.name.includes('.') && f.size === 0;
-      newContexts.push({
-        id: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name: f.name,
-        path: fullPath,
-        isDir,
-      });
-    }
-
-    setAttachedContexts((prev) => {
-      const existing = new Set(prev.map((c) => c.path));
-      const unique = newContexts.filter((c) => !existing.has(c.path));
-      return [...prev, ...unique];
-    });
   };
 
   const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement> | ClipboardEvent) => {
-    const clipboardData = e.clipboardData;
-    if (!clipboardData) return;
-
-    const items = clipboardData.items;
-    const files = clipboardData.files;
-
-    const fileList: File[] = [];
-    if (files && files.length > 0) {
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        if (f) fileList.push(f);
-      }
-    } else if (items && items.length > 0) {
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.kind === 'file') {
-          const f = item.getAsFile();
-          if (f) fileList.push(f);
-        }
+    const data = e.clipboardData;
+    if (!data) return;
+    const files = Array.from(data.files || []);
+    if (!files.length) {
+      for (const item of Array.from(data.items || [])) {
+        if (item.kind !== 'file') continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
       }
     }
-
-    // Normal text paste, allow native textarea paste
-    if (fileList.length === 0) return;
-
-    // Prevent pasting raw binary file content into textarea
+    if (!files.length) return;
     e.preventDefault();
-
-    const newContexts: AttachedContext[] = [];
-
-    for (const file of fileList) {
-      const osPath = (file as any).path;
-      if (typeof osPath === 'string' && osPath.trim().length > 0) {
-        try {
-          if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-            const inspected = await invoke<AttachedContext[]>('inspect_paths', { paths: [osPath] });
-            if (inspected && inspected.length > 0) {
-              newContexts.push(inspected[0]);
-              continue;
-            }
-          }
-        } catch (err) {
-          console.warn('inspect_paths failed for pasted file path', err);
-        }
-      }
-
-      try {
-        const buf = await file.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(buf));
-        let filename = file.name;
-        if (!filename || filename === 'image.png' || filename === 'blob') {
-          const ext = file.type.includes('jpeg') ? 'jpg' : file.type.includes('webp') ? 'webp' : 'png';
-          const now = new Date();
-          const dateStr = now.toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-          filename = `pasted_image_${dateStr}.${ext}`;
-        }
-
-        if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-          const att = await invoke<AttachedContext>('save_pasted_attachment', {
-            name: filename,
-            bytes,
-          });
-          newContexts.push(att);
-        } else {
-          newContexts.push({
-            id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            name: filename,
-            path: filename,
-            isDir: false,
-          });
-        }
-      } catch (err) {
-        console.error('Failed to process pasted attachment', err);
-      }
+    const origin = beginAttachments();
+    try {
+      await prepareAttachmentFiles(files, origin, true);
+      if (!isAttachmentOrigin(origin)) return;
+    } catch (error) {
+      reportAttachmentError(origin, error);
+    } finally {
+      finishAttachments(origin);
     }
-
-    if (newContexts.length > 0) {
-      setAttachedContexts((prev) => {
-        const existing = new Set(prev.map((c) => c.path));
-        const unique = newContexts.filter((c) => !existing.has(c.path));
-        return [...prev, ...unique];
-      });
-    }
-  }, []);
+  }, [beginAttachments, prepareAttachmentFiles, isAttachmentOrigin, reportAttachmentError, finishAttachments]);
 
   // Native Tauri drag & drop event listener
   useEffect(() => {
@@ -668,6 +749,7 @@ export function ChatCanvas({
       try {
         if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
           const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+          if (disposed) return;
           unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
             if (disposed) return;
             if (event.payload.type === 'enter' || event.payload.type === 'over') {
@@ -678,15 +760,15 @@ export function ChatCanvas({
               setIsDraggingOver(false);
               const paths = event.payload.paths;
               if (paths && paths.length > 0) {
+                const origin = beginAttachments();
                 try {
                   const contexts = await invoke<AttachedContext[]>('inspect_paths', { paths });
-                  setAttachedContexts((prev) => {
-                    const existing = new Set(prev.map((c) => c.path));
-                    const unique = contexts.filter((c) => !existing.has(c.path));
-                    return [...prev, ...unique];
-                  });
-                } catch (err) {
-                  console.error('Failed to inspect dropped paths', err);
+                  if (disposed || !isAttachmentOrigin(origin)) return;
+                  appendAttachments(origin, contexts);
+                } catch (error) {
+                  if (!disposed) reportAttachmentError(origin, error);
+                } finally {
+                  finishAttachments(origin);
                 }
               }
             }
@@ -727,6 +809,62 @@ export function ChatCanvas({
     }
   }, [onListSkills, isStreaming]);
 
+  type ViewAnchor = { id: string; offset: number };
+  const visibleAnchorRef = useRef<ViewAnchor | null>(null);
+  const [activeMessageIndex, setActiveMessageIndex] = useState(-1);
+  const activeMessageIndexRef = useRef(-1);
+  const updateActiveMessageIndex = useCallback((index: number) => {
+    // Streaming/layout commits may revisit the same anchor without a state write.
+    if (activeMessageIndexRef.current === index) return;
+    activeMessageIndexRef.current = index;
+    setActiveMessageIndex(index);
+  }, []);
+  const pendingAnchorRef = useRef<ViewAnchor | null>(null);
+  const firstMessageRef = useRef(messages[0]?.id);
+  const viewportCacheRef = useRef(new Map<string | null | undefined, { anchor: ViewAnchor | null; bottom: boolean }>());
+  const viewportSessionRef = useRef(currentSessionId);
+  const wasLoadingRef = useRef(isSessionLoading);
+  const navigationResetRef = useRef<number | null>(null);
+  const correctionRef = useRef<ViewAnchor | null>(null);
+  const correctionTimerRef = useRef<number | null>(null);
+  const upwardIntentRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const touchYRef = useRef<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const jumpSettleRef = useRef<{ correct: () => void; cancel: () => void } | null>(null);
+  const cancelAnchorCorrection = () => {
+    correctionRef.current = null;
+    if (correctionTimerRef.current !== null) {
+      window.clearTimeout(correctionTimerRef.current);
+      correctionTimerRef.current = null;
+    }
+    jumpSettleRef.current?.cancel();
+  };
+  const requestRef = useRef<object | null>(null);
+  const captureAnchor = useCallback((allowFallback = true): ViewAnchor | null => {
+    const element = parentRef.current;
+    if (!element) return null;
+    const top = element.getBoundingClientRect().top;
+    for (const row of element.querySelectorAll<HTMLElement>('[data-index][data-message-id]')) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > top && rect.top < top + element.clientHeight) {
+        return { id: row.dataset.messageId!, offset: rect.top - top };
+      }
+    }
+    return allowFallback ? visibleAnchorRef.current : null;
+  }, []);
+  const loadHistory = async () => {
+    if (!onLoadOlderMessages || loadingOlderMessages || isSessionLoading || requestRef.current) return;
+    const request = {};
+    requestRef.current = request;
+    pendingAnchorRef.current = captureAnchor();
+    visibleAnchorRef.current = pendingAnchorRef.current;
+    stickToBottomRef.current = false;
+    try { await onLoadOlderMessages(); }
+    catch { /* The hook supplies the inline history error. */ }
+    finally { if (requestRef.current === request) requestRef.current = null; }
+  };
+
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => parentRef.current,
@@ -735,7 +873,15 @@ export function ChatCanvas({
     getItemKey: (index) => messages[index]?.id || index,
   });
 
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
+    const anchor = correctionRef.current ?? pendingAnchorRef.current ?? visibleAnchorRef.current;
+    const index = anchor ? messages.findIndex((message) => message.id === anchor.id) : -1;
+    return !stickToBottomRef.current && item.index < index;
+  };
+
   const handleJumpToBottom = useCallback(() => {
+    cancelAnchorCorrection();
+    upwardIntentRef.current = false;
     stickToBottomRef.current = true;
     setShowJumpBottom(false);
     if (parentRef.current) {
@@ -746,46 +892,203 @@ export function ChatCanvas({
     }
   }, [messages.length, virtualizer]);
 
-  const handleJumpToMessage = useCallback((index: number) => {
+  const handleJumpToMessage = useCallback((index: number, align: 'start' | 'center' = 'start') => {
+    const messageId = messages[index]?.id;
+    if (!messageId) return;
+    cancelAnchorCorrection();
+    upwardIntentRef.current = false;
     stickToBottomRef.current = false;
-    virtualizer.scrollToIndex(index, { align: 'start' });
-  }, [virtualizer]);
+    // An explicit jump supersedes any older prepend/viewport anchor.
+    pendingAnchorRef.current = null;
+    visibleAnchorRef.current = null;
+    updateActiveMessageIndex(index);
+    virtualizer.scrollToIndex(index, { align });
+    // Keep list-local virtual coordinates unchanged. A scrollMargin would also
+    // require rebasing every translated row; mounted DOM includes the variable
+    // history header and padding without changing prepend anchor coordinates.
+    const element = parentRef.current;
+    if (!element) return;
+    let frame = 0;
+    let remaining = 3;
+    let timer: number | undefined;
+    let target: HTMLElement | null = null;
+    let stopped = false;
+    const cancel = () => {
+      if (stopped) return;
+      stopped = true;
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+      for (const event of inputEvents) element.removeEventListener(event, cancel);
+      if (jumpSettleRef.current === request) jumpSettleRef.current = null;
+    };
+    const correct = () => {
+      if (stopped) return;
+      // Numeric index is selector-safe even when message IDs contain CSS syntax.
+      // Only inspect this viewport's mounted target, never the entire document.
+      const row = element.querySelector<HTMLElement>(`[data-index="${index}"]`);
+      if (!row || row.dataset.messageId !== messageId) return;
+      if (row !== target) {
+        if (target) observer.unobserve(target);
+        target = row;
+        observer.observe(row);
+      }
+      const rect = row.getBoundingClientRect();
+      const view = element.getBoundingClientRect();
+      if (!rect.height || !view.height) return;
+      const delta = align === 'center'
+        ? (rect.top + rect.bottom - view.top - view.bottom) / 2
+        : rect.top - view.top;
+      // Once mounted, correct actual pixels rather than reapplying an estimate.
+      // Native scroll events notify TanStack of this offset change.
+      if (Math.abs(delta) > 0.5) element.scrollTop += delta;
+      lastScrollTopRef.current = element.scrollTop;
+    };
+    const observer = new window.ResizeObserver(correct);
+    const request = { correct, cancel };
+    const inputEvents = ['wheel', 'pointerdown', 'touchstart', 'keydown'] as const;
+    jumpSettleRef.current = request;
+    for (const event of inputEvents) element.addEventListener(event, cancel, { passive: true });
+    observer.observe(element);
+    const settle = () => {
+      if (stopped) return;
+      correct();
+      if (--remaining > 0) frame = requestAnimationFrame(settle);
+    };
+    // Resize notifications and layout commits can correct late
+    // measurements without an unbounded RAF loop or retaining observers forever.
+    timer = window.setTimeout(cancel, 800);
+    correct();
+    frame = requestAnimationFrame(settle);
+    lastScrollTopRef.current = element.scrollTop;
+    const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    setShowJumpBottom(distanceToBottom >= 35 && element.scrollHeight > element.clientHeight + 40);
+    return cancel;
+  }, [messages, virtualizer, updateActiveMessageIndex]);
+
+  // Keep the actual visible row fixed while estimates settle after a prepend.
+  const correctAnchor = useCallback(() => {
+    const anchor = correctionRef.current;
+    const element = parentRef.current;
+    if (!anchor || !element) return;
+    const row = Array.from(element.querySelectorAll<HTMLElement>('[data-index][data-message-id]'))
+      .find((item) => item.dataset.messageId === anchor.id);
+    if (row) element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+    lastScrollTopRef.current = element.scrollTop;
+  }, []);
+
+  useLayoutEffect(() => {
+    const changedSession = viewportSessionRef.current !== currentSessionId;
+    const startedLoading = isSessionLoading && !wasLoadingRef.current;
+    // Reset preview saat navigasi bukan permintaan eksplisit kembali ke pesan terbaru.
+    if ((changedSession || isSessionLoading || wasLoadingRef.current) && jumpToMessage?.messageId === '') {
+      navigationResetRef.current = jumpToMessage.request;
+    }
+    if (changedSession || startedLoading) {
+      cancelAnchorCorrection();
+      const cache = viewportCacheRef.current;
+      cache.delete(viewportSessionRef.current);
+      cache.set(viewportSessionRef.current, { anchor: visibleAnchorRef.current, bottom: stickToBottomRef.current });
+      while (cache.size > 6) cache.delete(cache.keys().next().value);
+      requestRef.current = null;
+      pendingAnchorRef.current = null;
+      correctionRef.current = null;
+      upwardIntentRef.current = false;
+    }
+    const finishedLoading = wasLoadingRef.current && !isSessionLoading;
+    wasLoadingRef.current = isSessionLoading;
+    viewportSessionRef.current = currentSessionId;
+    if (isSessionLoading) return;
+
+    if (changedSession || finishedLoading) {
+      const cached = viewportCacheRef.current.get(currentSessionId);
+      const anchor = cached?.anchor;
+      const index = anchor ? messages.findIndex((message) => message.id === anchor.id) : -1;
+      stickToBottomRef.current = !cached || cached.bottom || index < 0;
+      setShowJumpBottom(!stickToBottomRef.current);
+      if (!stickToBottomRef.current && anchor) {
+        pendingAnchorRef.current = anchor;
+      }
+    }
+    const prepended = firstMessageRef.current !== messages[0]?.id;
+    firstMessageRef.current = messages[0]?.id;
+    const anchor = pendingAnchorRef.current;
+    if (anchor && (prepended || changedSession || finishedLoading)) {
+      const index = messages.findIndex((message) => message.id === anchor.id);
+      if (index >= 0 && parentRef.current) {
+        cancelAnchorCorrection();
+        correctionRef.current = anchor;
+        // Pemulihan navigasi dibatasi; prepend tetap menjaga resize terlambat hingga ada input.
+        if (changedSession || finishedLoading) {
+          correctionTimerRef.current = window.setTimeout(() => {
+            correctionRef.current = null;
+            correctionTimerRef.current = null;
+          }, 750);
+        }
+        virtualizer.scrollToIndex(index, { align: 'start' });
+        correctAnchor();
+      }
+      pendingAnchorRef.current = null;
+    } else if (stickToBottomRef.current && messages.length) {
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+    }
+    visibleAnchorRef.current = captureAnchor();
+    updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
+    lastScrollTopRef.current = parentRef.current?.scrollTop ?? 0;
+  }, [messages, currentSessionId, isSessionLoading, jumpToMessage]);
+
+  useLayoutEffect(() => {
+    correctAnchor();
+  });
 
   useEffect(() => {
-    if (messages.length === 0) {
-      setShowJumpBottom(false);
+    if (isSessionLoading) return;
+    const element = listRef.current;
+    if (!element) return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(correctAnchor);
+    });
+    observer.observe(element);
+    for (const row of element.querySelectorAll<HTMLElement>('[data-index]')) observer.observe(row);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [messages, isSessionLoading, correctAnchor]);
+
+  const [outlinedMessageId, setOutlinedMessageId] = useState<string | null>(null);
+  useEffect(() => {
+    setOutlinedMessageId(jumpToMessage?.messageId || null);
+    if (!jumpToMessage?.messageId) return;
+    const timer = window.setTimeout(() => setOutlinedMessageId(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [jumpToMessage]);
+
+  // Explicit search navigation runs after normal session/bottom restoration.
+  useLayoutEffect(() => {
+    if (!jumpToMessage || isSessionLoading) return;
+    if (!jumpToMessage.messageId) {
+      if (navigationResetRef.current !== jumpToMessage.request) handleJumpToBottom();
       return;
     }
-    // Only auto-scroll on message changes if user is actively stuck to bottom
-    if (stickToBottomRef.current) {
-      requestAnimationFrame(() => virtualizer.scrollToIndex(messages.length - 1, { align: 'end' }));
-    }
-  }, [messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    const index = messages.findIndex((message) => message.id === jumpToMessage.messageId);
+    if (index < 0) return;
+    return handleJumpToMessage(index, 'center');
+  }, [jumpToMessage, isSessionLoading, currentSessionId]);
 
-  useEffect(() => {
-    setShowJumpBottom(false);
-    stickToBottomRef.current = true;
-    if (parentRef.current) {
-      parentRef.current.scrollTop = parentRef.current.scrollHeight;
-    }
-    if (messages.length > 0) {
-      requestAnimationFrame(() => {
-        if (parentRef.current) {
-          parentRef.current.scrollTop = parentRef.current.scrollHeight;
-        }
-        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-      });
-    }
-  }, [currentSessionId, sessionTitle]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    jumpSettleRef.current?.correct();
+    // Preserve an explicit jump's optimistic marker until its bounded settle ends.
+    if (isSessionLoading || jumpSettleRef.current) return;
+    // A scroll event can precede TanStack mounting the newly visible rows. Sample
+    // only mounted, intersecting rows after every commit, never a cached fallback.
+    const anchor = captureAnchor(false);
+    if (!anchor) return;
+    visibleAnchorRef.current = anchor;
+    const index = messages.findIndex((message) => message.id === anchor.id);
+    if (index >= 0) updateActiveMessageIndex(index);
+  });
 
-  useEffect(() => {
-    if (!stickToBottomRef.current || !parentRef.current || messages.length === 0) return;
-    const frame = requestAnimationFrame(() => {
-      const element = parentRef.current;
-      if (element && stickToBottomRef.current) element.scrollTop = element.scrollHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [messages]);
+  useEffect(() => () => { requestRef.current = null; cancelAnchorCorrection(); }, []);
 
   // Slash entries are native operations; skills remain available through Add Context.
   const allSlashItems: SlashItem[] = useMemo(
@@ -914,9 +1217,10 @@ export function ChatCanvas({
 
   const handleAddFiles = async () => {
     setAddContextOpen(false);
+    const origin = beginAttachments();
     try {
       const selected = await open({ multiple: true });
-      if (!selected) return;
+      if (!isAttachmentOrigin(origin) || !selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
       const newAtts: AttachedContext[] = paths.map((path) => {
         const normalized = path.replace(/\\/g, '/');
@@ -928,21 +1232,20 @@ export function ChatCanvas({
           isDir: false,
         };
       });
-      setAttachedContexts((prev) => {
-        const existing = new Set(prev.map((c) => c.path));
-        const unique = newAtts.filter((c) => !existing.has(c.path));
-        return [...prev, ...unique];
-      });
+      appendAttachments(origin, newAtts);
     } catch (error) {
-      console.error('Failed to select files', error);
+      reportAttachmentError(origin, error);
+    } finally {
+      finishAttachments(origin);
     }
   };
 
   const handleAddFolder = async () => {
     setAddContextOpen(false);
+    const origin = beginAttachments();
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (!selected || typeof selected !== 'string') return;
+      if (!isAttachmentOrigin(origin) || !selected || typeof selected !== 'string') return;
       const normalized = selected.replace(/\\/g, '/');
       const name = normalized.split('/').pop() || normalized;
       const newAtt: AttachedContext = {
@@ -951,12 +1254,11 @@ export function ChatCanvas({
         name,
         isDir: true,
       };
-      setAttachedContexts((prev) => {
-        if (prev.some((c) => c.path === selected)) return prev;
-        return [...prev, newAtt];
-      });
+      appendAttachments(origin, [newAtt]);
     } catch (error) {
-      console.error('Failed to select folder', error);
+      reportAttachmentError(origin, error);
+    } finally {
+      finishAttachments(origin);
     }
   };
 
@@ -1017,6 +1319,7 @@ export function ChatCanvas({
 
   const executeSlashCommand = (item: SlashItem, argText?: string, clearComposer = true) => {
     if (clearComposer) {
+      invalidateAttachments();
       setInput('');
       setMenuDismissed(false);
       setCursor(0);
@@ -1026,9 +1329,13 @@ export function ChatCanvas({
 
     switch (item.command) {
       case '/clear':
+        invalidateAttachments();
+        setAttachedContexts([]);
         onClearSession();
         break;
       case '/new': {
+        invalidateAttachments();
+        setAttachedContexts([]);
         const newSessionId = onNewSession();
         if (arg && onRenameSession) {
           void onRenameSession(newSessionId, arg);
@@ -1046,6 +1353,7 @@ export function ChatCanvas({
         break;
       case '/review':
       case '/reflect':
+      case '/refine':
         if (onReviewSession) void onReviewSession();
         else void onSendMessage(item.command);
         break;
@@ -1092,15 +1400,22 @@ export function ChatCanvas({
         if (onUndoTurn) {
           void onUndoTurn().then(async (undone) => {
             if (undone) {
-              await onSendMessage(undone.content || '', undone.attachments);
+              if (undone.imageInputs?.length) {
+                await onSendMessage(undone.content || '', undone.attachments, { imageInputs: undone.imageInputs });
+              } else {
+                await onSendMessage(undone.content || '', undone.attachments);
+              }
             }
           });
         }
         break;
       case '/undo':
         if (onUndoTurn) {
+          const origin = { ...attachmentScopeRef.current };
           void onUndoTurn().then((undone) => {
-            if (undone) {
+            if (undone && isAttachmentOrigin(origin)) {
+              invalidateAttachments();
+              preparedImageInputsRef.current = new Map((undone.imageInputs ?? []).map((image) => [image.sourcePath, { ...image }]));
               setInput(undone.content || '');
               setAttachedContexts(undone.attachments || []);
               setCursor(undone.content.length);
@@ -1148,14 +1463,13 @@ export function ChatCanvas({
 
   useEffect(() => {
     const next = queuedPrompts[0];
-    if (!next || next.sessionId !== currentSessionId || isStreaming || isReviewing || stopRequested || stoppedWithQueue || dispatchingQueueRef.current) return;
-    dispatchingQueueRef.current = next.id;
-    let disposed = false;
+    if (!next || next.sessionId !== currentSessionId || isSessionLoading || isHistoryPreview || isStreaming || isReviewing || runStatus?.phase === 'saving_results' || stopRequested || stoppedWithQueue || dispatchingQueueRef.current.has(currentSessionId)) return;
+    dispatchingQueueRef.current.set(next.sessionId, next.id);
     const dispatch = async () => {
       let accepted = false;
       try {
         const clean = next.prompt.trim();
-        const localCommand = allSlashItems.find((item) => item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan');
+        const localCommand = allSlashItems.find((item) => item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
         if (localCommand) {
           executeSlashCommand(localCommand, clean.split(/\s+/).slice(1).join(' '), false);
           accepted = true;
@@ -1165,29 +1479,37 @@ export function ChatCanvas({
       } catch {
         // Keep the item available for an explicit retry.
       }
-      if (disposed || queueSessionRef.current !== next.sessionId) return;
-      dispatchingQueueRef.current = null;
-      if (accepted) setQueuedPrompts((items) => items.filter((item) => item.id !== next.id));
-      else setStoppedWithQueue(true);
+      if (dispatchingQueueRef.current.get(next.sessionId) !== next.id) return;
+      dispatchingQueueRef.current.delete(next.sessionId);
+      if (accepted) updateSessionQueue(next.sessionId, (items) => items.filter((item) => item.id !== next.id));
+      else pauseSessionQueue(next.sessionId, true);
     };
     void dispatch();
-    // A pending send belongs to the origin session even if navigation occurs.
-    // Do not cancel this effect on ordinary renders while acceptance is pending.
-    return () => { disposed = queueSessionRef.current !== next.sessionId; };
-  }, [queuedPrompts, currentSessionId, isStreaming, isReviewing, stopRequested, stoppedWithQueue, onSendMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Hasil penerimaan tetap memperbarui antrean asal meskipun pengguna sudah pindah chat.
+  }, [queuedPrompts, currentSessionId, isSessionLoading, isHistoryPreview, isStreaming, isReviewing, runStatus?.phase, stopRequested, stoppedWithQueue, onSendMessage, updateSessionQueue, pauseSessionQueue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async () => {
+    if (isSessionLoading || attachmentScopeRef.current.pending > 0) return;
+    const origin = { ...attachmentScopeRef.current };
     const draft = input;
     const draftAttachments = attachedContexts;
+    const reusedImages = draftAttachments.flatMap((attachment) => {
+      const image = !attachment.isDir && preparedImageInputsRef.current.get(attachment.path);
+      return image ? [{ ...image }] : [];
+    });
+    const draftOptions = reusedImages.length ? { ...runOptions, imageInputs: reusedImages } : runOptions;
     const clean = (draft || '').trim();
     const slashItem = clean.startsWith('/')
-      ? allSlashItems.find((item) => item.command.toLowerCase() === clean.split(/\s+/)[0].toLowerCase())
+      ? allSlashItems.find((item) => item.command.toLowerCase() === clean.split(/\s+/)[0].toLowerCase() && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command))
       : undefined;
     // /stop must stay reachable while a turn streams so the run can always be interrupted.
     const interruptsRun = slashItem?.command === '/stop';
     if ((!clean && draftAttachments.length === 0) || isReviewing) return;
 
     if (!isStreaming) {
+      cancelAnchorCorrection();
+      pendingAnchorRef.current = null;
+      upwardIntentRef.current = false;
       stickToBottomRef.current = true;
       setShowJumpBottom(false);
     }
@@ -1199,11 +1521,12 @@ export function ChatCanvas({
           id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           prompt: draft,
           attachments: draftAttachments.length > 0 ? draftAttachments : undefined,
-          options: runOptions,
+          options: draftOptions,
           sessionId: currentSessionId,
         },
       ]);
       setStoppedWithQueue(false);
+      invalidateAttachments();
       setInput('');
       setAttachedContexts([]);
       setCursor(0);
@@ -1211,7 +1534,8 @@ export function ChatCanvas({
     }
 
     const clearIfUnchanged = (accepted: boolean) => {
-      if (!accepted) return;
+      if (!accepted || !isAttachmentOrigin(origin)) return;
+      invalidateAttachments();
       setInput((current) => (current === draft ? '' : current));
       setAttachedContexts((current) => (current === draftAttachments ? [] : current));
       setCursor(0);
@@ -1228,7 +1552,7 @@ export function ChatCanvas({
     const accepted = await onSendMessage(
       draft,
       draftAttachments.length > 0 ? draftAttachments : undefined,
-      runOptions,
+      draftOptions,
     );
     clearIfUnchanged(accepted);
   };
@@ -1292,9 +1616,9 @@ export function ChatCanvas({
     >
       {/* Drag & Drop Visual Overlay */}
       {isDraggingOver && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0d1117]/90 backdrop-blur-sm border-2 border-dashed border-[#58a6ff] m-2 rounded-2xl pointer-events-none animate-fadeIn select-none">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#161b22] border border-[#30363d] shadow-2xl mb-3">
-            <FileCode2 size={28} className="text-[#58a6ff] animate-bounce" />
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0d1117]/90 backdrop-blur-sm border-2 border-dashed border-[#58a6ff] m-2 rounded-xl pointer-events-none ui-enter select-none">
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-[#161b22] border border-[#30363d] shadow-lg mb-3">
+            <FileCode2 size={28} className="text-[#58a6ff]" />
           </div>
           <p className="text-sm font-semibold text-[#f0f6fc]">Drop files or folders here</p>
           <p className="text-xs text-[#8b949e] mt-1">Automatically attach as context to your prompt</p>
@@ -1306,7 +1630,7 @@ export function ChatCanvas({
             <button
               type="button"
               onClick={onToggleSidebar}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3] transition-colors shrink-0"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3] transition-colors shrink-0"
               title={sidebarOpen ? "Hide sidebar (Ctrl+B)" : "Show sidebar (Ctrl+B)"}
             >
               <PanelLeft size={13} />
@@ -1314,7 +1638,7 @@ export function ChatCanvas({
           )}
           <div className="min-w-0 max-w-[56px] sm:max-w-[180px] truncate">
             <h1 className="truncate text-xs font-semibold text-[#e6edf3]">{sessionTitle || 'New Chat'}</h1>
-            <span className="text-[10px] text-[#6e7681] whitespace-nowrap block">{messages.length} messages</span>
+            <span className="text-[10px] text-[#6e7681] whitespace-nowrap block">{totalMessageCount} messages</span>
           </div>
         </div>
 
@@ -1325,10 +1649,10 @@ export function ChatCanvas({
             <button
               type="button"
               onClick={onOpenLiveShell}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#3fb950]/50 hover:text-[#e6edf3] transition-colors shrink-0"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#8b949e] hover:text-[#e6edf3] transition-colors shrink-0"
               title="Open Live Shell terminal"
             >
-              <Terminal size={13} className="text-[#3fb950]" />
+              <Terminal size={13} />
             </button>
           )}
 
@@ -1337,9 +1661,9 @@ export function ChatCanvas({
             type="button"
             onClick={() => setCouncilMode((v) => !v)}
             disabled={!councilSecondCandidate}
-            className={`flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 ${
+            className={`flex h-8 items-center gap-1 rounded-lg border px-2 text-xs transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 ${
               councilMode
-                ? 'border-[#f0883e] bg-[#f0883e]/15 text-[#f0883e] font-medium'
+                ? 'border-[#8b949e] bg-[#21262d] text-[#e6edf3] font-medium'
                 : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
             }`}
             title={councilSecondCandidate ? 'Council Mode (Dual Model A/B Test)' : 'Council Mode needs at least two configured models'}
@@ -1352,7 +1676,7 @@ export function ChatCanvas({
           <button
             type="button"
             onClick={onOpenModelPicker}
-            className="flex h-7 max-w-[58px] sm:max-w-[145px] items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2 text-xs text-[#58a6ff] hover:bg-[#21262d] transition-colors shrink-0"
+            className="flex h-8 max-w-[58px] sm:max-w-[145px] items-center gap-1 rounded-lg border border-[#30363d] bg-[#161b22] px-2 text-xs text-[#58a6ff] hover:bg-[#21262d] transition-colors shrink-0"
             title="Choose model and reasoning"
           >
             <span className="truncate font-mono text-[11px]">{effectiveConfig?.provider.model || 'Select model'}</span>
@@ -1367,11 +1691,11 @@ export function ChatCanvas({
                 type="button"
                 onClick={onToggleArtifacts}
                 disabled={artifactCount === 0 && runningTasks === 0}
-                className={`flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-all shrink-0 ${
+                className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors shrink-0 ${
                   isArtifactOpen
-                    ? 'border-[#58a6ff] bg-[#58a6ff]/20 text-[#58a6ff] font-medium shadow-sm'
+                    ? 'border-[#8b949e] bg-[#21262d] text-[#e6edf3] font-medium'
                     : runningTasks > 0
-                    ? 'border-[#f0883e]/60 bg-[#f0883e]/15 text-[#f0883e] font-medium animate-pulse hover:bg-[#f0883e]/25'
+                    ? 'border-[#30363d] bg-[#161b22] text-[#d29922] font-medium hover:bg-[#21262d]'
                     : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
                 } disabled:cursor-not-allowed disabled:opacity-40 hover:disabled:text-[#8b949e]`}
                 title={
@@ -1385,16 +1709,15 @@ export function ChatCanvas({
                 {runningTasks > 0 ? (
                   <>
                     <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#f0883e] opacity-75" />
                       <span className="relative inline-flex rounded-full h-2 w-2 bg-[#f0883e]" />
                     </span>
-                    <span className="text-[11px] font-mono font-semibold text-[#f0883e]">{runningTasks} Active</span>
+                    <span className="text-[11px] font-mono font-semibold text-[#d29922]">{runningTasks} Active</span>
                   </>
                 ) : (
                   <>
                     <PanelRight size={13} />
                     {artifactCount > 0 && (
-                      <span className="rounded bg-[#1f6feb] px-1 font-mono text-[9px] font-bold text-white">
+                      <span className="rounded bg-[#30363d] px-1 font-mono text-[10px] font-medium text-[#e6edf3]">
                         {artifactCount}
                       </span>
                     )}
@@ -1409,9 +1732,9 @@ export function ChatCanvas({
             <button
               type="button"
               onClick={() => setMoreMenuOpen((v) => !v)}
-              className={`flex h-7 w-7 items-center justify-center rounded-md border text-xs transition-colors ${
+              className={`flex h-8 w-8 items-center justify-center rounded-lg border text-xs transition-colors ${
                 moreMenuOpen
-                  ? 'border-[#58a6ff] bg-[#161b22] text-[#e6edf3]'
+                  ? 'border-[#8b949e] bg-[#161b22] text-[#e6edf3]'
                   : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
               }`}
               title="More actions (Search, Export, Settings)"
@@ -1419,7 +1742,7 @@ export function ChatCanvas({
               <MoreHorizontal size={14} />
             </button>
             {moreMenuOpen && (
-              <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-2xl">
+              <div className="ui-menu absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-lg">
                 {onOpenSpotlight && (
                   <button
                     type="button"
@@ -1441,7 +1764,7 @@ export function ChatCanvas({
                       onClick={() => { setMoreMenuOpen(false); onExportSession('html'); }}
                       className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Download size={13} className="text-[#58a6ff]" />
+                      <Download size={13} className="text-[#8b949e]" />
                       <span>HTML (PDF-ready)</span>
                     </button>
                     <button
@@ -1449,7 +1772,7 @@ export function ChatCanvas({
                       onClick={() => { setMoreMenuOpen(false); onExportSession('markdown'); }}
                       className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Download size={13} className="text-[#3fb950]" />
+                      <Download size={13} className="text-[#8b949e]" />
                       <span>Markdown (.md)</span>
                     </button>
                     <button
@@ -1457,7 +1780,7 @@ export function ChatCanvas({
                       onClick={() => { setMoreMenuOpen(false); onExportSession('json'); }}
                       className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Download size={13} className="text-[#d29922]" />
+                      <Download size={13} className="text-[#8b949e]" />
                       <span>JSON transcript</span>
                     </button>
                   </>
@@ -1476,7 +1799,7 @@ export function ChatCanvas({
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setMoreMenuOpen(false); onClearSession(); }}
+                  onClick={() => { setMoreMenuOpen(false); invalidateAttachments(); setAttachedContexts([]); onClearSession(); }}
                   className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#f85149] hover:bg-[#f85149]/15"
                 >
                   <Trash2 size={13} />
@@ -1489,19 +1812,37 @@ export function ChatCanvas({
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Soft top gradient under header for smooth visual clipping */}
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-3 bg-gradient-to-b from-[#0d1117] to-transparent" />
-
+        {isSessionLoading && <div role="status" className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d1117] text-sm text-[#8b949e]">Loading conversation{'\u2026'}</div>}
         <div
           ref={parentRef}
+          aria-hidden={isSessionLoading || undefined}
+          inert={isSessionLoading || undefined}
+          style={isSessionLoading ? { visibility: 'hidden' } : undefined}
+          tabIndex={0}
           className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+        onKeyDown={(event) => {
+          if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar'].includes(event.key)) {
+            cancelAnchorCorrection();
+          }
+          if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) {
+            cancelAnchorCorrection(); upwardIntentRef.current = true; stickToBottomRef.current = false;
+          } else { upwardIntentRef.current = false; }
+        }}
+        onPointerDown={() => { cancelAnchorCorrection(); upwardIntentRef.current = true; }}
+        onTouchStart={(event) => { touchYRef.current = event.touches[0]?.clientY ?? null; }}
         onWheel={(e) => {
+          cancelAnchorCorrection();
+          upwardIntentRef.current = e.deltaY < 0;
           if (e.deltaY < 0) {
             // User intentionally scrolled up with the mouse wheel
             stickToBottomRef.current = false;
           }
         }}
-        onTouchMove={() => {
+        onTouchMove={(event) => {
+          cancelAnchorCorrection();
+          const y = event.touches[0]?.clientY;
+          upwardIntentRef.current = y !== undefined && touchYRef.current !== null && y > touchYRef.current;
+          touchYRef.current = y ?? null;
           const element = parentRef.current;
           if (element) {
             const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -1512,10 +1853,19 @@ export function ChatCanvas({
         }}
         onScroll={(event) => {
           const element = event.currentTarget;
+          visibleAnchorRef.current = captureAnchor();
+          updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
+          const upward = element.scrollTop < lastScrollTopRef.current;
+          lastScrollTopRef.current = element.scrollTop;
+          if (upwardIntentRef.current && upward && element.scrollTop <= 120) {
+            upwardIntentRef.current = false;
+            if (hasOlderMessages && !historyError) void loadHistory();
+          }
           const hasOverflow = element.scrollHeight > element.clientHeight + 40;
           const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
           const isAtBottom = !hasOverflow || distanceToBottom < 35;
           if (isAtBottom) {
+            cancelAnchorCorrection();
             stickToBottomRef.current = true;
             setShowJumpBottom(false);
           } else {
@@ -1524,20 +1874,30 @@ export function ChatCanvas({
           }
         }}
       >
+        <div className="mx-auto mb-4 flex max-w-3xl flex-wrap items-center justify-center gap-3 text-xs text-[#8b949e]">
+          <span>{messages.length} / {totalMessageCount} messages loaded</span>
+          {hasOlderMessages && onLoadOlderMessages && (
+            <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} className="flex items-center gap-2 rounded border border-[#30363d] px-3 py-2 disabled:opacity-50">
+              {loadingOlderMessages && <LoaderCircle size={13} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
+              {loadingOlderMessages ? 'Loading older messages\u2026' : 'Load older messages'}
+            </button>
+          )}
+          {historyError && <div role="alert" className="text-[#f85149]">{historyError}{' '}
+            {onLoadOlderMessages && <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} aria-label="Retry loading older messages" className="underline">Retry</button>}
+          </div>}
+        </div>
         {messages.length === 0 ? (
-          <div className="mx-auto flex h-full max-w-xl flex-col items-center justify-center text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#30363d] bg-[#161b22] shadow-sm">
-              <AetherLogo size={24} />
-            </div>
-            <h2 className="text-lg font-semibold text-[#e6edf3]">Build with AetherAgent</h2>
-            <p className="mt-2 text-xs leading-5 text-[#8b949e]">Ask about the active workspace, attach context with <span className="text-[#58a6ff]">@</span>, or use <span className="text-[#58a6ff]">/</span> for commands.</p>
-            <div className="mt-6 grid w-full grid-cols-1 gap-2 text-left sm:grid-cols-2">
-              <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3 text-xs text-[#8b949e]"><span className="mb-1 block font-medium text-[#e6edf3]">Native workspace tools</span>Read, edit, search, run PowerShell, and inspect diffs.</div>
-              <div className="rounded-lg border border-[#30363d] bg-[#161b22] p-3 text-xs text-[#8b949e]"><span className="mb-1 block font-medium text-[#e6edf3]">Provider flexibility</span>OpenAI-compatible, Anthropic, DeepSeek, and Ollama.</div>
-            </div>
+          <div className="ui-enter mx-auto flex h-full max-w-lg flex-col justify-center py-8 text-left">
+            <h2 className="text-base font-medium text-[#e6edf3]">What would you like to work on?</h2>
+            <p className="mt-2 text-sm leading-6 text-[#8b949e]">Describe a task, ask a question, or attach files for context.</p>
+            <ul className="mt-4 space-y-1 text-xs leading-5 text-[#8b949e]">
+              <li>Find the code responsible for a failing test.</li>
+              <li>Explain how this workspace is organized.</li>
+            </ul>
+            <p className="mt-4 font-mono text-[11px] text-[#8b949e]">@ for workspace files &middot; / for commands</p>
           </div>
         ) : (
-          <div className="relative mx-auto w-full max-w-3xl" style={{ height: virtualizer.getTotalSize() }}>
+          <div ref={listRef} className="relative mx-auto w-full max-w-3xl" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const message = messages[virtualRow.index];
               if (!message) return null;
@@ -1545,21 +1905,18 @@ export function ChatCanvas({
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
+                  data-message-id={message.id}
                   ref={virtualizer.measureElement}
-                  className="absolute left-0 top-0 w-full"
+                  className={`absolute left-0 top-0 w-full ${outlinedMessageId === message.id ? 'outline outline-2 outline-[#58a6ff] outline-offset-[-2px]' : ''}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   <MessageRow
                     message={message}
                     onSelectArtifact={onSelectArtifact}
                     onSelectCouncilWinner={handleSelectCouncilWinner}
-                    onRetry={onRetryTurn ? () => void onRetryTurn(message.id) : undefined}
-                    onEditAndResend={
-                      onEditAndResendMessage
-                        ? (newContent) => void onEditAndResendMessage(message.id, newContent)
-                        : undefined
-                    }
-                    onRollback={onRollbackToMessage ? () => void onRollbackToMessage(message.id) : undefined}
+                    onRetryMessage={onRetryTurn}
+                    onEditMessage={onEditAndResendMessage}
+                    onRollbackMessage={onRollbackToMessage}
                     isStreaming={isStreaming}
                   />
                 </div>
@@ -1571,28 +1928,36 @@ export function ChatCanvas({
     </div>
 
       {/* Antigravity Timeline Scrubber */}
+      {!isSessionLoading && <div role="region" aria-label={`Loaded message timeline: ${messages.length} of ${totalMessageCount} messages loaded`}>
       <TimelineScrubber
         messages={messages}
         sessionTitle={sessionTitle}
         scrollElement={parentRef.current}
+        activeMessageIndex={activeMessageIndex}
         onJumpToMessage={handleJumpToMessage}
       />
+      </div>}
 
       {/* Floating Jump to Bottom Button */}
-      {showJumpBottom && (
+      {showJumpBottom && !isSessionLoading && (
         <button
           type="button"
-          onClick={handleJumpToBottom}
-          aria-label="Jump to bottom"
-          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-full border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-xl backdrop-blur-md hover:border-[#58a6ff]/60 hover:bg-[#21262d] transition-all animate-fadeIn"
+          onClick={() => {
+            if (isHistoryPreview) {
+              void onLoadLatestMessages?.();
+            } else {
+              handleJumpToBottom();
+            }
+          }}
+          aria-label={isStreaming ? 'Jump to bottom' : 'Return to latest'}
+          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-lg backdrop-blur-md hover:border-[#58a6ff]/60 hover:bg-[#21262d] transition-colors ui-enter"
         >
           <ChevronDown size={13} className="text-[#58a6ff]" />
           <span className="font-medium text-[11px]">
-            {isStreaming ? 'New output' : 'Jump to bottom'}
+            {isStreaming ? 'New output' : 'Return to latest'}
           </span>
           {isStreaming && (
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#f0883e] opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#f0883e]" />
             </span>
           )}
@@ -1622,7 +1987,7 @@ export function ChatCanvas({
             <div className="mt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               {/* Candidate A Picker */}
               <div className="flex flex-1 items-center gap-2 rounded border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5">
-                <span className="font-mono text-[10px] font-bold text-[#58a6ff]">A</span>
+                <span className="font-mono text-[10px] font-bold text-[#8b949e]">A</span>
                 <select
                   value={councilModelA ? `${councilModelA.providerId}::${councilModelA.model}` : ''}
                   onChange={(e) => {
@@ -1643,7 +2008,7 @@ export function ChatCanvas({
 
               {/* Candidate B Picker */}
               <div className="flex flex-1 items-center gap-2 rounded border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5">
-                <span className="font-mono text-[10px] font-bold text-[#d29922]">B</span>
+                <span className="font-mono text-[10px] font-bold text-[#8b949e]">B</span>
                 <select
                   value={councilModelB ? `${councilModelB.providerId}::${councilModelB.model}` : ''}
                   onChange={(e) => {
@@ -1663,39 +2028,22 @@ export function ChatCanvas({
           </div>
         )}
 
-        {subagents && subagents.length > 0 && (
-          <SubagentTreeCard subagents={subagents} onSelectArtifact={onSelectArtifact} />
-        )}
-
-        {backgroundTasks && backgroundTasks.length > 0 && (
-          <BackgroundTasksCard
-            tasks={backgroundTasks}
-            onKillTask={onKillBackgroundTask}
-            onRefreshTasks={onRefreshBackgroundTasks}
-          />
-        )}
-
-        {activeSkills.length > 0 && isStreaming && (
-          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5 animate-fadeIn">
-            {activeSkills.map((sk) => (
-              <div
-                key={sk.name}
-                className="inline-flex items-center gap-1.5 rounded-full border border-[#3fb950]/30 bg-[#3fb950]/10 px-2.5 py-0.5 text-[11px] font-medium text-[#3fb950]"
-                title={sk.description}
-              >
-                <BookOpen size={11} />
-                <span>Active Skill: {sk.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <ActivityTray
+          key={currentSessionId ?? 'unsaved-session'}
+          subagents={subagents}
+          tasks={backgroundTasks}
+          activeSkills={isStreaming ? activeSkills : undefined}
+          onSelectArtifact={onSelectArtifact}
+          onKillTask={onKillBackgroundTask}
+          onRefreshTasks={onRefreshBackgroundTasks}
+        />
 
         {slashOpen && (
-          <div className="absolute bottom-[calc(100%-4px)] left-1/2 z-40 w-full max-w-3xl -translate-x-1/2 overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22]/98 shadow-2xl backdrop-blur-md">
+          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-40 mx-auto max-w-3xl overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22]/98 shadow-lg backdrop-blur-md">
             {/* Active item usage tooltip bubble (Hermes-style) */}
             {slashMatches[activeIndex] && (slashMatches[activeIndex].usage || slashMatches[activeIndex].description) && (
-              <div className="hidden lg:flex absolute right-3 top-2.5 z-50 max-w-xs flex-col rounded-lg border border-[#30363d] bg-[#0d1117]/95 p-2 text-xs shadow-2xl backdrop-blur-md">
-                <span className="font-mono text-[11px] font-bold text-[#f0883e]">
+              <div className="hidden lg:flex absolute right-3 top-2.5 z-50 max-w-xs flex-col rounded-lg border border-[#30363d] bg-[#0d1117]/95 p-2 text-xs shadow-lg backdrop-blur-md">
+                <span className="font-mono text-[11px] font-bold text-[#8b949e]">
                   {slashMatches[activeIndex].command}
                 </span>
                 <span className="mt-0.5 text-[11px] text-[#8b949e] whitespace-pre-line">
@@ -1722,27 +2070,27 @@ export function ChatCanvas({
                         onMouseEnter={() => setActiveIndex(flatIndex)}
                         className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                           isActive
-                            ? 'border border-[#f0883e]/30 bg-[#382618] text-white shadow-sm'
+                            ? 'border border-[#30363d] bg-[#21262d] text-[#e6edf3]'
                             : 'text-[#c9d1d9] hover:bg-[#21262d]'
                         }`}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           {item.iconType === 'terminal' ? (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[#f0883e]/50 bg-[#f0883e]/15 font-mono text-[9px] font-bold text-[#f0883e]">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[#30363d] bg-[#0d1117] font-mono text-[9px] font-bold text-[#8b949e]">
                               &gt;_
                             </span>
                           ) : (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#f0883e]">
-                              <BookOpen size={13} className="shrink-0 text-[#f0883e]" />
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#8b949e]">
+                              <BookOpen size={13} className="text-[#8b949e]" />
                             </span>
                           )}
-                          <span className={`truncate font-mono font-semibold ${isActive ? 'text-[#f0883e]' : 'text-[#f0f6fc]'}`}>
+                          <span className={`truncate font-mono font-semibold ${isActive ? 'text-[#e6edf3]' : 'text-[#f0f6fc]'}`}>
                             {item.command}
                           </span>
                         </div>
                         <div className="hidden shrink-0 items-center text-right text-xs text-[#8b949e] sm:flex">
                           {item.iconType === 'skill' && (
-                            <span className="mr-1 font-mono text-[9px] text-[#f0883e]/80">skill</span>
+                            <span className="mr-1 font-mono text-[9px] text-[#8b949e]/80">skill</span>
                           )}
                           <span className="max-w-[280px] truncate sm:max-w-[400px]">{item.description}</span>
                         </div>
@@ -1755,7 +2103,7 @@ export function ChatCanvas({
           </div>
         )}
         {mentionOpen && (
-          <div className="absolute bottom-[calc(100%-4px)] left-1/2 z-20 max-h-64 w-full max-w-3xl -translate-x-1/2 overflow-y-auto rounded-lg border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl">
+          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-20 mx-auto max-h-64 max-w-3xl overflow-y-auto rounded-lg border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg">
             <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-[#8b949e]"><AtSign size={11} /> Workspace files</div>
             {loadingFiles && <div className="px-3 py-3 text-xs text-[#8b949e]">Searching workspace…</div>}
             {!loadingFiles && fileOptions.length === 0 && <div className="px-3 py-3 text-xs text-[#8b949e]">No matching files</div>}
@@ -1769,12 +2117,12 @@ export function ChatCanvas({
         {/* Queued Prompts Banner */}
         {queuedPrompts.length > 0 && (
           <div
-            className="mx-auto mb-2.5 w-full max-w-3xl space-y-1.5 animate-fadeIn"
+            className="mx-auto mb-2.5 w-full max-w-3xl space-y-1.5 ui-enter"
             data-testid="queued-prompts-banner"
           >
             <div className="flex items-center justify-between px-1 text-[11px] font-medium text-[#8b949e]">
-              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#f0883e]">
-                <Clock size={11} className={isStreaming ? 'animate-pulse' : ''} />
+              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#8b949e]">
+                <Clock size={11} />
                 Queued Instructions ({queuedPrompts.length})
               </span>
               {stoppedWithQueue && !isStreaming && (
@@ -1790,18 +2138,18 @@ export function ChatCanvas({
             {queuedPrompts.map((item, index) => (
               <div
                 key={item.id}
-                className="flex items-center justify-between gap-2 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-md backdrop-blur-sm transition-all hover:border-[#58a6ff]/40"
+                className="flex items-center justify-between gap-2 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-md backdrop-blur-sm transition-colors hover:border-[#58a6ff]/40"
                 data-testid={`queued-prompt-${index}`}
               >
                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="shrink-0 rounded bg-[#30363d]/70 px-1.5 py-0.5 font-mono text-[10px] text-[#f0883e]">
+                  <span className="shrink-0 rounded bg-[#30363d]/70 px-1.5 py-0.5 font-mono text-[10px] text-[#8b949e]">
                     #{index + 1}
                   </span>
                   <p className="truncate text-xs text-[#e6edf3]" title={item.prompt}>
                     {item.prompt}
                   </p>
                   {item.attachments && item.attachments.length > 0 && (
-                    <span className="shrink-0 flex items-center gap-1 rounded bg-[#21262d] px-1.5 py-0.5 text-[10px] font-mono text-[#58a6ff]">
+                    <span className="shrink-0 flex items-center gap-1 rounded bg-[#21262d] px-1.5 py-0.5 text-[10px] font-mono text-[#8b949e]">
                       <Paperclip size={10} /> +{item.attachments.length}
                     </span>
                   )}
@@ -1830,25 +2178,48 @@ export function ChatCanvas({
           </div>
         )}
 
-        <div className="mx-auto max-w-3xl rounded-2xl border border-[#30363d] bg-[#161b22] shadow-sm transition-colors focus-within:border-[#58a6ff]/70 focus-within:ring-1 focus-within:ring-[#58a6ff]/20">
+        <RunStatusBar status={isHistoryPreview ? null : runStatus} onCancelPreparation={onStop} />
+        <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
+          {pendingAttachments > 0 && <div role="status" className="px-3 py-2 text-xs text-[#8b949e]">Preparing attachments ({pendingAttachments})...</div>}
+          {attachmentError && <div role="alert" className="px-3 py-2 text-xs text-[#f85149]">{attachmentError}</div>}
+          {attachedContexts.some((att) => !att.isDir && /\.(svg|bmp|tiff?|heic|heif|avif)$/i.test(att.name)) && (
+            <div
+              role="note"
+              title="Unsupported image format: attached as file context, not sent as pixels for vision."
+              className="px-3 py-2 text-xs leading-5 text-[#d29922]"
+            >
+              Unsupported image formats stay attached as file context; their pixels are not sent for vision.
+              {' '}Vision attachments support PNG, JPEG, GIF, and WebP only. Convert to a supported format for visual analysis.
+              {' '}SVG files can still be read as text by tools.
+            </div>
+          )}
           {attachedContexts.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-[#30363d]/50 px-3 py-2">
               {attachedContexts.map((att) => (
                 <span
                   key={att.id}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#30363d] bg-[#0d1117] px-2 py-0.5 text-[11px] font-mono text-[#58a6ff]"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#0d1117] px-2 py-0.5 text-[11px] font-mono text-[#e6edf3]"
                 >
                   {att.isDir ? (
-                    <Folder size={11} className="text-[#d29922]" />
+                    <Folder size={11} className="text-[#8b949e]" />
                   ) : /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(att.name) ? (
-                    <ImageIcon size={11} className="text-[#a371f7]" />
+                    <ImageIcon size={11} className="text-[#8b949e]" />
                   ) : (
-                    <Paperclip size={11} className="text-[#58a6ff]" />
+                    <Paperclip size={11} className="text-[#8b949e]" />
                   )}
+                  <AttachmentPreview
+                    attachment={att}
+                    sessionId={currentSessionId}
+                    workspaceCwd={workspaceCwd}
+                    allowPreview={previewAttachmentIds.has(att.id)}
+                    model={councilMode && councilModelA && councilModelB
+                      ? [councilModelA.model, councilModelB.model].find((model) => /^(deepseek-chat|deepseek-reasoner)$/i.test(model.trim())) ?? councilModelA.model
+                      : effectiveConfig?.provider.model}
+                  />
                   <span className="max-w-[200px] truncate" title={att.path}>{att.name}</span>
                   <button
                     type="button"
-                    onClick={() => setAttachedContexts((prev) => prev.filter((item) => item.id !== att.id))}
+                    onClick={() => { invalidateAttachments(); setAttachedContexts((prev) => prev.filter((item) => item.id !== att.id)); }}
                     className="text-[#8b949e] hover:text-[#f85149]"
                     aria-label={`Remove ${att.name}`}
                   >
@@ -1860,11 +2231,12 @@ export function ChatCanvas({
           )}
           <div className="flex items-start">
             {input.startsWith('/') && (
-              <div className="flex shrink-0 select-none items-center gap-1 pl-3.5 pt-3.5 font-mono text-xs font-bold text-[#f0883e]" title="Command mode">
+              <div className="flex shrink-0 select-none items-center gap-1 pl-3.5 pt-3.5 font-mono text-xs font-bold text-[#8b949e]" title="Command mode">
                 &gt;_
               </div>
             )}
             <textarea
+              disabled={isSessionLoading || isHistoryPreview}
               ref={textareaRef}
               value={input}
               rows={2}
@@ -1883,9 +2255,9 @@ export function ChatCanvas({
               aria-label="Message AetherAgent"
             />
           </div>
-          <div className="flex items-center justify-between gap-3 px-3 pb-2.5 pt-0.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-2.5 pt-0.5">
             {/* Left cluster: [+] and [Model / Thinking pill] side-by-side */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <div className="relative" data-context-menu>
                 <button
                   type="button"
@@ -1893,54 +2265,54 @@ export function ChatCanvas({
                     setAddContextOpen((value) => !value);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-[#30363d] bg-[#21262d] text-[#8b949e] transition-colors hover:bg-[#30363d] hover:text-[#e6edf3]"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#21262d] text-[#8b949e] transition-colors hover:bg-[#30363d] hover:text-[#e6edf3]"
                   title="Add Context (Files, Folder, Mentions)"
                   aria-label="Add Context"
                 >
                   <Plus size={14} />
                 </button>
                 {addContextOpen && (
-                  <div className="absolute bottom-9 left-0 z-30 w-44 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-2xl">
+                  <div className="ui-menu absolute bottom-9 left-0 z-30 w-44 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-lg">
                     <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">Add Context</div>
                     <button
                       type="button"
                       onClick={handleAddFiles}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Paperclip size={14} className="text-[#58a6ff]" /> Files
+                      <Paperclip size={14} className="text-[#8b949e]" /> Files
                     </button>
                     <button
                       type="button"
                       onClick={handleAddFolder}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Folder size={14} className="text-[#d29922]" /> Folder
+                      <Folder size={14} className="text-[#8b949e]" /> Folder
                     </button>
                     <button
                       type="button"
                       onClick={handleAddMention}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <AtSign size={14} className="text-[#a371f7]" /> Mentions
+                      <AtSign size={14} className="text-[#8b949e]" /> Mentions
                     </button>
                     <button
                       type="button"
                       onClick={handleOpenSkillsList}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <BookOpen size={14} className="text-[#3fb950]" /> Actions & Skills
+                      <BookOpen size={14} className="text-[#8b949e]" /> Actions & Skills
                     </button>
                     <button
                       type="button"
                       onClick={handleAddBrowser}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
                     >
-                      <Globe size={14} className="text-[#58a6ff]" /> Browser
+                      <Globe size={14} className="text-[#8b949e]" /> Browser
                     </button>
                   </div>
                 )}
                 {skillsMenuOpen && (
-                  <div className="absolute bottom-9 left-0 z-30 max-h-60 w-64 overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl">
+                  <div className="ui-menu absolute bottom-9 left-0 z-30 max-h-60 w-64 overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg">
                     <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">
                       <span>Available Skills</span>
                       <button type="button" onClick={() => setSkillsMenuOpen(false)} className="text-[#8b949e] hover:text-white" aria-label="Close skills">
@@ -1975,17 +2347,17 @@ export function ChatCanvas({
                     setAddContextOpen(false);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-7 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
+                  className="flex h-8 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
                   title="Model & Thinking controls"
                 >
                   <SlidersHorizontal size={12} className="shrink-0 text-[#58a6ff]" />
-                  <span className="max-w-[130px] truncate font-mono text-[11px] font-medium sm:max-w-[180px]">
+                  <span className="max-w-[100px] truncate font-mono text-[11px] font-medium sm:max-w-[180px]">
                     {effectiveConfig?.provider.model || 'Select model'}
                   </span>
                   <span
                     className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
                       effectiveConfig?.thinking
-                        ? 'bg-[#1f6feb]/25 text-[#58a6ff]'
+                        ? 'bg-[#30363d] text-[#e6edf3]'
                         : 'bg-[#30363d] text-[#8b949e]'
                     }`}
                   >
@@ -1997,10 +2369,10 @@ export function ChatCanvas({
                 </button>
 
               {thinkingMenuOpen && (
-                <div className="fixed bottom-24 left-3 right-3 z-50 w-auto rounded-xl border border-[#30363d] bg-[#161b22] p-2.5 shadow-2xl sm:absolute sm:bottom-9 sm:left-0 sm:right-auto sm:w-72">
+                <div className="ui-menu fixed bottom-24 left-3 right-3 z-50 w-auto rounded-xl border border-[#30363d] bg-[#161b22] p-2.5 shadow-lg sm:absolute sm:bottom-9 sm:left-0 sm:right-auto sm:w-72">
                   <div className="mb-2.5 flex items-center justify-between border-b border-[#30363d] pb-2">
                     <div className="flex items-center gap-1.5">
-                      <Brain size={14} className={effectiveConfig?.thinking ? 'text-[#58a6ff]' : 'text-[#8b949e]'} />
+                      <Brain size={14} className="text-[#8b949e]" />
                       <span className="text-xs font-semibold text-[#e6edf3]">Thinking Process</span>
                     </div>
                     <button
@@ -2026,7 +2398,7 @@ export function ChatCanvas({
                       <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">
                         Reasoning Effort
                       </span>
-                      <span className="font-mono text-[10px] text-[#58a6ff] capitalize">
+                      <span className="font-mono text-[10px] text-[#8b949e] capitalize">
                         {effectiveConfig?.thinking ? effectiveConfig?.reasoningEffort?.replace('_', ' ') : 'Disabled'}
                       </span>
                     </div>
@@ -2113,7 +2485,7 @@ export function ChatCanvas({
                     setAddContextOpen(false);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-7 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
+                  className="flex h-8 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
                   title={`Execution mode: ${activeExecutionMode.title}`}
                   aria-label="Execution mode"
                 >
@@ -2126,7 +2498,7 @@ export function ChatCanvas({
 
                 {executionMenuOpen && (
                   <div
-                    className="fixed bottom-24 right-3 z-50 w-72 rounded-2xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl sm:absolute sm:bottom-9 sm:right-0 sm:w-80"
+                    className="ui-menu fixed bottom-24 right-3 z-50 w-72 rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg sm:absolute sm:bottom-9 sm:right-0 sm:w-80"
                     role="menu"
                     aria-label="Execution mode selection"
                   >
@@ -2172,9 +2544,9 @@ export function ChatCanvas({
               <button
                 type="button"
                 onClick={toggleListening}
-                className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all ${
+                className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
                   isListening
-                    ? 'border-[#f85149] bg-[#da3633]/25 text-[#f85149] animate-pulse ring-2 ring-[#f85149]/40'
+                    ? 'border-[#f85149] bg-[#da3633]/25 text-[#f85149]'
                     : 'border-[#30363d] bg-[#21262d] text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]'
                 }`}
                 title={isListening ? 'Listening to voice... Click to stop' : 'Voice Dictation (Speech-to-Text)'}
@@ -2192,9 +2564,10 @@ export function ChatCanvas({
                         onClick={send}
                         className="flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 py-1.5 text-xs font-medium text-[#58a6ff] hover:bg-[#30363d] hover:border-[#58a6ff]/50 transition-colors"
                         title="Add to queue (executes after current turn)"
+                        disabled={isSessionLoading || pendingAttachments > 0}
                         aria-label="Queue message"
                       >
-                        <Clock size={12} className="text-[#f0883e]" />
+                        <Clock size={12} className="text-[#8b949e]" />
                         <span>Queue</span>
                       </button>
                     )}
@@ -2211,7 +2584,7 @@ export function ChatCanvas({
                   <button
                     type="button"
                     onClick={send}
-                    disabled={isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
+                    disabled={runStatus?.phase === 'saving_results' || runStatus?.phase === 'preparing_attachments' || pendingAttachments > 0 || isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
                     className="rounded-lg bg-[#1f6feb] p-2 text-white transition-colors hover:bg-[#388bfd] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send message"
                   >
@@ -2224,7 +2597,7 @@ export function ChatCanvas({
         </div>
       </div>
       {input && (
-        <button type="button" onClick={() => { setInput(''); setMenuDismissed(false); textareaRef.current?.focus(); }} className="sr-only" aria-label="Clear composer"><X /></button>
+        <button type="button" onClick={() => { invalidateAttachments(); setInput(''); setAttachedContexts([]); setMenuDismissed(false); textareaRef.current?.focus(); }} className="sr-only" aria-label="Clear composer"><X /></button>
       )}
     </div>
   );

@@ -37,6 +37,31 @@ function legacySettings(): AgentSettings {
 beforeEach(() => { vi.mocked(invoke).mockReset(); });
 
 describe('SettingsModal reflection opt-in', () => {
+  it('preserves an explicit false preference when saving from Providers', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].self_improvement_enabled).toBe(false);
+  });
+
+
+  it('configures review cadence, approval, destination and auxiliary provider without mutating settings', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    const interval = screen.getByRole('spinbutton', { name: 'Creation nudge interval' }) as HTMLInputElement;
+    expect(interval.value).toBe('10');
+    expect((screen.getByRole('checkbox', { name: 'Require approval before writing skills' }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(interval, { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Require approval before writing skills' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Skill creation directory' }), { target: { value: 'D:/shared/skills' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Review provider' }), { target: { value: 'local' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].reviewConfig).toEqual({ creationNudgeInterval: 0, writeApproval: true, createDir: 'D:/shared/skills', auxiliaryProviderId: 'local' });
+    expect(baseSettings).not.toHaveProperty('reviewConfig');
+  });
   it('saves an explicit boolean when opting in and back out without mutating the supplied settings', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const settings = structuredClone(baseSettings);
@@ -74,14 +99,14 @@ describe('SettingsModal reflection opt-in', () => {
     expect(settings.self_improvement_enabled).toBe(true);
   });
 
-  it('normalizes a missing legacy preference to explicit false when saving from Providers', async () => {
+  it('normalizes a missing legacy preference to explicit true when saving from Providers', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onClose = vi.fn();
     render(<SettingsModal settings={legacySettings()} onSave={onSave} onClose={onClose} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
-    expect(onSave.mock.calls[0][0].self_improvement_enabled).toBe(false);
+    expect(onSave.mock.calls[0][0].self_improvement_enabled).toBe(true);
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
@@ -94,21 +119,24 @@ describe('SettingsModal reflection opt-in', () => {
     expect(descriptionId).toBeTruthy();
     const disclosure = document.getElementById(descriptionId!);
     expect(disclosure?.textContent).toContain('extra request to the active provider');
-    expect(disclosure?.textContent).toContain('successful run with multiple turns or tool activity');
-    expect(disclosure?.textContent).toContain('.aether/skills');
+    expect(disclosure?.textContent).toContain('creation nudge interval');
+    expect(disclosure?.textContent).toContain('10 provider iterations');
+    expect(disclosure?.textContent).not.toContain('10 successful runs');
+    expect(disclosure?.textContent).toContain('No workspace is required');
+    expect(disclosure?.textContent).toContain('approval');
     expect(disclosure?.textContent).toContain('/review');
     expect(disclosure?.textContent).toContain('/reflect');
     expect(disclosure?.textContent).toContain('even when automatic self-improvement is disabled');
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('shows a disabled-by-default opt-in for legacy settings in Agent defaults', () => {
+  it('shows enabled-by-default automatic reflection for legacy settings in Agent defaults', () => {
     render(<SettingsModal settings={legacySettings()} onSave={vi.fn()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
 
     expect(screen.getByRole('heading', { name: 'Agent Intelligence / Reflection' })).toBeTruthy();
     const toggle = screen.getByRole('checkbox', { name: 'Enable automatic self-improvement' });
-    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect((toggle as HTMLInputElement).checked).toBe(true);
   });
 
   it('toggles and configures auto micro-compaction settings', async () => {
@@ -164,4 +192,10 @@ describe('SettingsModal skill detection', () => {
     await waitFor(() => expect(screen.getByText('fresh-skill')).toBeTruthy());
     expect(screen.queryByText('stale-skill')).toBeNull();
   });
+});
+it('opens About from Settings without saving settings', () => {
+  const onAbout = vi.fn(); const onSave = vi.fn();
+  render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} onAbout={onAbout} />);
+  fireEvent.click(screen.getByRole('button', { name: 'About AetherAgent' }));
+  expect(onAbout).toHaveBeenCalledOnce(); expect(onSave).not.toHaveBeenCalled();
 });

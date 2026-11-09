@@ -101,8 +101,8 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
 
   return (
     <aside className={overlay
-      ? 'fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,420px)] min-w-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3] shadow-2xl'
-      : 'relative flex h-full w-[min(38vw,420px)] min-w-[260px] max-w-[460px] shrink-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3]'}>
+      ? 'ui-drawer-enter fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,420px)] min-w-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3] shadow-lg'
+      : 'ui-drawer-enter relative flex h-full w-[min(38vw,420px)] min-w-[260px] max-w-[460px] shrink-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3]'}>
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-[#30363d] bg-[#161b22] px-3">
         <span className="min-w-0 flex-1 truncate text-xs font-semibold">
           {tab === 'shell' ? 'Live Shell' : active?.title || (tab === 'diff' ? 'Diff Viewer' : tab === 'terminal' ? 'Tool Output' : 'Code Viewer')}

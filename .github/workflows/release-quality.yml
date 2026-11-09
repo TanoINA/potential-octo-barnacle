@@ -1,0 +1,42 @@
+name: Release pipeline quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths: ['scripts/**', '.github/workflows/**', 'package*.json', 'src/**', 'src-tauri/**']
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  fixtures:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --locked --manifest-path scripts/release-policy-tests/Cargo.toml
+      - run: cargo build --locked --manifest-path scripts/release-policy-tests/Cargo.toml --bin aether-release-policy-tests
+      - run: node --test scripts/test-release-pipeline.mjs
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-release-preflight.ps1
+      - if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/test-release-linux.sh

@@ -16,6 +16,8 @@ interface TimelineScrubberProps {
   messages: ChatMessage[];
   sessionTitle: string;
   scrollElement: HTMLElement | null;
+  /** Source message index of the visible anchor, supplied by the owning canvas. */
+  activeMessageIndex?: number;
   onJumpToMessage: (index: number) => void;
 }
 
@@ -39,10 +41,15 @@ export const TimelineScrubber = memo(function TimelineScrubber({
   messages,
   sessionTitle,
   scrollElement,
+  activeMessageIndex,
   onJumpToMessage,
 }: TimelineScrubberProps) {
   const [scrollRatio, setScrollRatio] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
+  const [visibleMessageId, setVisibleMessageId] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const topButtonRef = useRef<HTMLButtonElement>(null);
+  const hasFocusRef = useRef(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<number | null>(null);
 
@@ -79,6 +86,22 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     if (!scrollElement) return;
 
     const onScroll = () => {
+      if (activeMessageIndex === undefined) {
+        const viewport = scrollElement.getBoundingClientRect();
+        let firstIndex = Infinity;
+        let firstId: string | null = null;
+        // Only mounted rows in this scroll container are candidates; ignore overscan.
+        for (const row of scrollElement.querySelectorAll<HTMLElement>('[data-index][data-message-id]')) {
+          const rect = row.getBoundingClientRect();
+          if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;
+          const index = messages.findIndex((message) => message.id === row.dataset.messageId);
+          if (index >= 0 && index < firstIndex) {
+            firstIndex = index;
+            firstId = messages[index].id;
+          }
+        }
+        setVisibleMessageId(firstId);
+      }
       const { scrollTop, scrollHeight, clientHeight } = scrollElement;
       const maxScroll = scrollHeight - clientHeight;
       if (maxScroll <= 0) {
@@ -92,7 +115,11 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     onScroll();
     scrollElement.addEventListener('scroll', onScroll, { passive: true });
     return () => scrollElement.removeEventListener('scroll', onScroll);
-  }, [scrollElement, messages.length]);
+  }, [scrollElement, messages, activeMessageIndex]);
+
+  useEffect(() => () => {
+    if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);
+  }, []);
 
   // Compute date header range
   const dateSubtitle = useMemo(() => {
@@ -120,8 +147,10 @@ export const TimelineScrubber = memo(function TimelineScrubber({
   };
 
   const handleMouseLeave = () => {
+    if (hasFocusRef.current) return;
     if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);
     hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
       setIsHovered(false);
     }, 250);
   };
@@ -140,15 +169,39 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     }
   };
 
-  // Approximate current turn index from scroll ratio
-  const activeTurnIndex = Math.min(
-    turns.length - 1,
-    Math.round(scrollRatio * (turns.length - 1)),
-  );
-
+  // Source message indices, unlike pixel percentages, account for unequal turn heights.
+  const anchorIndex = activeMessageIndex ?? messages.findIndex((message) => message.id === visibleMessageId);
+  let activeTurnIndex = 0;
+  for (let index = 0; index < turns.length; index += 1) {
+    if (turns[index].messageIndex > anchorIndex) break;
+    activeTurnIndex = index;
+  }
   return (
     <div
       className="absolute right-2 top-20 bottom-28 z-30 flex flex-col items-center justify-center select-none pointer-events-auto"
+      ref={rootRef}
+      onFocus={() => {
+        hasFocusRef.current = true;
+        handleMouseEnter();
+      }}
+      onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+        hasFocusRef.current = false;
+        handleMouseLeave();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (hideTimerRef.current !== null) {
+          window.clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        if (rootRef.current?.querySelector('[data-testid="timeline-popover"]')?.contains(event.target as Node)) {
+          topButtonRef.current?.focus();
+        }
+        setIsHovered(false);
+      }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       data-testid="timeline-scrubber"
@@ -162,6 +215,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
         }}
         className="mb-1 p-0.5 text-[#6e7681] hover:text-[#e6edf3] transition-colors rounded hover:bg-[#30363d]/40"
         title="Jump to top"
+        ref={topButtonRef}
         aria-label="Jump to top"
       >
         <ChevronUp size={11} strokeWidth={2.5} />
@@ -183,29 +237,32 @@ export const TimelineScrubber = memo(function TimelineScrubber({
           const isKeyTurn = idx === 0 || idx === turns.length - 1 || idx % 2 === 0;
 
           return (
-            <div
+            <button
+              type="button"
+              aria-label={`Jump to turn ${turn.turnIndex}: ${turn.snippet}`}
+              aria-current={isActive ? 'step' : undefined}
               key={turn.id}
               onClick={(e) => {
                 e.stopPropagation();
                 onJumpToMessage(turn.messageIndex);
               }}
-              className="relative z-10 flex items-center justify-center py-0.5 hover:scale-125 transition-transform"
+              className="relative z-10 flex w-5 items-center justify-center py-0.5"
               title={`${turn.timeStr}: ${turn.snippet}`}
             >
               {isKeyTurn ? (
                 <div
-                  className={`h-2.5 w-0.5 rounded-full transition-colors ${
-                    isActive ? 'bg-[#58a6ff] w-1 shadow-sm' : 'bg-[#484f58] group-hover:bg-[#8b949e]'
+                  className={`h-2.5 w-1 rounded-full transition-colors ${
+                    isActive ? 'bg-[#58a6ff] shadow-sm' : 'bg-[#484f58] group-hover:bg-[#8b949e]'
                   }`}
                 />
               ) : (
                 <div
                   className={`h-1.5 w-1.5 rounded-full transition-colors ${
-                    isActive ? 'bg-[#58a6ff] scale-125' : 'bg-[#30363d] group-hover:bg-[#6e7681]'
+                    isActive ? 'bg-[#58a6ff]' : 'bg-[#30363d] group-hover:bg-[#6e7681]'
                   }`}
                 />
               )}
-            </div>
+            </button>
           );
         })}
 
@@ -257,12 +314,17 @@ export const TimelineScrubber = memo(function TimelineScrubber({
             {turns.map((turn, idx) => {
               const isSelected = idx === activeTurnIndex;
               return (
-                <div
+                <button
+                  type="button"
+                  aria-label={`Jump to turn ${turn.turnIndex}: ${turn.snippet}`}
+                  aria-current={isSelected ? 'step' : undefined}
+                  title={`${turn.timeStr}: ${turn.snippet}`}
                   key={turn.id}
-                  onClick={() => {
+                  onClick={(event) => {
+                    event.stopPropagation();
                     onJumpToMessage(turn.messageIndex);
                   }}
-                  className={`group/item flex items-center gap-2.5 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+                  className={`group/item flex w-full text-left items-center gap-2.5 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
                     isSelected
                       ? 'bg-[#21262d] text-[#58a6ff]'
                       : 'hover:bg-[#21262d]/60 text-[#c9d1d9]'
@@ -274,7 +336,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
                   <span className="truncate text-[11px] leading-relaxed group-hover/item:text-white">
                     {turn.snippet}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>

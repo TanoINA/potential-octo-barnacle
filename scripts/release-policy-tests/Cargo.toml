@@ -1,0 +1,13 @@
+﻿[package]
+name = "aether-release-policy-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[lib]
+path = "../../src-tauri/src/agent/release_policy.rs"
+[dependencies]
+url = "2"
+semver = "1"
+base64 = "0.22"
+minisign-verify = "0.3"
+

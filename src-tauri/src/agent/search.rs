@@ -17,6 +17,9 @@ pub struct DeepSearchResult {
     #[serde(rename = "matchCount")]
     pub match_count: usize,
     pub score: f64,
+    /// Highest-ranked matching message; title/artifact-only hits have no jump.
+    #[serde(rename = "matchMessageId", skip_serializing_if = "Option::is_none")]
+    pub match_message_id: Option<String>,
 }
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
@@ -191,10 +194,10 @@ pub(crate) fn search_query_with(
         .prepare(
             "SELECT session_id, session_title, session_updated_at,
                     snippet(fts_content, 6, '<mark>', '</mark>', '...', 18) as snip,
-                    bm25(fts_content) as score
+                    bm25(fts_content) as score, content_type, source_id
              FROM fts_content
              WHERE fts_content MATCH ?1
-             ORDER BY score ASC
+             ORDER BY score ASC, rowid ASC
              LIMIT 10000",
         )
         .map_err(|e| e.to_string())?;
@@ -205,6 +208,7 @@ pub(crate) fn search_query_with(
         session_updated_at: i64,
         snippet: String,
         score: f64,
+        message_id: Option<String>,
     }
 
     let rows = stmt
@@ -215,6 +219,11 @@ pub(crate) fn search_query_with(
                 session_updated_at: row.get(2)?,
                 snippet: row.get(3)?,
                 score: row.get(4)?,
+                message_id: if row.get::<_, String>(5)? == "message" {
+                    Some(row.get(6)?)
+                } else {
+                    None
+                },
             })
         })
         .map_err(|e| e.to_string())?;
@@ -232,8 +241,15 @@ pub(crate) fn search_query_with(
                 snippet: r.snippet.clone(),
                 match_count: 0,
                 score: r.score,
+                match_message_id: r.message_id.clone(),
             });
         entry.match_count += 1;
+        // Rows are sorted by rank then insertion ordinal. Keep the first message
+        // even when the best overall hit is a title or artifact.
+        if entry.match_message_id.is_none() && r.message_id.is_some() {
+            entry.match_message_id = r.message_id.clone();
+            entry.snippet = r.snippet.clone();
+        }
         if r.score < entry.score {
             entry.score = r.score;
             entry.snippet = r.snippet;
@@ -252,6 +268,29 @@ pub(crate) fn search_query_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn message_jump_search_preserves_exact_id_and_artifact_only_fallback() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let mut data = sample_session("jump", "Ordinary title", "uniquejump body");
+        data.messages[0].id = "exact-native-id".into();
+        index_session_into(&mut conn, &data).unwrap();
+        let first = search_query_with(&conn, "uniquejump", 10).unwrap();
+        assert_eq!(
+            first[0].match_message_id.as_deref(),
+            Some("exact-native-id")
+        );
+        data.messages[0].content = "No match now".into();
+        data.artifacts[0].content = "artifactneedle".into();
+        index_session_into(&mut conn, &data).unwrap();
+        assert!(search_query_with(&conn, "uniquejump", 10)
+            .unwrap()
+            .is_empty());
+        let artifact = search_query_with(&conn, "artifactneedle", 10).unwrap();
+        assert_eq!(artifact[0].session_id, "jump");
+        assert!(artifact[0].match_message_id.is_none());
+    }
+
     use super::*;
     use crate::agent::types::{Artifact, ChatMessage, Session};
 
@@ -269,15 +308,19 @@ mod tests {
                 pinned_at: None,
             },
             messages: vec![ChatMessage {
+                checkpoint_epoch: None,
                 id: format!("msg_{id}"),
                 role: "assistant".into(),
                 content: msg.into(),
                 timestamp: 150,
                 provider_messages: None,
+                has_image_inputs: None,
+                has_provider_messages: None,
                 reasoning: None,
                 tool_calls: None,
                 is_streaming: None,
                 attachments: None,
+                image_inputs: None,
                 council_turn: None,
                 run_id: None,
                 run_status: None,
@@ -286,6 +329,7 @@ mod tests {
                 segments: None,
             }],
             artifacts: vec![Artifact {
+                stream_revision: None,
                 id: format!("art_{id}"),
                 title: format!("artifact_{title}"),
                 artifact_type: "code".into(),
@@ -412,15 +456,19 @@ mod tests {
         let mut busy = sample_session("busy", "Busy session", "zebra");
         busy.messages = (0..150)
             .map(|i| ChatMessage {
+                checkpoint_epoch: None,
                 id: format!("m{i}"),
                 role: "assistant".into(),
                 content: "zebra".into(),
                 timestamp: 150,
                 provider_messages: None,
+                has_image_inputs: None,
+                has_provider_messages: None,
                 reasoning: None,
                 tool_calls: None,
                 is_streaming: None,
                 attachments: None,
+                image_inputs: None,
                 council_turn: None,
                 run_id: None,
                 run_status: None,

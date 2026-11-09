@@ -1,4 +1,4 @@
-use super::types::SkillInfo;
+use super::types::{ReviewConfig, SkillInfo};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -9,16 +9,62 @@ use tokio::io::AsyncReadExt;
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    metadata: Option<serde_json::Value>,
+}
+
+// Unit tests must never discover or initialize the actual user's skill library.
+#[cfg(not(feature = "shared-profile"))]
+fn skills_home() -> Option<PathBuf> {
+    #[cfg(feature = "diagnostics")]
+    if let Some(root) = super::native_smoke::profile() {
+        return Some(root.join("compatibility"));
+    }
+    #[cfg(test)]
+    {
+        Some(super::storage::config_dir().join("compatibility"))
+    }
+    #[cfg(not(test))]
+    dirs::home_dir()
+}
+
+fn skills_config_root() -> Option<PathBuf> {
+    #[cfg(feature = "shared-profile")]
+    {
+        Some(super::storage::config_dir())
+    }
+    #[cfg(not(feature = "shared-profile"))]
+    {
+        #[cfg(feature = "diagnostics")]
+        if let Some(root) = super::native_smoke::profile() {
+            return Some(root.clone());
+        }
+        #[cfg(test)]
+        {
+            Some(super::storage::config_dir())
+        }
+        #[cfg(not(test))]
+        skills_home().map(|home| home.join(".aether-agent"))
+    }
 }
 
 pub fn default_skill_paths() -> Vec<String> {
-    let mut roots = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        // 1. Official standalone AetherAgent global skills directory
-        roots.push(home.join(".aether-agent").join("skills"));
-        // 2. Compatibility with Antigravity if present
-        roots.push(home.join(".gemini").join("config").join("skills"));
-    }
+    // Rune never probes other applications' global libraries automatically.
+    // External roots remain available through explicitly configured skill_paths.
+    #[cfg(feature = "shared-profile")]
+    let roots = vec![super::storage::config_dir().join("skills")];
+    #[cfg(not(feature = "shared-profile"))]
+    let roots = {
+        let mut roots = Vec::new();
+        if let Some(home) = skills_home() {
+            // 1. Official standalone AetherAgent global skills directory
+            if let Some(config) = skills_config_root() {
+                roots.push(config.join("skills"));
+            }
+            // 2. Compatibility with Antigravity if present
+            roots.push(home.join(".gemini").join("config").join("skills"));
+        }
+        roots
+    };
     roots
         .into_iter()
         .map(|path| path.to_string_lossy().to_string())
@@ -34,7 +80,7 @@ pub fn ensure_starter_skills(dir: &Path) {
     if !debug_file.exists() {
         let _ = std::fs::write(
             debug_file,
-            "---\nname: systematic-debugging\ndescription: 4-phase root cause debugging: understand bugs thoroughly before fixing them.\n---\n# Systematic Debugging\n\n## Phase 1: Reproduce & Isolate\n- Observe exact symptoms, stack traces, and failure messages.\n- Use `run_command` to execute tests or reproduce issues.\n- Use `search_files` and `read_file` to locate the failure origin.\n\n## Phase 2: Root Cause Investigation\n- Formulate a testable hypothesis before editing code.\n- Verify variables, control flow, and data contracts.\n\n## Phase 3: Minimal Fix\n- Apply the most focused, targeted correction using `edit_file`.\n- Preserve existing coding conventions and contracts.\n\n## Phase 4: Verify & Regression Test\n- Run test suites using `run_command` to verify the fix works.\n- Verify that unrelated tests still pass.\n",
+            "---\nname: systematic-debugging\ndescription: '4-phase root cause debugging: understand bugs thoroughly before fixing them.'\n---\n# Systematic Debugging\n\n## Phase 1: Reproduce & Isolate\n- Observe exact symptoms, stack traces, and failure messages.\n- Use `run_command` to execute tests or reproduce issues.\n- Use `search_files` and `read_file` to locate the failure origin.\n\n## Phase 2: Root Cause Investigation\n- Formulate a testable hypothesis before editing code.\n- Verify variables, control flow, and data contracts.\n\n## Phase 3: Minimal Fix\n- Apply the most focused, targeted correction using `edit_file`.\n- Preserve existing coding conventions and contracts.\n\n## Phase 4: Verify & Regression Test\n- Run test suites using `run_command` to verify the fix works.\n- Verify that unrelated tests still pass.\n",
         );
     }
 
@@ -44,7 +90,7 @@ pub fn ensure_starter_skills(dir: &Path) {
     if !inspect_file.exists() {
         let _ = std::fs::write(
             inspect_file,
-            "---\nname: codebase-inspection\ndescription: Inspect project codebases, language distribution, architecture, and directory layout.\n---\n# Codebase Inspection\n\n- Use `list_directory` to explore directory hierarchy and layout.\n- Use `search_files` to locate configurations, entry points, or specific functions.\n- Use `read_file` to inspect dependency manifests (`package.json`, `Cargo.toml`, etc.).\n- Use `run_command` to run non-destructive inspection tools (e.g. `git status`, test runners).\n",
+            "---\nname: codebase-inspection\ndescription: 'Inspect project codebases, language distribution, architecture, and directory layout.'\n---\n# Codebase Inspection\n\n- Use `list_directory` to explore directory hierarchy and layout.\n- Use `search_files` to locate configurations, entry points, or specific functions.\n- Use `read_file` to inspect dependency manifests (`package.json`, `Cargo.toml`, etc.).\n- Use `run_command` to run non-destructive inspection tools (e.g. `git status`, test runners).\n",
         );
     }
 
@@ -54,14 +100,30 @@ pub fn ensure_starter_skills(dir: &Path) {
     if !tdd_file.exists() {
         let _ = std::fs::write(
             tdd_file,
-            "---\nname: test-driven-development\ndescription: Enforce test-driven development: verify tests before and after code changes.\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
+            "---\nname: test-driven-development\ndescription: 'Enforce test-driven development: verify tests before and after code changes.'\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
         );
     }
 }
 
 pub fn init_skills_environment() {
-    if let Some(home) = dirs::home_dir() {
-        ensure_starter_skills(&home.join(".aether-agent").join("skills"));
+    #[cfg(feature = "diagnostics")]
+    if super::native_smoke::profile().is_some() {
+        return;
+    }
+    #[cfg(test)]
+    {
+        // Concurrent test runtimes share this process-local library. Publish
+        // starters only after initialization completes, never halfway through a write.
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            if let Some(config) = skills_config_root() {
+                ensure_starter_skills(&config.join("skills"));
+            }
+        });
+    }
+    #[cfg(not(test))]
+    if let Some(config) = skills_config_root() {
+        ensure_starter_skills(&config.join("skills"));
     }
 }
 
@@ -79,7 +141,64 @@ pub fn workspace_skill_paths(workspace_cwd: &str, configured: &[String]) -> Vec<
     roots
 }
 
+/// Resolve review creation paths relative to the user configuration, never the workspace.
+pub fn review_creation_root(config: &ReviewConfig) -> Result<PathBuf, String> {
+    #[cfg(feature = "shared-profile")]
+    let base = super::storage::config_dir();
+    #[cfg(not(feature = "shared-profile"))]
+    let base = dirs::home_dir()
+        .ok_or("Home directory unavailable")?
+        .join(".aether-agent");
+    let Some(value) = config
+        .create_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(base.join("skills"));
+    };
+    if value == "~" {
+        return dirs::home_dir().ok_or_else(|| "Home directory unavailable".into());
+    }
+    if let Some(relative) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        return dirs::home_dir()
+            .map(|home| home.join(relative))
+            .ok_or_else(|| "Home directory unavailable".into());
+    }
+    if value.starts_with('~') {
+        return Err("Unsupported home-directory expansion".into());
+    }
+    let path = PathBuf::from(value);
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+/// Workspace and explicitly configured roots win over review-created skills.
+/// `load_skills` appends the default global roots after these paths.
+pub fn effective_skill_paths(
+    workspace: &str,
+    configured: &[String],
+    review_config: &ReviewConfig,
+) -> Result<Vec<String>, String> {
+    let mut paths = workspace_skill_paths(workspace, configured);
+    paths.push(
+        review_creation_root(review_config)?
+            .to_string_lossy()
+            .into_owned(),
+    );
+    Ok(paths)
+}
 pub async fn load_skills(configured_paths: &[String]) -> Vec<SkillInfo> {
+    #[cfg(feature = "diagnostics")]
+    if super::native_smoke::profile().is_some() {
+        return Vec::new();
+    }
     init_skills_environment();
 
     let mut roots: Vec<PathBuf> = configured_paths
@@ -291,17 +410,36 @@ pub async fn save_skill_markdown(
     instructions: &str,
     overwrite: bool,
 ) -> Result<SkillInfo, String> {
-    let home = dirs::home_dir().ok_or("Cannot resolve user home directory")?;
-    save_skill_markdown_at(
-        &home.join(".aether-agent"),
-        name,
-        description,
-        instructions,
-        overwrite,
-    )
-    .await
+    let config = skills_config_root().ok_or("Cannot resolve user home directory")?;
+    save_skill_markdown_at(&config, name, description, instructions, overwrite).await
 }
 
+// All legacy save callers, including global sync, must respect review locks.
+async fn ensure_skill_save_unlocked(dir: &Path) -> Result<(), String> {
+    match tokio::fs::symlink_metadata(dir.join(".locked")).await {
+        Ok(_) => return Err("Skill is locked by .locked marker".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not check skill lock: {error}")),
+    }
+    let path = dir.join("SKILL.md");
+    match tokio::fs::symlink_metadata(&path).await {
+        Ok(_) => {
+            let metadata = parse_frontmatter(&read_bounded_skill(&path).await?)?.metadata;
+            if metadata
+                .as_ref()
+                .and_then(|value| value.get("aether"))
+                .and_then(|value| value.get("locked"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                return Err("Skill metadata.aether.locked is true".into());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not inspect skill metadata: {error}")),
+    }
+    Ok(())
+}
 async fn save_skill_markdown_at(
     config_root: &Path,
     name: &str,
@@ -309,6 +447,7 @@ async fn save_skill_markdown_at(
     instructions: &str,
     overwrite: bool,
 ) -> Result<SkillInfo, String> {
+    let _mutation = SKILL_MUTATION_LOCK.lock().await;
     let clean_name: String = name
         .trim()
         .to_lowercase()
@@ -360,6 +499,7 @@ async fn save_skill_markdown_at(
         .parent()
         .ok_or("Skill path has no parent")?
         .to_path_buf();
+    ensure_skill_save_unlocked(&target_dir).await?;
     if file_path.exists() && !overwrite {
         return Err(format!(
             "Skill '{clean_name}' already exists at {}. To overwrite it, call learn_skill with overwrite: true.",
@@ -386,6 +526,7 @@ async fn save_skill_markdown_at(
         )
     };
 
+    ensure_skill_save_unlocked(&target_dir).await?;
     super::storage::atomic_write(&file_path, markdown.as_bytes()).await?;
 
     Ok(SkillInfo {
@@ -396,10 +537,307 @@ async fn save_skill_markdown_at(
     })
 }
 
+// Acquire before review-store or pending writers; stage/list never acquire this lock.
+pub(crate) static SKILL_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn regression_hermetic_default_skill_roots() {
+        let config = super::super::storage::config_dir();
+        let roots = default_skill_paths();
+        #[cfg(feature = "shared-profile")]
+        assert_eq!(roots.len(), 1);
+        #[cfg(not(feature = "shared-profile"))]
+        assert_eq!(roots.len(), 2);
+        for root in &roots {
+            assert!(
+                Path::new(root).starts_with(&config),
+                "test root escaped temporary config: {root}"
+            );
+        }
+        assert_eq!(Path::new(&roots[0]), config.join("skills"));
+        #[cfg(not(feature = "shared-profile"))]
+        assert_eq!(
+            Path::new(&roots[1]),
+            config.join("compatibility/.gemini/config/skills")
+        );
+        init_skills_environment();
+        for name in [
+            "systematic-debugging",
+            "codebase-inspection",
+            "test-driven-development",
+        ] {
+            assert!(config.join("skills").join(name).join("SKILL.md").is_file());
+        }
+    }
+
+    #[tokio::test]
+    async fn regression_hermetic_starter_yaml_parses_and_loads() {
+        let root = fixture_root();
+        ensure_starter_skills(&root);
+        for name in [
+            "systematic-debugging",
+            "codebase-inspection",
+            "test-driven-development",
+        ] {
+            let path = root.join(name).join("SKILL.md");
+            let markdown = std::fs::read_to_string(&path).unwrap();
+            let parsed = parse_frontmatter(&markdown)
+                .unwrap_or_else(|error| panic!("starter {name}: {error}"));
+            assert_eq!(parsed.name.as_deref(), Some(name));
+            assert!(!parsed.description.unwrap().is_empty());
+            let skill = read_skill(&path, &root).await.unwrap();
+            assert_eq!(skill.name, name);
+            assert!(!read_skill_content(&skill).await.unwrap().is_empty());
+        }
+        let catalog = load_skills(&[root.to_string_lossy().into_owned()]).await;
+        for name in [
+            "systematic-debugging",
+            "codebase-inspection",
+            "test-driven-development",
+        ] {
+            let skill = find_skill(&catalog, name).expect("generated starter must be discoverable");
+            assert_eq!(Path::new(&skill.source), root);
+        }
+        // Seeding must never repair or replace an existing user's starter.
+        let edited = root.join("systematic-debugging/SKILL.md");
+        let user_bytes = "Existing user-owned instructions, even without valid YAML.\n";
+        std::fs::write(&edited, user_bytes).unwrap();
+        ensure_starter_skills(&root);
+        assert_eq!(std::fs::read_to_string(edited).unwrap(), user_bytes);
+    }
+
+    #[tokio::test]
+    async fn shared_skill_mutation_lock_blocks_approval_direct_create_and_legacy_save() {
+        use super::super::review_pending::{approve_pending, list_pending, stage, PendingWrite};
+        use super::super::review_skills::ReviewSkillStore;
+        use serde_json::json;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let root = fixture_root();
+        let pending = root.join("pending");
+        let skill = root.join("manual");
+        std::fs::create_dir_all(&skill).unwrap();
+        let target = skill.join("notes.md");
+        std::fs::write(&target, "before").unwrap();
+        let proposal = PendingWrite {
+            id: String::new(),
+            session_id: "session".into(),
+            run_id: "run".into(),
+            skill_name: "manual".into(),
+            target_path: target.to_string_lossy().into_owned(),
+            skill_root: skill.to_string_lossy().into_owned(),
+            original: Some("before".into()),
+            proposed: Some("after".into()),
+        };
+        let id = stage(&pending, proposal.clone()).await.unwrap();
+        let mut store = ReviewSkillStore::new(
+            root.to_str().unwrap(),
+            &[],
+            root.join("created"),
+            pending.clone(),
+            false,
+            "run",
+            "session",
+        )
+        .await
+        .unwrap();
+        let guard = SKILL_MUTATION_LOCK.lock().await;
+        // Stage/list must stay usable while their caller holds the common lock.
+        timeout(Duration::from_secs(2), stage(&pending, proposal))
+            .await
+            .unwrap()
+            .unwrap();
+        let (started, mut ready) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = Vec::new();
+        let approve_root = pending.clone();
+        let signal = started.clone();
+        tasks.push(tokio::spawn(async move {
+            signal.send(()).unwrap();
+            approve_pending(&approve_root, &id, "session")
+                .await
+                .map(|_| ())
+        }));
+        let signal = started.clone();
+        tasks.push(tokio::spawn(async move {
+            signal.send(()).unwrap();
+            store.execute("skill_manage", &json!({"action":"create","name":"direct-recipe","description":"Recipe","content":"Steps"})).await.map(|_| ())
+        }));
+        let legacy_root = root.join("legacy");
+        tasks.push(tokio::spawn(async move {
+            started.send(()).unwrap();
+            save_skill_markdown_at(&legacy_root, "legacy-recipe", "Recipe", "Steps", false)
+                .await
+                .map(|_| ())
+        }));
+        // Each task signals immediately before entering its mutation future.
+        // This current-thread runtime polls it through to its first suspension.
+        for _ in 0..tasks.len() {
+            if timeout(Duration::from_secs(2), ready.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                for task in &tasks {
+                    task.abort();
+                }
+                panic!("writer task did not start");
+            }
+        }
+        let mut completed_early = false;
+        for task in &mut tasks {
+            completed_early |= timeout(Duration::from_millis(30), task).await.is_ok();
+        }
+        // Approval must wait for common BEFORE taking pending WRITER.
+        let pending_available =
+            timeout(Duration::from_secs(2), list_pending(&pending, "session")).await;
+        if completed_early || pending_available.is_err() {
+            for task in &tasks {
+                task.abort();
+            }
+            panic!("writers must wait for common lock without holding pending WRITER");
+        }
+        assert_eq!(pending_available.unwrap().unwrap().len(), 2);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+        assert!(!root.join("created").exists());
+        assert!(!root.join("legacy").exists());
+        drop(guard);
+        let results = timeout(
+            Duration::from_secs(5),
+            futures_util::future::join_all(tasks.iter_mut()),
+        )
+        .await;
+        if results.is_err() {
+            for task in &tasks {
+                task.abort();
+            }
+            panic!("writers did not resume after releasing common lock");
+        }
+        for result in results.unwrap() {
+            result.unwrap().unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
+        assert!(root.join("created/direct-recipe/SKILL.md").is_file());
+        assert!(root.join("legacy/skills/legacy-recipe/SKILL.md").is_file());
+    }
+    #[tokio::test]
+    async fn custom_review_root_is_discoverable_and_activatable_after_configured_roots() {
+        let root = fixture_root();
+        let created = root.join("created");
+        let workspace = root.join("workspace");
+        let configured = root.join("configured");
+        let name = format!("review-discovery-{}", uuid::Uuid::new_v4());
+        for (base, body) in [
+            (&created, "created recipe"),
+            (&configured, "configured recipe"),
+        ] {
+            let dir = base.join(&name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test discovery\n---\n{body}\n"),
+            )
+            .unwrap();
+        }
+        let config = super::super::types::ReviewConfig {
+            create_dir: Some(created.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        assert_eq!(review_creation_root(&config).unwrap(), created);
+        let paths = effective_skill_paths(
+            workspace.to_str().unwrap(),
+            &[configured.to_string_lossy().into_owned()],
+            &config,
+        )
+        .unwrap();
+        assert_eq!(Path::new(&paths[0]), workspace.join(".aether/skills"));
+        assert_eq!(Path::new(&paths[1]), configured);
+        assert_eq!(Path::new(&paths[2]), created);
+        let catalog = load_skills(&paths).await;
+        let skill = find_skill(&catalog, &name).unwrap();
+        assert!(read_skill_content(skill)
+            .await
+            .unwrap()
+            .contains("configured recipe"));
+        let paths = effective_skill_paths("", &[], &config).unwrap();
+        let catalog = load_skills(&paths).await;
+        let skill =
+            find_skill(&catalog, &name).expect("custom review creation root must be discoverable");
+        assert!(read_skill_content(skill)
+            .await
+            .unwrap()
+            .contains("created recipe"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn review_creation_root_preserves_home_relative_expansion() {
+        let home = dirs::home_dir().unwrap();
+        #[cfg(feature = "shared-profile")]
+        let base = super::super::storage::config_dir();
+        #[cfg(not(feature = "shared-profile"))]
+        let base = home.join(".aether-agent");
+        for (value, expected) in [
+            (None, base.join("skills")),
+            (Some("  "), base.join("skills")),
+            (Some("custom-skills"), base.join("custom-skills")),
+            (Some("~"), home.clone()),
+            (Some(" ~/recipes "), home.join("recipes")),
+            (Some("~\\recipes"), home.join("recipes")),
+        ] {
+            let config = super::super::types::ReviewConfig {
+                create_dir: value.map(str::to_owned),
+                ..Default::default()
+            };
+            assert_eq!(review_creation_root(&config).unwrap(), expected);
+        }
+        let config = super::super::types::ReviewConfig {
+            create_dir: Some("~someone/recipes".into()),
+            ..Default::default()
+        };
+        assert!(effective_skill_paths("", &[], &config)
+            .unwrap_err()
+            .contains("Unsupported"));
+    }
+    #[tokio::test]
+    async fn save_skill_markdown_respects_marker_and_metadata_locks() {
+        let root = fixture_root();
+        // Both learn_skill and the legacy global sync writer use this helper.
+        for metadata_lock in [false, true] {
+            let name = if metadata_lock {
+                "metadata-locked"
+            } else {
+                "marker-locked"
+            };
+            let dir = root.join("skills").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let original = format!("---\nname: {name}\ndescription: preserved\nmetadata:\n  aether:\n    locked: {metadata_lock}\n---\nOriginal instructions\n");
+            std::fs::write(dir.join("SKILL.md"), &original).unwrap();
+            if !metadata_lock {
+                std::fs::write(dir.join(".locked"), "protected").unwrap();
+            }
+            let result = save_skill_markdown_at(
+                &root,
+                name,
+                "replacement",
+                "Replacement instructions",
+                true,
+            )
+            .await;
+            assert!(result.is_err(), "overwrite must not bypass a skill lock");
+            assert!(result.unwrap_err().contains("locked"));
+            assert_eq!(
+                std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+                original
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     fn fixture_root() -> PathBuf {
         let root = std::env::var_os("TMPDIR")
             .map(std::path::PathBuf::from)

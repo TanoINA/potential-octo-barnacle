@@ -112,6 +112,16 @@ fn directory_link(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
+#[cfg(unix)]
+fn remove_directory_link(link: &Path) {
+    std::fs::remove_file(link).unwrap();
+}
+
+#[cfg(windows)]
+fn remove_directory_link(link: &Path) {
+    std::fs::remove_dir(link).unwrap();
+}
+
 #[tokio::test]
 async fn rejects_linked_skill_parents_even_inside_workspace_or_with_missing_descendants() {
     for (component, inside, broken) in [
@@ -160,7 +170,7 @@ async fn rejects_linked_skill_parents_even_inside_workspace_or_with_missing_desc
         assert!(read_generated_skill(workspace.cwd(), "verify-builds")
             .await
             .is_err());
-        std::fs::remove_dir(&link).unwrap();
+        remove_directory_link(&link);
     }
 }
 
@@ -579,7 +589,7 @@ async fn rejects_parent_replaced_by_junction_during_provider_request() {
     swap.await.unwrap();
     server.await.unwrap();
     assert!(!unrelated.0.join("skills").exists());
-    std::fs::remove_dir(workspace.0.join(".aether")).unwrap();
+    remove_directory_link(&workspace.0.join(".aether"));
 }
 
 #[tokio::test]

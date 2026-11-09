@@ -11,6 +11,34 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
+describe('SideBySideDiff word highlight safety', () => {
+  it.each(['both', 'old', 'new', 'combined'])('renders complete oversized %s lines with bounded DOM and no word tokenization', (side) => {
+    const repeats = side === 'combined' ? 1000 : 2000;
+    const oldText = side === 'new' ? 'old-tail' : 'alpha,'.repeat(repeats) + 'old-tail';
+    const newText = side === 'old' ? 'new-tail' : 'alpha,'.repeat(repeats) + 'new-tail';
+    const splitSpy = vi.spyOn(String.prototype, 'split');
+    const { container } = render(<SideBySideDiff diffText={`@@ -1 +1 @@\n-${oldText}\n+${newText}\n`} />);
+    const tokenizedLines = splitSpy.mock.contexts.filter((value) => value === oldText || value === newText);
+    splitSpy.mockRestore();
+    const cells = container.querySelectorAll('[data-index="1"] .whitespace-pre-wrap');
+    expect(cells).toHaveLength(2);
+    expect(cells[0].textContent).toBe(oldText);
+    expect(cells[1].textContent).toBe(newText);
+    expect.soft(container.querySelectorAll('*').length).toBeLessThan(40);
+    expect.soft(tokenizedLines).toHaveLength(0);
+  });
+
+  it('keeps word-level highlights for small modified lines', () => {
+    const oldText = 'const answer = oldValue;';
+    const newText = 'const answer = newValue;';
+    const { container } = render(<SideBySideDiff diffText={`@@ -1 +1 @@\n-${oldText}\n+${newText}\n`} />);
+    const cells = container.querySelectorAll('[data-index="1"] .whitespace-pre-wrap');
+    expect(cells[0].textContent).toBe(oldText);
+    expect(cells[1].textContent).toBe(newText);
+    expect(Array.from(container.querySelectorAll('span.font-semibold'), (node) => node.textContent)).toEqual(['oldValue', 'newValue']);
+  });
+});
+
 describe('SideBySideDiff patch parsing', () => {
   it('preserves source lines starting with double minus or plus inside a hunk', () => {
     const { container } = render(<SideBySideDiff diffText={'--- a/options.txt\n+++ b/options.txt\n@@ -4 +4 @@\n---flag\n+++counter\n'} />);

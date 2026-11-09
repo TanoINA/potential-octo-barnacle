@@ -61,11 +61,11 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-28 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+    <div className="ui-overlay-enter fixed inset-0 z-50 flex items-start justify-center pt-28 bg-black/60">
       {/* Click outside to close */}
       <div className="absolute inset-0" onClick={onClose} />
 
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Spotlight command prompt" tabIndex={-1} className="relative w-full max-w-xl mx-4 overflow-hidden rounded-2xl border border-[#30363d] bg-[#161b22] shadow-2xl ring-1 ring-white/10">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Spotlight command prompt" tabIndex={-1} className="ui-panel-enter relative w-full max-w-xl mx-4 overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] shadow-lg ring-1 ring-white/10">
         {/* Top Input Bar */}
         <div className="flex items-center gap-3 px-4 py-3.5 border-b border-[#30363d]/80 bg-[#0d1117]/80">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22]">

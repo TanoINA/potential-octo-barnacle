@@ -1,9 +1,9 @@
 {
   "scope_note": "88 finding records before cross-layer deduplication; overlapping IDs are not 88 unique bugs. fixed_bounded means scoped repair, not global release approval.",
   "summary": {
-    "fixed_bounded": 56,
+    "fixed_bounded": 57,
     "partial_or_mitigated": 14,
-    "open": 18
+    "open": 17
   },
   "findings": [
     {
@@ -426,8 +426,8 @@
       "title": "Pemilihan pemenang Council sebelum candidate selesai membekukan content parsial/empty",
       "report": "docs/audit/layer-state-review.md",
       "location": "**Lokasi:** `src/hooks/useAgent.ts:285-302,1274-1290`; `src/components/CouncilView.tsx:52-65,110-123`.",
-      "status": "open",
-      "notes": "Early Council winner selection synchronization still residual."
+      "status": "fixed_bounded",
+      "notes": "Winner selection now waits for candidate and parent completion; hook rejects early calls and flushes pending chunks before saving full selected text. See feature-bugfix-screenshots.md. Covered by component and hook replay regression tests."
     },
     {
       "id": "ST-11",

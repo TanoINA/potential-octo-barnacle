@@ -1,10 +1,20 @@
+#[cfg(feature = "shared-profile")]
+pub mod profile;
+pub mod events;
 pub mod git;
+pub mod images;
 pub mod mcp;
+#[cfg(feature = "diagnostics")]
+pub mod native_smoke;
 pub mod provider;
 pub mod pty;
 pub mod reflection;
+pub mod review;
+pub mod review_pending;
+pub mod review_skills;
 pub mod runner;
 pub mod search;
+pub mod session_pages;
 pub mod skills;
 pub mod storage;
 pub mod tasks;
@@ -20,3 +30,11 @@ pub fn create_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::pro
     cmd.creation_flags(0x08000000);
     cmd
 }
+
+pub mod session_journal;
+
+pub mod history_maintenance;
+
+pub mod release;
+mod release_download;
+pub mod release_policy;

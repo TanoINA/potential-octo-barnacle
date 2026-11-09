@@ -122,6 +122,26 @@ fn default_execution_mode() -> ExecutionMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReviewConfig {
+    pub creation_nudge_interval: usize,
+    pub write_approval: bool,
+    pub create_dir: Option<String>,
+    pub auxiliary_provider_id: Option<String>,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            creation_nudge_interval: 10,
+            write_approval: false,
+            create_dir: None,
+            auxiliary_provider_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSettings {
     pub providers: Vec<ProviderConfig>,
@@ -150,6 +170,8 @@ pub struct AgentSettings {
     #[serde(rename = "soundChimeEnabled")]
     pub sound_chime_enabled: bool,
     pub self_improvement_enabled: bool,
+    #[serde(rename = "reviewConfig", default)]
+    pub review_config: ReviewConfig,
     #[serde(rename = "autoCompactionEnabled", default = "default_true")]
     pub auto_compaction_enabled: bool,
     #[serde(
@@ -178,7 +200,8 @@ impl Default for AgentSettings {
             max_turns: 24,
             notifications_enabled: true,
             sound_chime_enabled: false,
-            self_improvement_enabled: false,
+            self_improvement_enabled: true,
+            review_config: ReviewConfig::default(),
             auto_compaction_enabled: true,
             auto_compaction_threshold_tokens: 65_536,
             execution_mode: ExecutionMode::Turbo,
@@ -258,11 +281,24 @@ pub struct CouncilTurn {
 pub enum SelfImprovementAction {
     SkillCreated,
     SkillUpdated,
+    SkillStaged,
     NoAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfImprovementChange {
+    pub action: SelfImprovementAction,
+    pub skill_name: String,
+    pub file_path: Option<String>,
+    pub skill_path: Option<String>,
+    pub pending_id: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfImprovementEvent {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<SelfImprovementChange>,
     pub run_id: String,
     pub session_id: String,
     pub action: SelfImprovementAction,
@@ -275,7 +311,21 @@ pub struct SelfImprovementEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInput {
+    pub source_path: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
+    #[serde(
+        rename = "checkpointEpoch",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub checkpoint_epoch: Option<u64>,
     pub id: String,
     pub role: String,
     pub content: String,
@@ -295,6 +345,25 @@ pub struct ChatMessage {
     pub is_streaming: Option<bool>,
     #[serde(default)]
     pub attachments: Option<Vec<AttachedContext>>,
+    #[serde(
+        rename = "imageInputs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image_inputs: Option<Vec<ImageInput>>,
+    /// Derived viewport hints only; canonical writes clear these fields.
+    #[serde(
+        rename = "hasImageInputs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_image_inputs: Option<bool>,
+    #[serde(
+        rename = "hasProviderMessages",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_provider_messages: Option<bool>,
     #[serde(rename = "councilTurn", default)]
     pub council_turn: Option<CouncilTurn>,
     #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +393,12 @@ pub struct MessageSegment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
+    #[serde(
+        rename = "streamRevision",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stream_revision: Option<u64>,
     pub id: String,
     pub title: String,
     #[serde(rename = "type")]
@@ -390,7 +465,31 @@ pub struct SessionData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionWindow {
+    /// Exclusive viewport end. Absent on legacy suffix cursors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<usize>,
+    pub offset: usize,
+    pub total: usize,
+    pub revision: String,
+    pub first_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPage {
+    pub data: SessionData,
+    pub window: SessionWindow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunRequest {
+    #[serde(
+        rename = "historyWindow",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub history_window: Option<SessionWindow>,
     #[serde(rename = "runId")]
     pub run_id: String,
     #[serde(rename = "sessionId")]
@@ -419,6 +518,8 @@ pub struct AgentRunRequest {
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub self_improvement_enabled: bool,
+    #[serde(rename = "reviewConfig", default)]
+    pub review_config: ReviewConfig,
     #[serde(rename = "autoCompactionEnabled", default = "default_true")]
     pub auto_compaction_enabled: bool,
     #[serde(rename = "autoCompactionThresholdTokens", default)]
@@ -626,19 +727,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reflection_is_opt_in_and_round_trips_in_settings() {
+    fn reflection_defaults_to_hermes_cadence_and_preserves_explicit_opt_out() {
         let defaults: AgentSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(
             serde_json::to_value(defaults).unwrap()["self_improvement_enabled"],
-            false
+            true
         );
         let enabled: AgentSettings = serde_json::from_value(serde_json::json!({
-            "self_improvement_enabled": true
+            "self_improvement_enabled": false
         }))
         .unwrap();
         assert_eq!(
             serde_json::to_value(enabled).unwrap()["self_improvement_enabled"],
-            true
+            false
         );
     }
 
@@ -738,4 +839,20 @@ mod tests {
         assert_eq!(serialized["councilTurn"]["chosenWinner"], "B");
         assert_eq!(serialized["councilTurn"]["candidateB"]["content"], "B");
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckpointDelta {
+    pub run_id: String,
+    pub base_revision: String,
+    pub sequence: u64,
+    pub messages: Vec<ChatMessage>,
+    pub artifacts: Vec<Artifact>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointAck {
+    pub revision: String,
+    pub sequence: u64,
 }

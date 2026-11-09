@@ -116,3 +116,23 @@ See [residual-backlog-fixes.md](residual-backlog-fixes.md) for current implement
 - Current register: 56 fixed_bounded, 14 partial_or_mitigated, 18 open (88 records). This is not closure of all audit findings.
 - Required verification: cargo test --manifest-path src-tauri/Cargo.toml: 202 passed, 0 failed, 2 ignored subprocess fixtures. npm test -- --fileParallelism=false: 26 files, 183 passed, 0 failed.
 - TypeScript noEmit and git diff --check passed. Logs: verification/residual-rust-tests.log and verification/residual-frontend-tests.log. No commit/push or executable rebuild.
+
+## Follow-up bugfix fitur dari screenshot
+
+Lihat [feature-bugfix-screenshots.md](feature-bugfix-screenshots.md) untuk bukti, batas scope, dan verifikasi terbaru. Screenshot menunjukkan gambar hanya diteruskan sebagai path, bukan input vision. Jalur paste/upload, canonical Windows path, payload OpenAI/Anthropic, replay tersimpan, retry/edit/undo dan origin async diperbaiki. Tambahan: Clear saat navigasi, undo/retry lintas sesi, serta pemilihan Council sebelum parent selesai.
+
+ST-10 sekarang fixed_bounded. Register historis 88 temuan: 57 fixed_bounded, 14 partial_or_mitigated, 17 open. Temuan baru IMG/NAV/COUNCIL dicatat terpisah di laporan follow-up, bukan dihitung ulang seolah termasuk 88 temuan awal.
+
+Self-improvement-review juga ditingkatkan; implementasi dan batas parity Hermes ada di [../self-improvement-review.md](../self-improvement-review.md). Tidak mengklaim semua subsistem Hermes atau seluruh backlog AetherAgent selesai.
+
+Residual penting batch ini: full-session checkpoint masih mengulang base64 gambar historis; belum ada sidecar/delta persistence. Tidak ada pengujian live paid-provider atau desktop terpaket. Hasil suite akhir ada pada verification/feature-bugfix-*.log.
+
+## 0.3.0 roadmap implementation
+
+See [roadmap-0.3.0.md](roadmap-0.3.0.md) for implementation, evidence and explicit limits. Incremental cumulative checkpoint sidecars now replace periodic full-session writes; typed tool/retry/artifact transitions and active-reader overlays preserve recovery and cursor safety. Thin pages retain replay payloads natively. Added byte-budget cache, cooperative idle indexing, run-stage/save transparency, gesture-based image previews, bounded exact-message search and native crash/WebView smoke.
+
+Product version is 0.3.0 with separate build identity. Official signed updater and verified retained-release tooling are implemented, but no real publisher certificate, production private key or update endpoint was supplied: installers remain unsigned and auto-update disabled. No installed upgrade or rollback is claimed.
+
+Current scoped quality gates: 562 frontend tests, 359 native tests (2 ignored subprocess fixtures), production browser 31/31, real native diagnostic EXE restart and WebView2 bridge passed. Clippy all-targets/all-features and production build passed. The 0.3.0 installer is a separate non-diagnostic build; test records distinguish the artifacts.
+
+Historical audit counts above remain historical; this section does not claim closure of all remaining records.

@@ -147,13 +147,13 @@ export const ArtifactsLibraryModal = memo(function ArtifactsLibraryModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+    <div className="ui-overlay-enter fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="artifacts-library-title"
-        className="flex h-[88vh] w-[95vw] max-w-6xl flex-col rounded-xl border border-[#30363d] bg-[#0d1117] text-[#e6edf3] shadow-2xl overflow-hidden"
+        className="ui-panel-enter flex h-[88vh] w-[95vw] max-w-6xl flex-col rounded-xl border border-[#30363d] bg-[#0d1117] text-[#e6edf3] shadow-lg overflow-hidden"
       >
         {/* Header */}
         <div className="flex h-13 items-center justify-between border-b border-[#30363d] px-5 py-3 bg-[#161b22]">

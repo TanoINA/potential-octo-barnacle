@@ -99,8 +99,8 @@ export const ToolsInspectorModal: React.FC<ToolsInspectorModalProps> = ({ open, 
   const mcpCount = filteredMcp.reduce((sum, group) => sum + group.tools.length, 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Active capabilities and tools" tabIndex={-1} className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-2xl">
+    <div className="ui-overlay-enter fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Active capabilities and tools" tabIndex={-1} className="ui-panel-enter flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-lg">
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#30363d] bg-[#0d1117] px-4">
           <div className="flex min-w-0 items-center gap-2"><Wrench size={16} className="shrink-0 text-[#3fb950]" /><h2 className="truncate text-xs font-semibold uppercase tracking-wider">Active Capabilities & Tools</h2></div>
           <button type="button" onClick={onClose} aria-label="Close tools inspector" className="icon-button"><X size={14} /></button>

@@ -7,8 +7,22 @@ dist-ssr/
 *.local
 
 # Rust / Cargo
+target/
+**/target/
 src-tauri/target/
 src-tauri/gen/
+
+# Aether Agent local workspace data & ephemeral test verification
+.aether-agent/
+verification/
+
+# Release build outputs & installer packages (use GitHub Releases for distribution)
+*.AppImage
+*.deb
+*.rpm
+release/linux/
+release/windows/
+/release-artifacts/
 
 # Logs & test runs
 *.log

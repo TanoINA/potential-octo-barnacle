@@ -27,6 +27,7 @@ fn openai(provider: &ProviderConfig, options: &CompletionOptions) -> Value {
         &json!([]),
         options,
     )
+    .unwrap()
 }
 
 fn anthropic(provider: &ProviderConfig, options: &CompletionOptions) -> Result<Value, String> {
@@ -488,7 +489,8 @@ fn provider_payload_switch_from_anthropic_normalizes_openai_replay() {
             &messages,
             &json!([]),
             &options(false, ReasoningEffort::High),
-        );
+        )
+        .unwrap();
         assert_eq!(body["messages"][1]["content"], "Checking", "{body}");
         assert_eq!(
             body["messages"][1]["tool_calls"][0],
@@ -523,4 +525,199 @@ fn provider_payload_deepseek_preserves_existing_thinking_controls() {
         assert_eq!(body["reasoning_effort"], "xhigh");
         assert_eq!(body["max_tokens"], 8192);
     }
+}
+
+#[test]
+fn provider_payload_vision_openai_to_anthropic() {
+    for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+        let messages = json!([{"role":"user","content":[
+            {"type":"text","text":"Describe this"},
+            {"type":"image_url","image_url":{"url":format!("data:{mime};base64,aGVsbG8=")}}
+        ]}]);
+        let body = anthropic_body(
+            &config(ProviderKind::Anthropic, "claude-sonnet-4-5"),
+            &messages,
+            &json!([]),
+            &options(false, ReasoningEffort::High),
+        )
+        .unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([
+                {"type":"text","text":"Describe this"},
+                {"type":"image","source":{"type":"base64","media_type":mime,"data":"aGVsbG8="}}
+            ])
+        );
+    }
+}
+
+#[test]
+fn provider_payload_vision_anthropic_rejects_invalid_content() {
+    for block in [
+        json!({"type":"image_url","image_url":{"url":"data:image/svg+xml;base64,aGVsbG8="}}),
+        json!({"type":"image_url","image_url":{"url":"data:image/png,aGVsbG8="}}),
+        json!({"type":"image_url","image_url":{"url":"data:image/png;base64,%%%"}}),
+        json!({"type":"image_url","image_url":{"url":"data:image/png;base64,"}}),
+        json!({"type":"image_url","image_url":{"url":"file:///secret.png"}}),
+        json!({"type":"image_url","image_url":{"url":"http://example.com/image.png"}}),
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"bad"}}),
+        json!({"type":"unknown"}),
+        json!({"type":"text","text":7}),
+    ] {
+        let error = convert_anthropic_messages(&json!([{"role":"user","content":[block]}]));
+        assert!(error.is_err(), "accepted invalid block: {block}");
+    }
+}
+
+#[test]
+fn provider_payload_vision_native_images_to_openai() {
+    let source = json!({"type":"base64","media_type":"image/png","data":"aGVsbG8="});
+    for content in [
+        json!([{"type":"image","source":source}]),
+        json!([{"type":"text","text":"Look"},{"type":"image","source":source}]),
+    ] {
+        let body = openai_body(
+            &config(ProviderKind::Openai, "gpt-4o"),
+            &json!([{"role":"user","content":content}]),
+            &json!([]),
+            &options(false, ReasoningEffort::High),
+        )
+        .unwrap();
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(
+            blocks.last().unwrap(),
+            &json!({"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}})
+        );
+    }
+}
+
+#[test]
+fn provider_payload_vision_native_tool_results_keep_images_in_valid_user_message() {
+    let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}});
+    let body = openai_body(&config(ProviderKind::Openai, "gpt-4o"), &json!([
+        {"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"found"},image]},
+            {"type":"text","text":"Compare"}, image
+        ]}
+    ]), &json!([]), &options(false, ReasoningEffort::High)).unwrap();
+    assert_eq!(
+        body["messages"][0],
+        json!({"role":"tool","tool_call_id":"call_1","content":"found"})
+    );
+    assert_eq!(
+        body["messages"][1],
+        json!({"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}},
+            {"type":"text","text":"Compare"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}
+        ]})
+    );
+}
+
+#[test]
+fn provider_payload_vision_tool_images_to_anthropic() {
+    let (_, messages) =
+        convert_anthropic_messages(&json!([{"role":"tool","tool_call_id":"call_1","content":[
+            {"type":"text","text":"found"},
+            {"type":"image_url","image_url":{"url":"https://example.com/image.png"}}
+        ]}]))
+        .unwrap();
+    assert_eq!(
+        messages[0]["content"][0]["content"],
+        json!([
+            {"type":"text","text":"found"},
+            {"type":"image","source":{"type":"url","url":"https://example.com/image.png"}}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn provider_payload_vision_invalid_openai_input_errors_before_network() {
+    for block in [
+        json!({"type":"image_url","image_url":{"url":"data:image/png;base64,%%%"}}),
+        json!({"type":"image","source":{"type":"url","url":"file:///private.png"}}),
+        json!({"type":"unrecognized"}),
+    ] {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = stream_chat_completion(
+            &config(ProviderKind::Openai, "gpt-4o"),
+            &json!([{"role":"user","content":[block]}]),
+            &json!([]),
+            &options(false, ReasoningEffort::High),
+            |_| {},
+            |_| {},
+            |_| {},
+            cancel,
+        )
+        .await;
+        assert!(result.is_err(), "invalid image/content accepted: {block}");
+    }
+}
+
+#[test]
+fn provider_payload_vision_native_url_roundtrip_and_canonical_preservation() {
+    let canonical = json!([{"role":"user","content":[
+        {"type":"text","text":"Look"},
+        {"type":"image_url","image_url":{"url":"https://example.com/image.png","detail":"high"}}
+    ]}]);
+    let openai = openai_body(
+        &config(ProviderKind::Openai, "gpt-4o"),
+        &canonical,
+        &json!([]),
+        &options(false, ReasoningEffort::High),
+    )
+    .unwrap();
+    assert_eq!(openai["messages"], canonical);
+    let (_, native) = convert_anthropic_messages(&canonical).unwrap();
+    assert_eq!(
+        native[0]["content"][1],
+        json!({"type":"image","source":{"type":"url","url":"https://example.com/image.png"}})
+    );
+    let converted = normalize_openai_messages(&json!(native), ProviderKind::Openai).unwrap();
+    assert_eq!(
+        converted[0]["content"][1],
+        json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}})
+    );
+}
+
+#[test]
+fn provider_payload_vision_tool_result_images_follow_all_results() {
+    let image =
+        json!({"type":"image","source":{"type":"url","url":"https://example.com/image.png"}});
+    for messages in [
+        json!([{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"call_1","content":[image]},
+            {"type":"tool_result","tool_use_id":"call_2","content":"second"}
+        ]}]),
+        json!([{"role":"tool","tool_call_id":"call_1","content":[image]}]),
+        json!([{"role":"tool","tool_call_id":"call_1","content":[image]},
+            {"role":"tool","tool_call_id":"call_2","content":"second"}]),
+    ] {
+        let body = normalize_openai_messages(&messages, ProviderKind::Openai).unwrap();
+        let messages = body.as_array().unwrap();
+        assert_eq!(
+            messages[0],
+            json!({"role":"tool","tool_call_id":"call_1","content":""})
+        );
+        let user = messages.last().unwrap();
+        assert_eq!(
+            user,
+            &json!({"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]})
+        );
+        assert!(messages[..messages.len() - 1]
+            .iter()
+            .all(|m| m["role"] == "tool"));
+    }
+}
+
+#[test]
+fn provider_payload_vision_system_images_rejected_not_dropped() {
+    let result = convert_anthropic_messages(&json!([{"role":"system","content":[
+        {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}
+    ]}]));
+    assert!(
+        result.is_err(),
+        "system images must not be silently discarded"
+    );
 }

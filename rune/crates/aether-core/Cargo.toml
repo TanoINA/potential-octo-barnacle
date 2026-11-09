@@ -1,0 +1,38 @@
+[package]
+name = "aether-core"
+version = "0.1.0"
+edition = "2021"
+description = "Renderer-neutral shared Aether backend for Rune"
+
+[features]
+default = ["shared-profile"]
+# Enables the renderer-neutral profile override in the authoritative storage backend.
+shared-profile = []
+diagnostics = []
+
+[dependencies]
+minisign-verify = "=0.3.0"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22.1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+dirs = "6.0"
+chrono = "0.4"
+uuid = { version = "1.10", features = ["v4"] }
+regex = "1"
+globset = "0.4"
+ignore = "0.4"
+similar = "2"
+html2text = "0.15"
+url = "2"
+rusqlite = { version = "0.32", features = ["bundled", "bundled-full"] }
+
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

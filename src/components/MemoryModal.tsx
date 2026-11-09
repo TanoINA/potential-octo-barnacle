@@ -104,8 +104,8 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Workspace memory and instructions" tabIndex={-1} className="flex h-[80vh] w-full max-w-3xl flex-col rounded-2xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-2xl overflow-hidden">
+    <div className="ui-overlay-enter fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Workspace memory and instructions" tabIndex={-1} className="ui-panel-enter flex h-[80vh] w-full max-w-3xl flex-col rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-lg overflow-hidden">
         {/* Header */}
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#30363d] px-4 bg-[#0d1117]">
           <div className="flex items-center gap-2">

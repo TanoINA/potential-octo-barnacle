@@ -1,0 +1,16 @@
+[package]
+name = "aether-state"
+version = "0.1.0"
+edition = "2021"
+description = "Renderer-independent native Aether chat model and controller"
+
+[dependencies]
+aether-core = { path = "../aether-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled", "bundled-full"] }
+tempfile = "3"

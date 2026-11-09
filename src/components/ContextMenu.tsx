@@ -974,7 +974,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         ref={menuRef}
         data-testid="aether-context-menu"
         style={{ top: `${menu.y}px`, left: `${menu.x}px` }}
-        className="fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
+        className="ui-menu ui-panel-enter fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 p-1 text-[12px] text-[#e6edf3] shadow-lg select-none"
       >
         {menu.sections.map((section, sIdx) => (
           <div key={section.id}>
@@ -1049,7 +1049,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           ref={submenuRef}
           data-testid="aether-context-submenu"
           style={{ top: `${submenuPos.y}px`, left: `${submenuPos.x}px` }}
-          className="fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 backdrop-blur-md p-1 text-[12px] text-[#e6edf3] shadow-2xl shadow-black/80 animate-in fade-in zoom-in-95 duration-100 select-none"
+          className="ui-menu ui-panel-enter fixed z-50 min-w-[210px] max-w-[280px] max-h-[80vh] overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22]/95 p-1 text-[12px] text-[#e6edf3] shadow-lg select-none"
         >
           <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e7681]">
             {activeSubmenuItem.label}

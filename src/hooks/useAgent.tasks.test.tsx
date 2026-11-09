@@ -1,3 +1,4 @@
+import { pagingBackend } from '../test/sessionPaging';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackgroundTask, SessionData } from '../types/agent';
@@ -32,13 +33,13 @@ async function mounted() {
 
 beforeEach(() => {
   mocks.invoke.mockReset();
-  mocks.invoke.mockImplementation(async (name: string, args?: { sessionId?: string }) => {
+  mocks.invoke.mockImplementation(pagingBackend(async (name: string, args?: { sessionId?: string }) => {
     if (name === 'get_settings') return { providers: [], activeProviderId: '' };
     if (name === 'list_sessions') return [session('session-a').session];
     if (name === 'load_session') return session(args!.sessionId!);
     if (name === 'list_background_tasks') return [task(args?.sessionId ?? 'unscoped')];
     return undefined;
-  });
+  }));
 });
 
 describe('useAgent session-owned background tasks', () => {
@@ -46,8 +47,8 @@ describe('useAgent session-owned background tasks', () => {
     const hook = await mounted();
     const killing = deferred<void>();
     const backend = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation((name: string, args?: { sessionId?: string }) =>
-      name === 'kill_background_task' ? killing.promise : backend(name, args));
+    mocks.invoke.mockImplementation(pagingBackend((name: string, args?: { sessionId?: string }) =>
+      name === 'kill_background_task' ? killing.promise : backend(name, args)));
     let pending!: Promise<void>;
     act(() => { pending = hook.result.current.killBackgroundTask('task-1'); });
     expect(mocks.invoke).toHaveBeenCalledWith('kill_background_task', { sessionId: 'session-a', taskId: 'task-1' });
@@ -60,8 +61,8 @@ describe('useAgent session-owned background tasks', () => {
     const hook = await mounted();
     const listing = deferred<BackgroundTask[]>();
     const backend = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation((name: string, args?: { sessionId?: string }) =>
-      name === 'list_background_tasks' && args?.sessionId === 'session-a' ? listing.promise : backend(name, args));
+    mocks.invoke.mockImplementation(pagingBackend((name: string, args?: { sessionId?: string }) =>
+      name === 'list_background_tasks' && args?.sessionId === 'session-a' ? listing.promise : backend(name, args)));
     let pending!: Promise<void>;
     act(() => { pending = hook.result.current.refreshBackgroundTasks(); });
     act(() => hook.result.current.newSession());
@@ -73,10 +74,10 @@ describe('useAgent session-owned background tasks', () => {
   it('waits for startup restoration, then lists only the restored session', async () => {
     const loading = deferred<SessionData>();
     const backend = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation((name: string, args?: { sessionId?: string }) =>
-      name === 'load_session' ? loading.promise : backend(name, args));
+    mocks.invoke.mockImplementation(pagingBackend((name: string, args?: { sessionId?: string }) =>
+      name === 'load_session' ? loading.promise : backend(name, args)));
     const hook = renderHook(() => useAgent());
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('load_session', { sessionId: 'session-a' }));
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('load_session_page', { sessionId: 'session-a', limit: 50 }));
     expect(taskCalls()).toEqual([]);
     await act(async () => loading.resolve(session('session-a')));
     await waitFor(() => expect(hook.result.current.backgroundTasks).toEqual([task('session-a')]));

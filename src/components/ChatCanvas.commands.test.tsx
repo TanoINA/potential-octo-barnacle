@@ -58,6 +58,29 @@ function renderCanvas(overrides: Partial<CanvasProps> = {}) {
   return props;
 }
 
+describe('ChatCanvas review commands', () => {
+  it.each(['/refine', '/review', '/reflect'])('runs bare %s locally and describes the full conversation', async (command) => {
+    const onReviewSession = vi.fn(async () => true);
+    const props = renderCanvas({ onReviewSession });
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: command } });
+    expect(screen.getAllByText(/Review the full conversation/).length).toBeGreaterThan(0);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onReviewSession).toHaveBeenCalledOnce());
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['/refine explain', '/review explain', '/reflect explain'])('sends non-bare %s as a normal prompt', async (command) => {
+    const onReviewSession = vi.fn(async () => true);
+    const props = renderCanvas({ onReviewSession });
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: command } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(command, undefined, expect.any(Object)));
+    expect(onReviewSession).not.toHaveBeenCalled();
+  });
+});
 describe('ChatCanvas plan commands', () => {
   it.each(['enter', 'button'])('sends /plan with its goal using %s', async (method) => {
     const props = renderCanvas();
@@ -173,6 +196,69 @@ describe('ChatCanvas queue dispatch contract', () => {
     await act(async () => {});
     expect(send).not.toHaveBeenCalled();
     expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('restores each session queue after switching chats without dispatching into the other chat', async () => {
+    const send = vi.fn(async () => true);
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('belongs to session A');
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" />);
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+    enqueue('belongs to session B');
+    rerender(<ChatCanvas {...props} />);
+    expect(screen.getByText('belongs to session A')).toBeTruthy();
+    expect(screen.queryByText('belongs to session B')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(send).toHaveBeenCalledWith('belongs to session A', undefined, expect.any(Object));
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" />);
+    expect(screen.getByText('belongs to session B')).toBeTruthy();
+  });
+
+  it('removes only the viewed session item after switching chats', () => {
+    const { props, rerender } = queuedCanvas();
+    enqueue('A stays queued');
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" />);
+    enqueue('B can be removed');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove queued prompt' }));
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+    rerender(<ChatCanvas {...props} />);
+    expect(screen.getByText('A stays queued')).toBeTruthy();
+  });
+
+  it.each([true, false])('settles pending acceptance %s against its origin even after navigation', async (accepted) => {
+    let settle!: (value: boolean) => void;
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('pending A');
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    expect(send).toHaveBeenCalledOnce();
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" />);
+    enqueue('pending B');
+    await act(async () => settle(accepted));
+    expect(screen.getByText('pending B')).toBeTruthy();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    expect(send).toHaveBeenCalledOnce();
+    if (accepted) expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+    else {
+      expect(screen.getByText('pending A')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Resume Queue' })).toBeTruthy();
+    }
+  });
+
+  it('preserves Stop pause across navigation and waits for loaded history before resume', async () => {
+    const send = vi.fn(async () => true);
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('paused A');
+    rerender(<ChatCanvas {...props} stopRequested />);
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" isStreaming={false} />);
+    rerender(<ChatCanvas {...props} isStreaming={false} isSessionLoading />);
+    expect(screen.getByRole('button', { name: 'Resume Queue' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Queue' }));
+    expect(send).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
   });
 
   it('does not consume a new composer draft when dispatching a queued local command', async () => {

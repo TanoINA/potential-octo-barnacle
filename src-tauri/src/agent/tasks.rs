@@ -380,6 +380,12 @@ async fn monitor_task(
     .into();
 }
 
+impl Default for TaskManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskManager {
     pub fn new() -> Self {
         Self {
@@ -515,6 +521,18 @@ impl TaskManager {
         Ok(info)
     }
 
+    /// Global readiness check, including daemon tasks and tasks owned by other
+    /// sessions. Call while holding the runner's update permit to prevent spawns.
+    pub async fn has_running_tasks(&self) -> bool {
+        let entries: Vec<_> = self.tasks.read().await.values().cloned().collect();
+        for entry in entries {
+            if entry.read().await.info.status == "running" {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn list_tasks(&self, session_id: &str) -> Vec<TaskInfo> {
         let entries: Vec<_> = self.tasks.read().await.values().cloned().collect();
         let mut list = Vec::new();
@@ -638,6 +656,58 @@ impl TaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn update_gate_running_tasks_scans_all_sessions_and_task_kinds() {
+        let manager = TaskManager::new();
+        assert!(!manager.has_running_tasks().await);
+        for (index, status) in ["completed", "failed", "killed"].into_iter().enumerate() {
+            let id = format!("terminal-{index}");
+            manager.tasks.write().await.insert(
+                id.clone(),
+                Arc::new(RwLock::new(TaskEntry {
+                    info: TaskInfo {
+                        id,
+                        session_id: format!("session-{index}"),
+                        command: String::new(),
+                        tool_summary: None,
+                        is_daemon: index % 2 == 0,
+                        status: status.into(),
+                        pid: None,
+                        started_at: 0,
+                        completed_at: Some(1),
+                        exit_code: None,
+                        log_path: String::new(),
+                        recent_output: String::new(),
+                    },
+                    output_lines: VecDeque::new(),
+                    stdin_tx: None,
+                    cancel: CancellationToken::new(),
+                    monitor_error: None,
+                    output_closed: true,
+                })),
+            );
+        }
+        assert!(!manager.has_running_tasks().await);
+        let entry = manager.tasks.read().await["terminal-2"].clone();
+        for daemon in [false, true] {
+            {
+                let mut guard = entry.write().await;
+                guard.info.status = "running".into();
+                guard.info.completed_at = None;
+                guard.info.is_daemon = daemon;
+            }
+            assert!(manager.has_running_tasks().await, "daemon={daemon}");
+            entry.read().await.cancel.cancel();
+            assert!(
+                manager.has_running_tasks().await,
+                "cancellation must not imply confirmed task completion"
+            );
+            entry.write().await.info.status = "killed".into();
+            assert!(!manager.has_running_tasks().await);
+        }
+        assert!(!manager.log_dir.exists(), "readiness must not create logs");
+    }
 
     #[tokio::test]
     async fn foreign_task_id_is_indistinguishable_from_missing() {

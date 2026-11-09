@@ -1,30 +1,109 @@
+use super::events::AgentHost;
 use super::mcp::{result_text, McpManager};
 use super::provider::{
     is_retryable_provider_error, stream_chat_completion, CompletionOptions, ToolDelta,
 };
 use super::skills::{
-    find_skill, load_skills, read_skill_content, render_skill_catalog, workspace_skill_paths,
+    effective_skill_paths, find_skill, load_skills, read_skill_content, render_skill_catalog,
 };
 use super::tools::{execute_tool, get_agent_tools, ToolContext, ToolEvent, ToolExecutionResult};
 use super::types::{
     AgentEvent, AgentRunRequest, Artifact, ArtifactEventData, ChatMessage, CouncilChunkData,
     CouncilDoneData, DoneEventData, ErrorEventData, ExecutionMode, MicroCompactionEvent,
-    NoticeEventData, ProviderConfig, SkillActivatedEventData, SkillInfo, StreamEventData,
-    SubagentEventData, SubagentProgress, TerminalEventData, ToolCallItem, ToolEventData,
+    NoticeEventData, ProviderConfig, ReviewConfig, SkillActivatedEventData, SkillInfo,
+    StreamEventData, SubagentEventData, SubagentProgress, TerminalEventData, ToolCallItem,
+    ToolEventData,
 };
-use futures_util::future::join_all;
+use futures_util::{stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SUBAGENT_MAX_TURNS: usize = 25;
+const TOOL_BATCH_CONCURRENCY: usize = 4;
+
+async fn dispatch_tool_batch<I, F, Fut, C, T>(
+    calls: I,
+    cancel: &CancellationToken,
+    dispatch: F,
+    cancelled: C,
+) -> Vec<T>
+where
+    I: IntoIterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: std::future::Future<Output = T>,
+    C: Fn(I::Item) -> T,
+{
+    // Batas berlaku per batch agar subagen tidak menunggu slot milik induknya.
+    stream::iter(calls)
+        .map(|call| {
+            let (dispatch, cancelled) = (&dispatch, &cancelled);
+            async move {
+                // Periksa saat dipoll, sebelum closure dispatch dapat memicu efek samping.
+                if cancel.is_cancelled() {
+                    cancelled(call)
+                } else {
+                    dispatch(call).await
+                }
+            }
+        })
+        .buffered(TOOL_BATCH_CONCURRENCY)
+        .collect()
+        .await
+}
+
+struct PreparedCall {
+    call_id: String,
+    function_name: String,
+    arguments_raw: String,
+    ui_id: String,
+    args: serde_json::Value,
+    malformed_error: Option<String>,
+}
+
+fn cancelled_call(prep: PreparedCall, emitter: &EmitterContext) -> (String, ToolExecutionResult) {
+    // Error terminal sudah diterbitkan saat persiapan; jangan timpa saat pembatalan.
+    if let Some(err) = prep.malformed_error {
+        return (
+            prep.call_id,
+            ToolExecutionResult {
+                output: err,
+                success: false,
+                cancelled: false,
+                ..Default::default()
+            },
+        );
+    }
+    emitter.tool(ToolCallItem {
+        id: prep.ui_id,
+        name: prep.function_name,
+        args: prep.args,
+        status: "cancelled".into(),
+        result: Some("Cancelled by operator".into()),
+        artifact_id: None,
+        arguments_raw: Some(prep.arguments_raw),
+        started_at: Some(chrono::Utc::now().timestamp_millis()),
+        completed_at: Some(chrono::Utc::now().timestamp_millis()),
+        duration_ms: Some(0),
+        exit_code: None,
+        terminal_output: None,
+        files_changed: None,
+    });
+    (
+        prep.call_id,
+        ToolExecutionResult {
+            output: "Cancelled by operator".into(),
+            cancelled: true,
+            ..Default::default()
+        },
+    )
+}
 
 #[derive(Clone)]
 struct EmitterContext {
-    app: AppHandle,
+    app: AgentHost,
     run_id: String,
     session_id: String,
 }
@@ -131,6 +210,113 @@ impl EmitterContext {
     }
 }
 
+/// Per-run skill maintenance state. Clones share exact-file read authorization;
+/// construction performs no filesystem discovery or directory creation.
+#[derive(Clone)]
+struct ForegroundSkillTools {
+    store: Arc<tokio::sync::Mutex<Option<super::review_skills::ReviewSkillStore>>>,
+    workspace: String,
+    skill_paths: Vec<String>,
+    config: ReviewConfig,
+    run_id: String,
+    session_id: String,
+}
+
+impl ForegroundSkillTools {
+    fn new(
+        workspace: &str,
+        skill_paths: &[String],
+        config: &ReviewConfig,
+        run_id: &str,
+        session_id: &str,
+    ) -> Self {
+        Self {
+            store: Arc::new(tokio::sync::Mutex::new(None)),
+            workspace: workspace.into(),
+            skill_paths: skill_paths.to_vec(),
+            config: config.clone(),
+            run_id: run_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Called only after foreground dispatch has finished; clones share the drain.
+    async fn take_event(&self) -> Option<super::types::SelfImprovementEvent> {
+        let mut guard = self.store.lock().await;
+        let changes = guard.as_ref()?.changes();
+        let first = changes.first()?;
+        let event = super::types::SelfImprovementEvent {
+            run_id: self.run_id.clone(),
+            session_id: self.session_id.clone(),
+            action: first.action.clone(),
+            skill_name: Some(first.skill_name.clone()),
+            summary: Some(format!("{} foreground skill change(s).", changes.len())),
+            workspace_cwd: Some(self.workspace.clone()),
+            changes,
+        };
+        guard.take();
+        Some(event)
+    }
+    async fn execute(&self, name: &str, args: &serde_json::Value) -> ToolExecutionResult {
+        let mapped;
+        let (name, args) = if name == "learn_skill" {
+            if args["overwrite"].as_bool() == Some(true) {
+                return ToolExecutionResult::failure("Legacy learn_skill overwrite is not supported; read the exact file with skill_view, then use skill_manage patch/edit preserving frontmatter.".into());
+            }
+            mapped = serde_json::json!({
+                "action": "create", "name": args["name"],
+                "description": args["description"], "content": args["instructions"],
+            });
+            ("skill_manage", &mapped)
+        } else {
+            (name, args)
+        };
+        let mut guard = self.store.lock().await;
+        if guard.is_none() {
+            let roots = foreground_skill_creation_root(&self.config).and_then(|create_root| {
+                super::review_pending::pending_root()
+                    .map(|pending_root| (create_root, pending_root))
+            });
+            let (create_root, pending_root) = match roots {
+                Ok(roots) => roots,
+                Err(error) => return ToolExecutionResult::failure(error),
+            };
+            match super::review_skills::ReviewSkillStore::new(
+                &self.workspace,
+                &self.skill_paths,
+                create_root,
+                pending_root,
+                self.config.write_approval,
+                &self.run_id,
+                &self.session_id,
+            )
+            .await
+            {
+                Ok(store) => *guard = Some(store),
+                Err(error) => return ToolExecutionResult::failure(error),
+            }
+        }
+        match guard
+            .as_mut()
+            .expect("initialized skill store")
+            .execute(name, args)
+            .await
+        {
+            Ok(value) => ToolExecutionResult::success(value.to_string(), None),
+            Err(error) => ToolExecutionResult::failure(error),
+        }
+    }
+}
+
+// Match review's home-relative creation policy, never the active workspace.
+fn foreground_skill_creation_root(config: &ReviewConfig) -> Result<std::path::PathBuf, String> {
+    super::skills::review_creation_root(config)
+}
+
+fn is_review_skill_tool(name: &str) -> bool {
+    matches!(name, "skills_list" | "skill_view" | "skill_manage")
+}
+
 /// Outcome of dispatching one tool call issued inside a subagent.
 struct SubagentToolOutcome {
     result: ToolExecutionResult,
@@ -206,6 +392,14 @@ async fn dispatch_subagent_tool(
             activated_skill: None,
         };
     }
+    // Review maintenance needs a persistent, configured parent-run store. Do not
+    // silently fall through to unknown tools or create a fresh store per call.
+    if is_review_skill_tool(name) || name == "learn_skill" {
+        return SubagentToolOutcome {
+            result: ToolExecutionResult::failure("Skill maintenance tools are only available in the parent run; report the proposed change to the parent.".into()),
+            activated_skill: None,
+        };
+    }
     if name == "use_skill" {
         let skill_name = args
             .get("name")
@@ -218,9 +412,6 @@ async fn dispatch_subagent_tool(
         }
     } else {
         let result = execute_tool(name, args, context).await;
-        if name == "learn_skill" && result.success {
-            *skills = load_skills(skill_paths).await;
-        }
         SubagentToolOutcome {
             result,
             activated_skill: None,
@@ -335,6 +526,8 @@ fn tool_policy_error(
                 | "search_files"
                 | "fetch_web_page"
                 | "use_skill"
+                | "skills_list"
+                | "skill_view"
                 | "spawn_subagent"
         ) || (name == "manage_task"
             && matches!(
@@ -488,7 +681,7 @@ async fn run_subagent(
             t.get("function")
                 .and_then(|f| f.get("name"))
                 .and_then(|n| n.as_str())
-                .map(|n| n != "spawn_subagent")
+                .map(|n| n != "spawn_subagent" && n != "learn_skill" && !is_review_skill_tool(n))
                 .unwrap_or(true)
         })
         .collect();
@@ -850,6 +1043,7 @@ async fn run_subagent(
 
     let artifact_id = format!("art-{}", Uuid::new_v4());
     let artifact = Artifact {
+        stream_revision: None,
         id: artifact_id.clone(),
         title: format!("Subagent: {}", role),
         artifact_type: "markdown".into(),
@@ -897,9 +1091,83 @@ async fn load_workspace_memory(workspace_cwd: &str) -> Result<Option<String>, St
     Ok((!content.trim().is_empty()).then_some(content))
 }
 
+struct ReviewState {
+    id: String,
+    run_id: String,
+    cancel: CancellationToken,
+}
+
+#[derive(Default)]
+struct ReviewCadence {
+    iterations: HashMap<String, usize>,
+}
+
+impl ReviewCadence {
+    fn iteration(&mut self, session_id: &str) {
+        let count = self.iterations.entry(session_id.to_string()).or_default();
+        *count = count.saturating_add(1);
+    }
+
+    fn tool_attempt(&mut self, session_id: &str, tool: &str) {
+        if matches!(tool, "learn_skill" | "skill_manage") {
+            self.iterations.insert(session_id.to_string(), 0);
+        }
+    }
+
+    fn take_due(&mut self, session_id: &str, interval: usize) -> bool {
+        let count = self.iterations.entry(session_id.to_string()).or_default();
+        if interval > 0 && *count >= interval {
+            *count = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Default)]
+struct UpdateGate {
+    updating: bool,
+    in_flight: usize,
+}
+
+/// Counts admitted native work independently of cancellable registry entries.
+struct NativeWorkLease {
+    gate: Arc<Mutex<UpdateGate>>,
+}
+
+impl Drop for NativeWorkLease {
+    fn drop(&mut self) {
+        self.gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .in_flight -= 1;
+    }
+}
+
+/// Exclusive native-update reservation. Keep this alive through the running-task
+/// check and installation; dropping it reopens run and review admission.
+#[must_use = "dropping the permit reopens agent admission"]
+pub struct UpdatePermit {
+    gate: Arc<Mutex<UpdateGate>>,
+}
+
+impl Drop for UpdatePermit {
+    fn drop(&mut self) {
+        self.gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .updating = false;
+    }
+}
+
 pub struct AgentRunner {
+    // Admission always locks gate -> active -> reviews. Keep the gate locked
+    // through registration so readiness and new work cannot race.
+    update_gate: Arc<Mutex<UpdateGate>>,
     active: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
-    reviews: Arc<Mutex<std::collections::HashSet<String>>>,
+    reviews: Arc<Mutex<HashMap<String, ReviewState>>>,
+    review_cadence: Arc<Mutex<ReviewCadence>>,
 }
 
 impl Default for AgentRunner {
@@ -911,14 +1179,50 @@ impl Default for AgentRunner {
 impl AgentRunner {
     pub fn new() -> Self {
         Self {
+            update_gate: Arc::new(Mutex::new(UpdateGate::default())),
             active: Arc::new(Mutex::new(HashMap::new())),
-            reviews: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            reviews: Arc::new(Mutex::new(HashMap::new())),
+            review_cadence: Arc::new(Mutex::new(ReviewCadence::default())),
         }
+    }
+
+    /// Reserve quiescent native work before checking global background tasks.
+    /// Cancelled reviews still block after removal until their leases finish.
+    pub fn acquire_update_permit(&self) -> Result<UpdatePermit, String> {
+        let mut gate = self
+            .update_gate
+            .lock()
+            .map_err(|_| "Update gate is unavailable")?;
+        if gate.updating {
+            return Err("An update is already in progress".into());
+        }
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Agent run registry is unavailable")?;
+        let reviews = self
+            .reviews
+            .lock()
+            .map_err(|_| "Review registry is unavailable")?;
+        if gate.in_flight != 0 || !active.is_empty() || !reviews.is_empty() {
+            return Err("Wait for active runs and self-improvement reviews to finish before updating".into());
+        }
+        gate.updating = true;
+        Ok(UpdatePermit {
+            gate: self.update_gate.clone(),
+        })
     }
 
     pub fn begin(&self, run_id: &str, session_id: &str) -> Result<CancellationToken, String> {
         if run_id.trim().is_empty() || session_id.trim().is_empty() {
             return Err("runId and sessionId are required".into());
+        }
+        let gate = self
+            .update_gate
+            .lock()
+            .map_err(|_| "Update gate is unavailable")?;
+        if gate.updating {
+            return Err("An update is in progress; wait before starting a run".into());
         }
         let mut active = self
             .active
@@ -933,9 +1237,93 @@ impl AgentRunner {
         {
             return Err("This session already has an active run".into());
         }
+        let mut reviews = self
+            .reviews
+            .lock()
+            .map_err(|_| "Review registry is unavailable")?;
+        if let Some(review) = reviews.remove(session_id) {
+            review.cancel.cancel();
+        }
         let token = CancellationToken::new();
         active.insert(run_id.to_string(), (session_id.to_string(), token.clone()));
         Ok(token)
+    }
+
+    fn begin_review(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        foreground: Option<&CancellationToken>,
+    ) -> Result<ReflectionLease, String> {
+        // Both manual and automatic reviews share update-gated admission.
+        let mut gate = self
+            .update_gate
+            .lock()
+            .map_err(|_| "Update gate is unavailable")?;
+        if gate.updating {
+            return Err("An update is in progress; wait before starting a review".into());
+        }
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Run registry is unavailable")?;
+        if active.iter().any(|(id, (session, _))| {
+            session == session_id && (foreground.is_none() || id != run_id)
+        }) {
+            return Err("Stop the active run before reviewing this session".into());
+        }
+        if foreground.is_some_and(CancellationToken::is_cancelled) {
+            return Err("Review was cancelled".into());
+        }
+        let mut reviews = self
+            .reviews
+            .lock()
+            .map_err(|_| "Review registry is unavailable")?;
+        if reviews.contains_key(session_id) {
+            return Err("A self-improvement review is already running for this session".into());
+        }
+        if reviews.len() >= 4 {
+            return Err("Wait for an active self-improvement review to finish".into());
+        }
+        let id = Uuid::new_v4().to_string();
+        let cancel = foreground
+            .map(CancellationToken::child_token)
+            .unwrap_or_default();
+        reviews.insert(
+            session_id.to_string(),
+            ReviewState {
+                id: id.clone(),
+                run_id: run_id.to_string(),
+                cancel: cancel.clone(),
+            },
+        );
+        gate.in_flight += 1;
+        Ok(ReflectionLease {
+            _work: NativeWorkLease {
+                gate: self.update_gate.clone(),
+            },
+            registry: self.reviews.clone(),
+            session_id: session_id.to_string(),
+            id,
+            cancel,
+        })
+    }
+
+    /// Transfer foreground work to a detached worker before done/finish can
+    /// retire its active entry. The caller still owns foreground admission.
+    fn reserve_finalization(&self) -> NativeWorkLease {
+        let mut gate = self
+            .update_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(
+            !gate.updating,
+            "foreground finalization must be reserved before the run finishes"
+        );
+        gate.in_flight += 1;
+        NativeWorkLease {
+            gate: self.update_gate.clone(),
+        }
     }
 
     pub fn abort(&self, run_id: &str) -> Result<(), String> {
@@ -945,6 +1333,13 @@ impl AgentRunner {
             .map_err(|_| "Agent run registry is unavailable".to_string())?;
         if let Some((_, token)) = active.get(run_id) {
             token.cancel();
+        }
+        let reviews = self
+            .reviews
+            .lock()
+            .map_err(|_| "Review registry is unavailable")?;
+        for review in reviews.values().filter(|review| review.run_id == run_id) {
+            review.cancel.cancel();
         }
         Ok(())
     }
@@ -957,41 +1352,46 @@ impl AgentRunner {
 
     pub async fn review_session(
         &self,
-        app: AppHandle,
+        app: AgentHost,
         session_id: String,
         provider: ProviderConfig,
     ) -> Result<(), String> {
-        if self
-            .active
-            .lock()
-            .map_err(|_| "Run registry is unavailable")?
-            .values()
-            .any(|(session, _)| session == &session_id)
-        {
-            return Err("Stop the active run before reviewing this session".into());
-        }
+        // Reserve before the first await: a foreground run must be able to cancel
+        // this review even while its saved session/settings are being loaded.
+        let lease = self.begin_review(&format!("manual-{}", Uuid::new_v4()), &session_id, None)?;
         let data = super::storage::load_session(&session_id).await?;
-        let cwd = data
-            .session
-            .workspace_cwd
-            .filter(|value| !value.trim().is_empty())
-            .ok_or("Select a workspace before reviewing this session")?;
+        let cwd = data.session.workspace_cwd.unwrap_or_default();
         let (run_id, snapshot) = completed_review_snapshot(&data.messages)?;
+        lease.set_run_id(&run_id)?;
+        let settings = super::storage::load_settings().await?;
+        let options = CompletionOptions {
+            thinking: settings.thinking,
+            reasoning_effort: settings.reasoning_effort,
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
+            stream: settings.stream_response,
+        };
         run_reflection(
             app,
-            self.reviews.clone(),
-            cwd,
-            provider,
-            snapshot,
-            run_id,
-            session_id,
+            lease,
+            ReflectionContext {
+                cwd,
+                provider,
+                snapshot,
+                run_id,
+                session_id,
+                config: settings.review_config,
+                skill_paths: settings.skill_paths,
+                parent_tools: Some(get_agent_tools()),
+                parent_options: Some(options),
+            },
         )
         .await
     }
 
     pub async fn run(
         &self,
-        app: AppHandle,
+        app: AgentHost,
         workspace_cwd: String,
         request: AgentRunRequest,
         cancel: CancellationToken,
@@ -1001,6 +1401,13 @@ impl AgentRunner {
             run_id: request.run_id.clone(),
             session_id: request.session_id.clone(),
         };
+        if let Err(error) =
+            super::images::validate_request_images(&request.messages, &request.provider)
+        {
+            emitter.error(error);
+            emitter.done(false, false);
+            return;
+        }
         let mcp_servers = if mcp_connections_allowed(request.execution_mode) {
             request.mcp_servers.as_slice()
         } else {
@@ -1015,6 +1422,7 @@ impl AgentRunner {
         });
         for warning in &mcp.warnings {
             emitter.artifact(Artifact {
+                stream_revision: None,
                 id: format!("art-{}", Uuid::new_v4()),
                 title: "MCP connection warning".into(),
                 artifact_type: "markdown".into(),
@@ -1025,7 +1433,19 @@ impl AgentRunner {
             });
         }
 
-        let all_skill_paths = workspace_skill_paths(&workspace_cwd, &request.skill_paths);
+        let all_skill_paths = match effective_skill_paths(
+            &workspace_cwd,
+            &request.skill_paths,
+            &request.review_config,
+        ) {
+            Ok(paths) => paths,
+            Err(error) => {
+                emitter.error(error);
+                mcp.shutdown().await;
+                emitter.done(false, false);
+                return;
+            }
+        };
         let skills = load_skills(&all_skill_paths).await;
         let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.\n- For long-running commands, dev servers, or background watchers, use run_command with isDaemon: true to run in the background. Use manage_task to inspect logs, send input, or terminate tasks.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system = match request
@@ -1039,6 +1459,13 @@ impl AgentRunner {
         };
         system.push_str(&render_skill_catalog(&skills));
         let skills_shared = Arc::new(RwLock::new(skills));
+        let foreground_skill_tools = ForegroundSkillTools::new(
+            &workspace_cwd,
+            &all_skill_paths,
+            &request.review_config,
+            &request.run_id,
+            &request.session_id,
+        );
         let workspace_memory = match load_workspace_memory(&workspace_cwd).await {
             Ok(memory) => memory,
             Err(error) => {
@@ -1090,14 +1517,15 @@ impl AgentRunner {
         let current_run_start = conversation.len();
         let mut turns = 0;
         let mut finished = false;
-        let review_start = conversation
-            .iter()
-            .rposition(|message| message["role"] == "user")
-            .unwrap_or(conversation.len());
-        let mut used_tools = false;
+        let mut final_response_nonempty = false;
         while turns < request.max_turns.clamp(1, 100) {
             if cancel.is_cancelled() {
                 break;
+            }
+            if request.review_config.creation_nudge_interval > 0 {
+                if let Ok(mut cadence) = self.review_cadence.lock() {
+                    cadence.iteration(&request.session_id);
+                }
             }
             turns += 1;
             let max_provider_attempts = 3;
@@ -1130,6 +1558,7 @@ impl AgentRunner {
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let had_chunks_clone1 = attempt_had_chunks.clone();
                 let had_chunks_clone2 = attempt_had_chunks.clone();
+                let had_chunks_clone3 = attempt_had_chunks.clone();
 
                 let result = stream_chat_completion(
                     &request.provider,
@@ -1144,12 +1573,16 @@ impl AgentRunner {
                         had_chunks_clone2.store(true, std::sync::atomic::Ordering::Relaxed);
                         reasoning_emitter.reasoning(reasoning);
                     },
-                    move |delta: ToolDelta| {
+                    |delta: ToolDelta| {
+                        had_chunks_clone3.store(true, std::sync::atomic::Ordering::Relaxed);
                         let item =
                             partial_tools
                                 .entry(delta.index)
                                 .or_insert_with(|| ToolCallItem {
-                                    id: format!("turn_{turns}_stream_{}", delta.index),
+                                    id: format!(
+                                        "turn_{turns}_attempt_{current_attempt}_stream_{}",
+                                        delta.index
+                                    ),
                                     name: "tool".into(),
                                     args: serde_json::Value::Object(Default::default()),
                                     status: "pending".into(),
@@ -1193,6 +1626,19 @@ impl AgentRunner {
                             && current_attempt < max_provider_attempts
                             && !cancel.is_cancelled()
                         {
+                            // Tutup placeholder upaya lama tanpa mengubah data parsial yang sudah tersimpan.
+                            let completed_at = chrono::Utc::now().timestamp_millis();
+                            let mut abandoned_tools: Vec<_> = partial_tools.into_iter().collect();
+                            abandoned_tools.sort_unstable_by_key(|(index, _)| *index);
+                            for (_, mut tool) in abandoned_tools {
+                                tool.status = "cancelled".into();
+                                tool.result = Some("Provider attempt abandoned for retry".into());
+                                tool.completed_at = Some(completed_at);
+                                tool.duration_ms = tool
+                                    .started_at
+                                    .map(|started_at| (completed_at - started_at).max(0) as u64);
+                                emitter.tool(tool);
+                            }
                             current_attempt += 1;
                             let notice_msg = format!(
                                 "No output from provider for 60s — reconnecting (attempt {}/{})...",
@@ -1235,24 +1681,18 @@ impl AgentRunner {
             }
             conversation.push(result.assistant_message(request.provider.kind));
             if result.tool_calls.is_empty() {
+                final_response_nonempty = !result.content.trim().is_empty();
                 emitter.provider_state(&conversation[current_run_start..]);
                 finished = true;
                 break;
             }
-            used_tools = true;
-
-            struct PreparedCall {
-                call_id: String,
-                function_name: String,
-                arguments_raw: String,
-                ui_id: String,
-                args: serde_json::Value,
-                malformed_error: Option<String>,
-            }
 
             let mut prepared_calls = Vec::with_capacity(result.tool_calls.len());
             for call in result.tool_calls.into_iter() {
-                let ui_id = format!("turn_{turns}_stream_{}", call.stream_index);
+                let ui_id = format!(
+                    "turn_{turns}_attempt_{current_attempt}_stream_{}",
+                    call.stream_index
+                );
                 let parsed_args = if call.function.arguments.trim().is_empty() {
                     Ok(serde_json::json!({}))
                 } else {
@@ -1319,15 +1759,19 @@ impl AgentRunner {
                 }
             }
 
-            let tool_futures = prepared_calls.into_iter().map(|prep| {
+            let executed_results = dispatch_tool_batch(prepared_calls, &cancel, |prep| {
+                // Reset on the attempt, including malformed or policy-denied calls.
+                if let Ok(mut cadence) = self.review_cadence.lock() {
+                    cadence.tool_attempt(&request.session_id, &prep.function_name);
+                }
                 let emitter = emitter.clone();
                 let cancel = cancel.clone();
                 let request_provider = request.provider.clone();
-                let skill_paths = request.skill_paths.clone();
                 let workspace_cwd = workspace_cwd.clone();
                 let all_skill_paths = all_skill_paths.clone();
                 let mcp = Arc::clone(&mcp);
                 let skills_shared = Arc::clone(&skills_shared);
+                let foreground_skill_tools = foreground_skill_tools.clone();
                 let inherited_policy = inherited_policy.clone();
                 let completion_options = options.clone();
                 let execution_mode = request.execution_mode;
@@ -1419,6 +1863,7 @@ impl AgentRunner {
                                         .unwrap_or(false);
                                     let artifact = if text.lines().count() > 25 {
                                         Some(Artifact {
+                                            stream_revision: None,
                                             id: format!("art-{}", Uuid::new_v4()),
                                             title: format!("MCP: {}", prep.function_name),
                                             artifact_type: "markdown".into(),
@@ -1447,6 +1892,18 @@ impl AgentRunner {
                                 },
                             }
                         }
+                    } else if is_review_skill_tool(&prep.function_name)
+                        || prep.function_name == "learn_skill"
+                    {
+                        let result = foreground_skill_tools
+                            .execute(&prep.function_name, &prep.args)
+                            .await;
+                        if matches!(prep.function_name.as_str(), "skill_manage" | "learn_skill")
+                            && result.success
+                        {
+                            *skills_shared.write().await = load_skills(&all_skill_paths).await;
+                        }
+                        result
                     } else if prep.function_name == "use_skill" {
                         let skill_name = prep
                             .args
@@ -1482,7 +1939,7 @@ impl AgentRunner {
                             role: &role,
                             task: &task,
                             subpath: subpath.as_deref(),
-                            skill_paths: &skill_paths,
+                            skill_paths: &all_skill_paths,
                             inherited_policy: &inherited_policy,
                             execution_mode,
                             completion_options: &completion_options,
@@ -1497,11 +1954,6 @@ impl AgentRunner {
                         .await
                     } else {
                         let exec = execute_tool(&prep.function_name, &prep.args, &context).await;
-                        if prep.function_name == "learn_skill" && exec.success {
-                            let reloaded = load_skills(&all_skill_paths).await;
-                            let mut skills_guard = skills_shared.write().await;
-                            *skills_guard = reloaded;
-                        }
                         if prep.function_name == "read_file" {
                             if let Some(file_path) = prep
                                 .args
@@ -1560,9 +2012,7 @@ impl AgentRunner {
 
                     (prep.call_id, execution)
                 }
-            });
-
-            let executed_results = join_all(tool_futures).await;
+            }, |prep| cancelled_call(prep, &emitter)).await;
             for (call_id, execution) in executed_results {
                 conversation.push(serde_json::json!({
                     "role": "tool",
@@ -1583,37 +2033,90 @@ impl AgentRunner {
             ));
         }
         mcp.shutdown().await;
+        let foreground_event = foreground_skill_tools.take_event().await;
+        // Reserve while the foreground is still active, before done can trigger
+        // completion/finish. The spawned worker owns readiness through its exit.
+        let finalization = foreground_event.as_ref().map(|_| self.reserve_finalization());
         emitter.done(cancel.is_cancelled(), finished && !cancel.is_cancelled());
-        if !workspace_cwd.trim().is_empty()
-            && super::reflection::should_reflect(
-                request.self_improvement_enabled,
-                finished && !cancel.is_cancelled(),
-                turns,
-                used_tools,
-                false,
-            )
-        {
+        if let Some(event) = foreground_event.clone() {
+            // Native persistence must not hold up foreground completion. A source
+            // assistant may not have been saved yet; retry only that race.
+            // Publish only after the canonical commit so the UI sees its revision.
             let app = emitter.app.clone();
-            let reviews = self.reviews.clone();
-            let snapshot = conversation[review_start..].to_vec();
             tokio::spawn(async move {
-                let _ = run_reflection(
-                    app,
-                    reviews,
-                    workspace_cwd,
-                    request.provider,
-                    snapshot,
-                    request.run_id,
-                    request.session_id,
-                )
-                .await;
+                let _finalization = finalization;
+                for attempt in 0..5 {
+                    match super::storage::record_self_improvement(&event).await {
+                        Ok(()) => {
+                            let _ = app.emit("agent:self-improvement", &event);
+                            break;
+                        }
+                        Err(error)
+                            if attempt < 4
+                                && (error
+                                    == "The reviewed turn no longer exists in this session"
+                                    || error.ends_with("was not found")) =>
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                        }
+                        Err(error) => {
+                            // Skill changes/pending proposals remain durable, but
+                            // must not be advertised as attached to session history.
+                            eprintln!(
+                                "Review changes for run {} in session {} could not be attached: {error}",
+                                event.run_id, event.session_id
+                            );
+                            break;
+                        }
+                    }
+                }
             });
+        }
+        // Consume the threshold even when disabled or this run is not reviewable.
+        let review_due = self
+            .review_cadence
+            .lock()
+            .map(|mut cadence| {
+                cadence.take_due(
+                    &request.session_id,
+                    request.review_config.creation_nudge_interval,
+                )
+            })
+            .unwrap_or(false);
+        if review_due
+            && foreground_event.is_none()
+            && final_response_nonempty
+            && finished
+            && !cancel.is_cancelled()
+            && request.self_improvement_enabled
+        {
+            // Reserve synchronously: a newly started foreground run can cancel
+            // the lease before the background task is ever polled.
+            if let Ok(lease) =
+                self.begin_review(&request.run_id, &request.session_id, Some(&cancel))
+            {
+                let app = emitter.app.clone();
+                let context = ReflectionContext {
+                    cwd: workspace_cwd,
+                    provider: request.provider,
+                    snapshot: conversation.clone(),
+                    run_id: request.run_id,
+                    session_id: request.session_id,
+                    config: request.review_config,
+                    skill_paths: request.skill_paths,
+                    parent_tools: Some(tools.clone()),
+                    parent_options: Some(options.clone()),
+                };
+                tokio::spawn(async move {
+                    let _ = run_reflection(app, lease, context).await;
+                });
+            }
         }
     }
 
     pub async fn run_council(
         &self,
-        app: AppHandle,
+        app: AgentHost,
         workspace_cwd: String,
         request_a: AgentRunRequest,
         request_b: AgentRunRequest,
@@ -1624,6 +2127,16 @@ impl AgentRunner {
             run_id: request_a.run_id.clone(),
             session_id: request_a.session_id.clone(),
         };
+        if let Err(error) =
+            super::images::validate_request_images(&request_a.messages, &request_a.provider)
+                .and_then(|_| {
+                    super::images::validate_request_images(&request_b.messages, &request_b.provider)
+                })
+        {
+            emitter.error(error);
+            emitter.done(false, false);
+            return;
+        }
 
         let default_prompt = "You are AetherAgent, an expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic.\n- Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Provide a direct, comprehensive, and high-quality response.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system_a = match request_a
@@ -1867,64 +2380,136 @@ impl AgentRunner {
 }
 
 struct ReflectionLease {
-    registry: Arc<Mutex<std::collections::HashSet<String>>>,
+    // Fields drop after Drop::drop releases the registry lock; never acquire the
+    // gate while holding reviews (admission takes these locks in reverse order).
+    _work: NativeWorkLease,
+    registry: Arc<Mutex<HashMap<String, ReviewState>>>,
     session_id: String,
+    id: String,
+    cancel: CancellationToken,
+}
+
+impl ReflectionLease {
+    fn set_run_id(&self, run_id: &str) -> Result<(), String> {
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| "Review registry is unavailable")?;
+        let state = registry
+            .get_mut(&self.session_id)
+            .filter(|state| state.id == self.id && !self.cancel.is_cancelled())
+            .ok_or("Review was cancelled")?;
+        state.run_id = run_id.to_string();
+        Ok(())
+    }
 }
 
 impl Drop for ReflectionLease {
     fn drop(&mut self) {
         if let Ok(mut registry) = self.registry.lock() {
-            registry.remove(&self.session_id);
+            if registry
+                .get(&self.session_id)
+                .is_some_and(|state| state.id == self.id)
+            {
+                registry.remove(&self.session_id);
+            }
         }
     }
 }
 
-async fn run_reflection(
-    app: AppHandle,
-    registry: Arc<Mutex<std::collections::HashSet<String>>>,
+struct ReflectionContext {
     cwd: String,
     provider: ProviderConfig,
     snapshot: Vec<serde_json::Value>,
     run_id: String,
     session_id: String,
-) -> Result<(), String> {
+    config: ReviewConfig,
+    skill_paths: Vec<String>,
+    parent_tools: Option<serde_json::Value>,
+    parent_options: Option<CompletionOptions>,
+}
+
+fn review_provider(
+    parent: &ProviderConfig,
+    config: &ReviewConfig,
+    providers: &[ProviderConfig],
+) -> Result<(ProviderConfig, bool), String> {
+    match config
+        .auxiliary_provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
     {
-        let mut active = registry
-            .lock()
-            .map_err(|_| "Review registry is unavailable")?;
-        if active.contains(&session_id) {
-            return Err("A self-improvement review is already running for this session".into());
-        }
-        if active.len() >= 4 {
-            return Err("Wait for an active self-improvement review to finish".into());
-        }
-        active.insert(session_id.clone());
+        Some(id) if id != parent.id => providers
+            .iter()
+            .find(|provider| provider.id == id)
+            .cloned()
+            .map(|provider| (provider, true))
+            .ok_or_else(|| "The auxiliary review provider is unavailable".to_string()),
+        _ => Ok((parent.clone(), false)),
     }
-    let _lease = ReflectionLease {
-        registry,
-        session_id: session_id.clone(),
-    };
+}
+
+async fn run_reflection(
+    app: AgentHost,
+    lease: ReflectionLease,
+    mut context: ReflectionContext,
+) -> Result<(), String> {
     let outcome = async {
-        let mut event = super::reflection::reflect(
-            &cwd,
-            &provider,
-            &snapshot,
-            &run_id,
-            &session_id,
-            CancellationToken::new(),
-        )
+        if lease.cancel.is_cancelled() {
+            return Err("Review was cancelled".to_string());
+        }
+        if context
+            .config
+            .auxiliary_provider_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty() && id != context.provider.id)
+        {
+            let settings = super::storage::load_settings().await?;
+            let (provider, routed) =
+                review_provider(&context.provider, &context.config, &settings.providers)?;
+            context.provider = provider;
+            if routed {
+                context.parent_tools = None;
+                context.parent_options = None;
+            }
+        }
+        let mut event = super::reflection::review(super::reflection::ReviewRequest {
+            workspace_cwd: &context.cwd,
+            provider: &context.provider,
+            conversation: &context.snapshot,
+            run_id: &context.run_id,
+            session_id: &context.session_id,
+            cancel: lease.cancel.clone(),
+            config: &context.config,
+            skill_paths: &context.skill_paths,
+            parent_tools: context.parent_tools.as_ref(),
+            parent_options: context.parent_options.as_ref(),
+        })
         .await?;
-        event.workspace_cwd = Some(cwd);
+        if lease.cancel.is_cancelled() {
+            if event.changes.is_empty() {
+                return Err("Review was cancelled".to_string());
+            }
+            // Writes already happened: persist and emit their actual results.
+            let summary = event.summary.get_or_insert_with(String::new);
+            if !summary.to_ascii_lowercase().contains("cancel") {
+                if !summary.is_empty() {
+                    summary.push_str("; ");
+                }
+                summary.push_str("Review was cancelled after partial changes");
+            }
+        }
+        event.workspace_cwd = Some(context.cwd.clone());
         super::storage::record_self_improvement(&event).await?;
         app.emit("agent:self-improvement", &event)
             .map_err(|error| error.to_string())
     }
     .await;
     if let Err(error) = outcome {
-        let message = redact_provider_error(error, &provider);
+        let message = redact_provider_error(error, &context.provider);
         let _ = app.emit(
             "agent:self-improvement-error",
-            serde_json::json!({"run_id":run_id,"session_id":session_id,"message":message}),
+            serde_json::json!({"run_id":context.run_id,"session_id":context.session_id,"message":message}),
         );
         return Err(message);
     }
@@ -1953,12 +2538,11 @@ pub fn completed_review_snapshot(
     {
         return Err("Only a successfully completed conversational turn can be reviewed".into());
     }
-    let start = messages
-        .iter()
-        .rposition(|message| message.role == "user")
-        .ok_or("No user turn is available to review")?;
+    if !messages.iter().any(|message| message.role == "user") {
+        return Err("No user turn is available to review".into());
+    }
     let mut snapshot = Vec::new();
-    for message in &messages[start..] {
+    for message in messages {
         append_history_message(&mut snapshot, message);
     }
     Ok((
@@ -1969,7 +2553,10 @@ pub fn completed_review_snapshot(
 
 pub fn estimate_messages_tokens(messages: &[ChatMessage], system: &str) -> usize {
     let mut chars = system.len();
+    let mut image_tokens = 0;
     for message in messages {
+        // Encoded bytes are not text tokens; budget conservatively per image.
+        image_tokens += message.image_inputs.as_deref().unwrap_or(&[]).len() * 1600;
         chars += message.content.len();
         if let Some(reasoning) = &message.reasoning {
             chars += reasoning.len();
@@ -1984,7 +2571,7 @@ pub fn estimate_messages_tokens(messages: &[ChatMessage], system: &str) -> usize
             }
         }
     }
-    chars.div_ceil(4)
+    chars.div_ceil(4) + image_tokens
 }
 
 pub fn apply_micro_compaction(
@@ -2210,7 +2797,9 @@ fn append_history_message(conversation: &mut Vec<serde_json::Value>, message: &C
         }
     }
     match message.role.as_str() {
-        "user" => conversation.push(serde_json::json!({"role":"user","content":message.content})),
+        "user" => conversation.push(
+            serde_json::json!({"role":"user","content":super::images::user_content(message)}),
+        ),
         "system" => {
             conversation.push(serde_json::json!({"role":"system","content":message.content}))
         }
@@ -2319,12 +2908,695 @@ fn redact_provider_error(mut error: String, provider: &ProviderConfig) -> String
 
 #[cfg(test)]
 mod tests {
+    use super::super::skills::workspace_skill_paths;
     use super::super::types::{ProviderKind, ReasoningEffort};
     use super::*;
 
     #[test]
+    fn update_gate_refuses_active_and_cancelled_runs_until_finish() {
+        let runner = AgentRunner::new();
+        let cancel = runner.begin("run", "session").unwrap();
+        assert!(runner.acquire_update_permit().is_err());
+        runner.abort("run").unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(
+            runner.acquire_update_permit().is_err(),
+            "cancellation is not completion; the registry must drain first"
+        );
+        runner.finish("run");
+        let permit = runner.acquire_update_permit().unwrap();
+        assert!(runner.acquire_update_permit().is_err());
+        drop(permit);
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_blocks_new_runs_until_permit_drops() {
+        let runner = AgentRunner::new();
+        let permit = runner.acquire_update_permit().unwrap();
+        assert!(runner.begin("new-run", "new-session").is_err());
+        assert!(runner.active.lock().unwrap().is_empty());
+        drop(permit);
+        let cancel = runner.begin("new-run", "new-session").unwrap();
+        assert!(!cancel.is_cancelled());
+        runner.finish("new-run");
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_blocks_manual_and_automatic_reviews_until_permit_drops() {
+        let runner = AgentRunner::new();
+        let foreground = CancellationToken::new();
+        let permit = runner.acquire_update_permit().unwrap();
+        assert!(runner.begin_review("manual", "manual-session", None).is_err());
+        assert!(runner
+            .begin_review("automatic", "automatic-session", Some(&foreground))
+            .is_err());
+        assert!(runner.reviews.lock().unwrap().is_empty());
+        drop(permit);
+        let manual = runner.begin_review("manual", "manual-session", None).unwrap();
+        let automatic = runner
+            .begin_review("automatic", "automatic-session", Some(&foreground))
+            .unwrap();
+        assert!(runner.acquire_update_permit().is_err());
+        drop(manual);
+        drop(automatic);
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_refuses_cancelled_review_until_lease_drops() {
+        let runner = AgentRunner::new();
+        let lease = runner.begin_review("review", "session", None).unwrap();
+        assert!(runner.acquire_update_permit().is_err());
+        runner.abort("review").unwrap();
+        assert!(lease.cancel.is_cancelled());
+        assert!(runner.acquire_update_permit().is_err());
+        drop(lease);
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_refuses_removed_review_until_lease_drops() {
+        let runner = AgentRunner::new();
+        let lease = runner.begin_review("review", "session", None).unwrap();
+        let foreground = runner.begin("foreground", "session").unwrap();
+        assert!(lease.cancel.is_cancelled());
+        assert!(!foreground.is_cancelled());
+        assert!(runner.reviews.lock().unwrap().is_empty());
+        runner.finish("foreground");
+        assert!(runner.active.lock().unwrap().is_empty());
+        assert!(
+            runner.acquire_update_permit().is_err(),
+            "a removed review still owns native work until its actual lease finishes"
+        );
+        // A draining review must not prevent a new foreground run.
+        let next = runner.begin("next", "session").unwrap();
+        drop(lease);
+        assert!(!next.is_cancelled());
+        assert!(runner.acquire_update_permit().is_err());
+        runner.finish("next");
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_concurrent_acquirers_admit_exactly_one_permit() {
+        let runner = Arc::new(AgentRunner::new());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let runner = runner.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let permit = runner.acquire_update_permit();
+                    barrier.wait(); // Keep the winner alive until both tried.
+                    permit
+                })
+            })
+            .collect();
+        barrier.wait();
+        barrier.wait();
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        drop(results);
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn update_gate_racing_run_or_review_never_overlaps_a_permit() {
+        for review in [false, true] {
+            for _ in 0..32 {
+                let runner = Arc::new(AgentRunner::new());
+                let barrier = Arc::new(std::sync::Barrier::new(2));
+                let worker = {
+                    let runner = runner.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        let permit = runner.acquire_update_permit();
+                        barrier.wait(); // Do not release the permit before admission.
+                        permit
+                    })
+                };
+                barrier.wait();
+                let admitted = if review {
+                    runner.begin_review("work", "session", None).map(Some)
+                } else {
+                    runner.begin("work", "session").map(|_| None)
+                };
+                barrier.wait();
+                let permit = worker.join().unwrap();
+                assert_ne!(permit.is_ok(), admitted.is_ok(), "review={review}");
+                drop(permit);
+                drop(admitted);
+                runner.finish("work");
+                assert!(runner.acquire_update_permit().is_ok());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn update_gate_waits_for_detached_finalization_after_foreground_finishes() {
+        let runner = AgentRunner::new();
+        runner.begin("finalize-run", "finalize-session").unwrap();
+        let lease = runner.reserve_finalization();
+        let (finish, wait) = tokio::sync::oneshot::channel::<()>();
+        let worker = tokio::spawn(async move {
+            let _lease = lease;
+            let _ = wait.await;
+        });
+        runner.finish("finalize-run");
+        assert!(runner.acquire_update_permit().is_err());
+        finish.send(()).unwrap();
+        worker.await.unwrap();
+        assert!(runner.acquire_update_permit().is_ok());
+    }
+
+    #[test]
+    fn foreground_finalization_is_reserved_before_done_and_held_by_worker() {
+        let source = include_str!("runner.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let start = source
+            .find("let foreground_event = foreground_skill_tools.take_event().await;")
+            .unwrap();
+        let finalization =
+            &source[start..source[start..].find("// Consume the threshold").unwrap() + start];
+        let reserve = finalization
+            .find("self.reserve_finalization()")
+            .expect("reserve native persistence before publishing foreground completion");
+        let done = finalization.find("emitter.done(").unwrap();
+        let worker = finalization.find("tokio::spawn(async move").unwrap();
+        let hold = finalization
+            .find("let _finalization = finalization;")
+            .expect("the detached worker must own the reservation through retries and emission");
+        let record = finalization
+            .find("record_self_improvement(&event).await")
+            .unwrap();
+        assert!(reserve < done && done < worker && worker < hold && hold < record);
+        assert!(
+            !finalization[hold..].contains("drop(_finalization)"),
+            "do not release readiness before the worker actually finishes"
+        );
+    }
+
+    #[test]
+    fn foreground_review_event_follows_successful_native_commit() {
+        let source = include_str!("runner.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let start = source
+            .find("let foreground_event = foreground_skill_tools.take_event().await;")
+            .unwrap();
+        let finalization =
+            &source[start..source[start..].find("// Consume the threshold").unwrap() + start];
+        let done = finalization.find("emitter.done(").unwrap();
+        let worker = finalization.find("tokio::spawn(async move").unwrap();
+        let record = finalization
+            .find("record_self_improvement(&event).await")
+            .unwrap();
+        let success = finalization[record..]
+            .find("Ok(()) => {")
+            .map(|offset| record + offset);
+        let emitted = finalization.find("agent:self-improvement").unwrap();
+        assert!(
+            done < worker && worker < record && record < emitted,
+            "foreground completion must precede a detached commit, then the review event"
+        );
+        let success = success.expect("only successful commits may emit the review event");
+        let next_error = finalization[success..].find("Err(").unwrap() + success;
+        assert!(
+            success < emitted && emitted < next_error,
+            "the review event must occur only inside the successful commit branch"
+        );
+        assert_eq!(finalization.matches("agent:self-improvement").count(), 1);
+        assert!(
+            finalization[next_error..].contains("eprintln!"),
+            "failed attachment must be logged, not reported as persisted"
+        );
+    }
+    #[tokio::test]
+    async fn foreground_changes_attach_to_origin_for_direct_and_staged_writes() {
+        for approval in [false, true] {
+            let (cwd, root) = workspace_with_skill("event-fixture", "Existing recipe.");
+            let created = root.join("configured-skills");
+            let config = ReviewConfig {
+                create_dir: Some(created.to_string_lossy().into_owned()),
+                write_approval: approval,
+                ..Default::default()
+            };
+            let paths = super::super::skills::effective_skill_paths(&cwd, &[], &config).unwrap();
+            let tools =
+                ForegroundSkillTools::new(&cwd, &paths, &config, "origin-run", "origin-session");
+            *tools.store.lock().await = Some(
+                super::super::review_skills::ReviewSkillStore::new(
+                    &cwd,
+                    &paths,
+                    created.clone(),
+                    root.join("pending"),
+                    approval,
+                    "origin-run",
+                    "origin-session",
+                )
+                .await
+                .unwrap(),
+            );
+            assert!(tools.take_event().await.is_none());
+            let result = tools.execute("learn_skill", &serde_json::json!({"name":"event-created", "description":"Event recipe", "instructions":"Use these verified steps."})).await;
+            assert!(result.success, "{}", result.output);
+            let event = tools.clone().take_event().await.unwrap();
+            assert_eq!(event.run_id, "origin-run");
+            assert_eq!(event.session_id, "origin-session");
+            assert_eq!(event.workspace_cwd.as_deref(), Some(cwd.as_str()));
+            assert_eq!(event.changes.len(), 1);
+            assert_eq!(
+                event.action,
+                if approval {
+                    super::super::types::SelfImprovementAction::SkillStaged
+                } else {
+                    super::super::types::SelfImprovementAction::SkillCreated
+                }
+            );
+            assert_eq!(event.skill_name.as_deref(), Some("event-created"));
+            assert!(event
+                .summary
+                .as_ref()
+                .is_some_and(|summary| !summary.is_empty()));
+            assert_eq!(event.changes[0].pending_id.is_some(), approval);
+            assert!(
+                tools.take_event().await.is_none(),
+                "changes must be drained across clones"
+            );
+            let mut skills = load_skills(&paths).await;
+            let activation = activate_skill(&mut skills, "event-created", &paths).await;
+            assert_eq!(
+                activation.result.success, !approval,
+                "only applied skills enter the catalog"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn foreground_main_routes_legacy_and_custom_roots_before_native_dispatch() {
+        fn normalize(source: &str) -> String {
+            source.split_whitespace().collect()
+        }
+
+        let source = normalize(
+            include_str!("runner.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        );
+        let routing_branch = normalize(
+            r#"else if is_review_skill_tool(&prep.function_name)
+                || prep.function_name == "learn_skill"
+            {
+                let result = foreground_skill_tools
+                    .execute(&prep.function_name, &prep.args)
+                    .await;"#,
+        );
+        let routing = source
+            .find(&routing_branch)
+            .expect("review and legacy learning tools must use foreground dispatch");
+        let native = source
+            .find(&normalize(
+                "execute_tool(&prep.function_name, &prep.args, &context).await",
+            ))
+            .expect("native tool dispatch must remain present");
+        assert!(
+            routing < native,
+            "foreground routing must precede native dispatch"
+        );
+        assert!([
+            "effective_skill_paths(&workspace_cwd, &request.skill_paths, &request.review_config)",
+            "effective_skill_paths(&workspace_cwd, &request.skill_paths, &request.review_config,)",
+        ]
+        .iter()
+        .any(|pattern| source.contains(&normalize(pattern))));
+        assert!(source.contains(&normalize("skill_paths: &all_skill_paths")));
+        let shutdown = source.rfind("mcp.shutdown().await;").unwrap();
+        let finalization = &source[shutdown..];
+        assert!(
+            finalization.find("take_event().await").unwrap()
+                < finalization.find("emitter.done(").unwrap()
+        );
+        assert!(
+            finalization.find("emitter.done(").unwrap()
+                < finalization.find("agent:self-improvement").unwrap()
+        );
+        assert!(
+            finalization.contains("foreground_event.is_none()"),
+            "a foreground event must not be overwritten by automatic review"
+        );
+    }
+    #[tokio::test]
+    async fn legacy_learning_uses_configured_store_and_stages_for_approval() {
+        let (cwd, root) = workspace_with_skill("legacy-fixture", "Original instructions.");
+        let created = root.join("custom-skills");
+        let pending = root.join("pending");
+        let tools = ForegroundSkillTools::new(
+            &cwd,
+            &[],
+            &ReviewConfig {
+                create_dir: Some(created.to_string_lossy().into_owned()),
+                write_approval: true,
+                ..Default::default()
+            },
+            "legacy-run",
+            "legacy-session",
+        );
+        *tools.store.lock().await = Some(
+            super::super::review_skills::ReviewSkillStore::new(
+                &cwd,
+                &[],
+                created.clone(),
+                pending.clone(),
+                true,
+                "legacy-run",
+                "legacy-session",
+            )
+            .await
+            .unwrap(),
+        );
+        let args = serde_json::json!({"name":"legacy-created", "description":"A tested recipe", "instructions":"Follow the tested steps."});
+        let result = tools.execute("learn_skill", &args).await;
+        assert!(result.success, "{}", result.output);
+        assert!(result.output.contains("staged"), "{}", result.output);
+        assert!(!created.join("legacy-created/SKILL.md").exists());
+        let proposals = super::super::review_pending::list_pending(&pending, "legacy-session")
+            .await
+            .unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert!(proposals[0]["target_path"]
+            .as_str()
+            .unwrap_or_else(|| proposals[0]["file_path"].as_str().unwrap())
+            .contains("legacy-created"));
+        let overwrite = tools
+            .execute("learn_skill", &{
+                let mut args = args.clone();
+                args["overwrite"] = serde_json::json!(true);
+                args
+            })
+            .await;
+        assert!(!overwrite.success);
+        assert!(
+            overwrite.output.contains("skill_view") && overwrite.output.contains("skill_manage"),
+            "{}",
+            overwrite.output
+        );
+        assert_eq!(
+            super::super::review_pending::list_pending(&pending, "legacy-session")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn foreground_skill_tools_retain_reads_across_calls_and_initialize_lazily() {
+        let (cwd, root) = workspace_with_skill("foreground-fixture", "Keep the old recipe.");
+        let created = root.join("created");
+        let tools = ForegroundSkillTools::new(
+            &cwd,
+            &[],
+            &ReviewConfig {
+                create_dir: Some(created.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            "run",
+            "session",
+        );
+        assert!(tools.store.lock().await.is_none());
+        assert!(!created.exists());
+        let patch = serde_json::json!({"action":"patch","name":"foreground-fixture","old_string":"old recipe","new_string":"tested recipe"});
+        let unread = tools.execute("skill_manage", &patch).await;
+        assert!(!unread.success);
+        assert!(
+            unread.output.contains("Read the exact file"),
+            "{}",
+            unread.output
+        );
+        let viewed = tools
+            .execute(
+                "skill_view",
+                &serde_json::json!({"name":"foreground-fixture"}),
+            )
+            .await;
+        assert!(viewed.success, "{}", viewed.output);
+        let patched = tools.clone().execute("skill_manage", &patch).await;
+        assert!(patched.success, "{}", patched.output);
+        let viewed = tools
+            .execute(
+                "skill_view",
+                &serde_json::json!({"name":"foreground-fixture"}),
+            )
+            .await;
+        assert!(viewed.output.contains("tested recipe"), "{}", viewed.output);
+        let listed = tools.execute("skills_list", &serde_json::json!({})).await;
+        assert!(listed.success && listed.output.contains("foreground-fixture"));
+        assert!(
+            !created.exists(),
+            "reading/patching an existing skill must not create the creation root"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn foreground_skill_tools_request_review_allows_only_reads() {
+        for name in ["skills_list", "skill_view"] {
+            assert!(
+                tool_policy_error(
+                    ExecutionMode::RequestReview,
+                    name,
+                    &serde_json::json!({}),
+                    false
+                )
+                .is_none(),
+                "{name}"
+            );
+        }
+        assert!(tool_policy_error(
+            ExecutionMode::RequestReview,
+            "skill_manage",
+            &serde_json::json!({}),
+            false
+        )
+        .is_some());
+    }
+
+    #[tokio::test]
+    async fn foreground_skill_tools_are_explicitly_denied_in_subagents() {
+        let context = ToolContext {
+            session_id: "session".into(),
+            cwd: String::new(),
+            cancel: CancellationToken::new(),
+            sink: None,
+        };
+        for name in ["skills_list", "skill_view", "skill_manage", "learn_skill"] {
+            let outcome = dispatch_subagent_tool(
+                name,
+                &serde_json::json!({}),
+                &context,
+                &mut Vec::new(),
+                &[],
+                ExecutionMode::Turbo,
+            )
+            .await;
+            assert!(!outcome.result.success);
+            assert!(
+                outcome
+                    .result
+                    .output
+                    .contains("only available in the parent run"),
+                "{}",
+                outcome.result.output
+            );
+        }
+    }
+
+    #[test]
+    fn foreground_skill_tools_creation_roots_match_home_policy() {
+        let home = dirs::home_dir().unwrap();
+        #[cfg(feature = "shared-profile")]
+        let base = super::super::storage::config_dir();
+        #[cfg(not(feature = "shared-profile"))]
+        let base = home.join(".aether-agent");
+        for (value, expected) in [
+            (None, base.join("skills")),
+            (Some("  "), base.join("skills")),
+            (Some("relative/skills"), base.join("relative/skills")),
+            (Some("~/skills"), home.join("skills")),
+            (Some("~\\skills"), home.join("skills")),
+            (Some("~"), home.clone()),
+        ] {
+            assert_eq!(
+                foreground_skill_creation_root(&ReviewConfig {
+                    create_dir: value.map(str::to_owned),
+                    ..Default::default()
+                })
+                .unwrap(),
+                expected
+            );
+        }
+        assert!(foreground_skill_creation_root(&ReviewConfig {
+            create_dir: Some("~someone/skills".into()),
+            ..Default::default()
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn review_cadence_accumulates_iterations_across_runs_per_session() {
+        let runner = AgentRunner::new();
+        for _ in 0..6 {
+            runner.review_cadence.lock().unwrap().iteration("session");
+        }
+        assert!(!runner
+            .review_cadence
+            .lock()
+            .unwrap()
+            .take_due("session", 10));
+        runner.finish("first-run");
+        for _ in 0..4 {
+            runner.review_cadence.lock().unwrap().iteration("session");
+        }
+        assert!(!runner.review_cadence.lock().unwrap().take_due("other", 10));
+        assert!(runner
+            .review_cadence
+            .lock()
+            .unwrap()
+            .take_due("session", 10));
+        assert!(!runner
+            .review_cadence
+            .lock()
+            .unwrap()
+            .take_due("session", 10));
+    }
+
+    #[test]
+    fn review_cadence_resets_on_attempted_skill_mutation_and_zero_disables() {
+        let mut cadence = ReviewCadence::default();
+        for tool in ["learn_skill", "skill_manage"] {
+            for _ in 0..10 {
+                cadence.iteration("session");
+            }
+            cadence.tool_attempt("session", tool);
+            assert!(!cadence.take_due("session", 10), "{tool}");
+        }
+        for _ in 0..10 {
+            cadence.iteration("session");
+        }
+        cadence.tool_attempt("session", "read_file");
+        assert!(!cadence.take_due("session", 0));
+        assert!(cadence.take_due("session", 10));
+    }
+
+    #[test]
+    fn foreground_run_cancels_review_without_stale_lease_removing_successor() {
+        let runner = AgentRunner::new();
+        let old = runner.begin_review("review-one", "session", None).unwrap();
+        let old_cancel = old.cancel.clone();
+        let foreground = runner.begin("foreground", "session").unwrap();
+        assert!(old_cancel.is_cancelled());
+        assert!(runner.begin_review("manual", "session", None).is_err());
+        let successor = runner
+            .begin_review("foreground", "session", Some(&foreground))
+            .unwrap();
+        drop(old);
+        assert_eq!(runner.reviews.lock().unwrap()["session"].id, successor.id);
+        runner.finish("foreground");
+        runner.abort("review-one").unwrap();
+        assert!(!successor.cancel.is_cancelled());
+        runner.abort("foreground").unwrap();
+        assert!(successor.cancel.is_cancelled());
+        drop(successor);
+        assert!(runner.reviews.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn review_lease_inherits_foreground_cancellation_after_run_finishes() {
+        let runner = AgentRunner::new();
+        let foreground = runner.begin("run", "session").unwrap();
+        let lease = runner
+            .begin_review("run", "session", Some(&foreground))
+            .unwrap();
+        runner.finish("run");
+        foreground.cancel();
+        assert!(lease.cancel.is_cancelled());
+        assert!(runner
+            .begin_review("run", "other", Some(&foreground))
+            .is_err());
+        drop(lease);
+        assert!(runner.reviews.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn manual_review_reservation_updates_run_identity_and_obeys_capacity() {
+        let runner = AgentRunner::new();
+        let lease = runner.begin_review("placeholder", "session", None).unwrap();
+        assert!(runner.begin_review("duplicate", "session", None).is_err());
+        lease.set_run_id("completed-run").unwrap();
+        runner.abort("placeholder").unwrap();
+        assert!(!lease.cancel.is_cancelled());
+        let others: Vec<_> = (0..3)
+            .map(|index| {
+                runner
+                    .begin_review("other-run", &format!("other-{index}"), None)
+                    .unwrap()
+            })
+            .collect();
+        assert!(runner.begin_review("fifth", "fifth-session", None).is_err());
+        runner.abort("completed-run").unwrap();
+        assert!(lease.cancel.is_cancelled());
+        assert!(lease.set_run_id("too-late").is_err());
+        drop(lease);
+        drop(others);
+        assert!(runner.reviews.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn review_provider_retains_parent_unless_auxiliary_is_different() {
+        let parent = ProviderConfig {
+            id: "parent".into(),
+            model: "actual-parent-model".into(),
+            ..Default::default()
+        };
+        let saved_parent = ProviderConfig {
+            id: "parent".into(),
+            model: "stale-settings-model".into(),
+            ..Default::default()
+        };
+        let auxiliary = ProviderConfig {
+            id: "auxiliary".into(),
+            model: "review-model".into(),
+            ..Default::default()
+        };
+        let providers = vec![saved_parent, auxiliary];
+        let mut config = ReviewConfig::default();
+        for id in [None, Some(""), Some("parent")] {
+            config.auxiliary_provider_id = id.map(str::to_string);
+            let (selected, routed) = review_provider(&parent, &config, &providers).unwrap();
+            assert_eq!(selected.model, "actual-parent-model");
+            assert!(!routed);
+        }
+        config.auxiliary_provider_id = Some("auxiliary".into());
+        let (selected, routed) = review_provider(&parent, &config, &providers).unwrap();
+        assert_eq!(selected.model, "review-model");
+        assert!(routed);
+        config.auxiliary_provider_id = Some("missing".into());
+        assert!(review_provider(&parent, &config, &providers).is_err());
+    }
+
+    #[test]
     fn child_artifact_and_terminal_events_share_scoped_identity() {
         let artifact = Artifact {
+            stream_revision: None,
             id: "art-1".into(),
             title: "diff".into(),
             artifact_type: "diff".into(),
@@ -2721,6 +3993,69 @@ mod tests {
     }
 
     #[test]
+    fn image_token_estimate_counts_images_not_base64_length() {
+        let mut message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"image", "role":"user", "content":"describe", "timestamp":1,
+            "imageInputs":[{"sourcePath":"missing.png", "mediaType":"image/png", "data":"iVBORw0KGgo="}]
+        })).unwrap();
+        assert_eq!(
+            estimate_messages_tokens(&[message.clone()], "text"),
+            3 + 1600
+        );
+        message.image_inputs.as_mut().unwrap()[0].data = "A".repeat(4_000_000);
+        assert_eq!(
+            estimate_messages_tokens(&[message.clone()], "text"),
+            3 + 1600
+        );
+        let image = message.image_inputs.as_ref().unwrap()[0].clone();
+        message.image_inputs.as_mut().unwrap().push(image);
+        assert_eq!(
+            estimate_messages_tokens(&[message.clone()], "text"),
+            3 + 3200
+        );
+        message.image_inputs = None;
+        assert_eq!(estimate_messages_tokens(&[message], "text"), 3);
+    }
+
+    #[test]
+    fn image_replay_preserves_persisted_content_without_reading_paths() {
+        let value = serde_json::json!({
+            "id":"image", "role":"user", "content":"describe this", "timestamp":1,
+            "attachments":[{"id":"file", "name":"gone.png", "path":"Z:/missing/gone.png", "isDir":false}],
+            "imageInputs":[{"sourcePath":"Z:/missing/gone.png", "mediaType":"image/png", "data":"iVBORw0KGgo="}],
+            "providerMessages":[{"role":"assistant","content":"must not replace user text"}]
+        });
+        let persisted = serde_json::to_string(&value).unwrap();
+        let restored: ChatMessage = serde_json::from_str(&persisted).unwrap();
+        super::super::images::validate_request_images(
+            std::slice::from_ref(&restored),
+            &ProviderConfig::default(),
+        )
+        .unwrap();
+        let mut replay = Vec::new();
+        append_history_message(&mut replay, &restored);
+        assert_eq!(
+            replay,
+            vec![serde_json::json!({"role":"user","content":[
+                {"type":"text","text":"describe this"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
+            ]})]
+        );
+        let mut legacy = value;
+        legacy.as_object_mut().unwrap().remove("imageInputs");
+        assert_eq!(
+            replay_fixture(legacy),
+            vec![serde_json::json!({"role":"user","content":"describe this"})]
+        );
+        let assistant = serde_json::json!({"id":"a","role":"assistant","content":"display","timestamp":1,
+            "providerMessages":[{"role":"assistant","content":"opaque provider transcript"}]});
+        assert_eq!(
+            replay_fixture(assistant),
+            vec![serde_json::json!({"role":"assistant","content":"opaque provider transcript"})]
+        );
+    }
+
+    #[test]
     fn replay_segments_preserves_two_tool_turns_without_duplicate_aggregate_text() {
         let call = |id: &str, output: &str| {
             serde_json::json!({
@@ -2778,7 +4113,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_review_targets_latest_completed_turn_only() {
+    fn manual_review_replays_all_completed_conversation() {
         let messages: Vec<ChatMessage> = serde_json::from_value(serde_json::json!([
             {"id":"u1", "role":"user", "content":"Old", "timestamp":1},
             {"id":"a1", "role":"assistant", "content":"Old answer", "timestamp":2},
@@ -2788,8 +4123,10 @@ mod tests {
         ])).unwrap();
         let (run, snapshot) = completed_review_snapshot(&messages).unwrap();
         assert_eq!(run, "r2");
-        assert_eq!(snapshot.len(), 3);
-        assert_eq!(snapshot[0]["content"], "Fix parser");
+        assert_eq!(snapshot.len(), 5);
+        assert_eq!(snapshot[0]["content"], "Old");
+        assert_eq!(snapshot[1]["content"], "Old answer");
+        assert_eq!(snapshot[2]["content"], "Fix parser");
         assert!(serde_json::to_string(&snapshot)
             .unwrap()
             .contains("tests pass"));
@@ -3083,20 +4420,665 @@ mod tests {
         ));
     }
 
+    #[derive(Clone, Default)]
+    struct ToolEventCollector(Arc<Mutex<Vec<serde_json::Value>>>);
+
+    impl super::super::events::EventSink for ToolEventCollector {
+        fn emit(&self, topic: &str, payload: serde_json::Value) -> Result<(), String> {
+            assert_eq!(topic, "agent-event");
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
     #[tokio::test]
-    async fn concurrent_tool_calls_execute_simultaneously() {
-        let start = std::time::Instant::now();
-        let tasks = (0..5).map(|i| async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            format!("result_{i}")
+    async fn runner_retry_partial_tools_survive_durable_checkpoint_and_final_save() {
+        use super::super::{session_journal, storage, types::CheckpointDelta, types::SessionData};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct RetrySink(tokio::sync::mpsc::UnboundedSender<serde_json::Value>);
+        impl super::super::events::EventSink for RetrySink {
+            fn emit(&self, topic: &str, payload: serde_json::Value) -> Result<(), String> {
+                assert_eq!(topic, "agent-event");
+                self.0.send(payload).map_err(|error| error.to_string())
+            }
+        }
+
+        async fn accept_request(
+            listener: &tokio::net::TcpListener,
+        ) -> (tokio::net::TcpStream, serde_json::Value) {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            let header_end = loop {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(offset) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break offset + 4;
+                }
+            };
+            let length = String::from_utf8_lossy(&request[..header_end])
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            while request.len() < header_end + length {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let body = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            (socket, body)
+        }
+
+        fn apply_event(message: &mut ChatMessage, event: &serde_json::Value) {
+            use super::super::types::MessageSegment;
+            let data = &event["data"];
+            match event["type"].as_str().unwrap() {
+                "tool_update" => {
+                    let incoming: ToolCallItem = serde_json::from_value(data["tool"].clone()).unwrap();
+                    let segments = message.segments.get_or_insert_with(|| {
+                        vec![MessageSegment {
+                            id: "seg_0".into(),
+                            text: Some(String::new()),
+                            tool_calls: Some(vec![]),
+                        }]
+                    });
+                    // Samakan penggantian berdasarkan ID pada agregat dan segmen frontend.
+                    for tools in [
+                        message.tool_calls.get_or_insert_with(Vec::new),
+                        segments
+                            .last_mut()
+                            .unwrap()
+                            .tool_calls
+                            .get_or_insert_with(Vec::new),
+                    ] {
+                        if let Some(old) = tools.iter_mut().find(|tool| tool.id == incoming.id) {
+                            *old = incoming.clone();
+                        } else {
+                            tools.push(incoming.clone());
+                        }
+                    }
+                }
+                "notice" if data["resetPartial"] == true => {
+                    message.checkpoint_epoch = Some(message.checkpoint_epoch.unwrap_or(0) + 1);
+                    message.reasoning = Some(String::new());
+                }
+                "chunk" => {
+                    let text = data["text"].as_str().unwrap();
+                    message.content.push_str(text);
+                    let segments = message.segments.as_mut().unwrap();
+                    segments.push(MessageSegment {
+                        id: format!("seg_{}", segments.len()),
+                        text: Some(text.into()),
+                        tool_calls: Some(vec![]),
+                    });
+                }
+                "provider_state" => {
+                    message.provider_messages =
+                        Some(serde_json::from_value(data["providerMessages"].clone()).unwrap());
+                }
+                "done" => {
+                    assert_eq!(data["cancelled"], false);
+                    assert_eq!(data["successful"], true);
+                    message.is_streaming = Some(false);
+                    message.run_status = Some("completed".into());
+                }
+                "error" => panic!("unexpected runner error: {data}"),
+                _ => {}
+            }
+        }
+
+        struct RetryDirectory(std::path::PathBuf);
+        impl Drop for RetryDirectory {
+            fn drop(&mut self) {
+                // Bersihkan hanya direktori fixture milik pengujian ini, termasuk saat assertion gagal.
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let session_id = format!("retry-checkpoint-{}", Uuid::new_v4());
+        let root = std::env::temp_dir().join(&session_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let _directory = RetryDirectory(root.clone());
+        std::fs::write(root.join("answer.txt"), "successful retry tool output").unwrap();
+        storage::register_session_test_directory(&session_id, root.clone());
+        let initial: SessionData = serde_json::from_value(serde_json::json!({
+                "session": {"id":session_id,"title":"Retry checkpoint","createdAt":1,"updatedAt":1,"messageCount":2},
+                "messages": [
+                    {"id":"user","role":"user","content":"Read answer.txt","timestamp":1},
+                    {"id":"assistant","role":"assistant","content":"","timestamp":2,"runId":"retry-run","isStreaming":true}
+                ], "artifacts":[]
+            })).unwrap();
+        storage::save_session(initial).await.unwrap();
+        let mut page = storage::load_session_page(&session_id, None, 2, None)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (checkpointed, checkpoint_gate) = tokio::sync::oneshot::channel();
+        let (retry_checkpointed, retry_gate) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = accept_request(&listener).await;
+            for event in [
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":7,"id":"provider-attempt-a","function":{"name":"write_file","arguments":"{\"path\":\"abandoned-"}}]}}]}),
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":7,"function":{"arguments":"a.txt\""}},{"index":11,"id":"provider-abandoned-placeholder","function":{"arguments":"{"}}]}}]}),
+            ] {
+                socket
+                    .write_all(format!("data: {event}\n\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            socket.flush().await.unwrap();
+            // Jangan putuskan upaya A sebelum checkpoint parsial benar-benar tersimpan.
+            checkpoint_gate.await.unwrap();
+            socket.shutdown().await.unwrap();
+            drop(socket);
+            let (mut socket, _) = accept_request(&listener).await;
+            retry_gate.await.unwrap();
+            let event = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":7,"id":"provider-attempt-b","function":{"name":"read_file","arguments":"{\"path\":\"answer.txt\"}"}}]}}]});
+            socket
+                .write_all(format!("data: {event}\n\ndata: [DONE]\n\n").as_bytes())
+                .await
+                .unwrap();
+            socket.shutdown().await.unwrap();
+            drop(socket);
+            let (mut socket, body) = accept_request(&listener).await;
+            socket.write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"Retry finished\"}}]}\n\ndata: [DONE]\n\n").await.unwrap();
+            socket.shutdown().await.unwrap();
+            body
         });
-        let results = join_all(tasks).await;
-        let elapsed = start.elapsed();
-        assert_eq!(results.len(), 5);
-        assert!(
-            elapsed.as_millis() < 200,
-            "Expected concurrent execution in <200ms, took {}ms",
-            elapsed.as_millis()
+        let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "runId":"retry-run", "sessionId":session_id,
+            "provider":{"baseUrl":format!("http://{address}"),"model":"retry-fixture"},
+            "messages":[page.data.messages[0].clone()], "maxTurns":2,
+            "autoCompactionEnabled":false, "reviewConfig":{"createDir":root.join("skills")}
+        }))
+        .unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let cwd = root.to_string_lossy().into_owned();
+        let runner = tokio::spawn(async move {
+            AgentRunner::new()
+                .run(
+                    AgentHost::new(RetrySink(sender)),
+                    cwd,
+                    request,
+                    CancellationToken::new(),
+                )
+                .await;
+        });
+        let mut checkpointed = Some(checkpointed);
+        let mut retry_checkpointed = Some(retry_checkpointed);
+        let mut events = Vec::new();
+        let mut pending_a = None;
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while let Some(event) = receiver.recv().await {
+                apply_event(&mut page.data.messages[1], &event);
+                if event["type"] == "tool_update"
+                    && event["data"]["tool"]["argumentsRaw"] == "{"
+                    && checkpointed.is_some()
+                {
+                    pending_a = page.data.messages[1].tool_calls.clone();
+                    storage::checkpoint_session_delta(
+                        &session_id,
+                        CheckpointDelta {
+                            run_id: "retry-run".into(),
+                            base_revision: page.window.revision.clone(),
+                            sequence: 1,
+                            messages: vec![page.data.messages[1].clone()],
+                            artifacts: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    checkpointed.take().unwrap().send(()).unwrap();
+                }
+                if event["type"] == "notice" && event["data"]["attempt"] == 2 {
+                    storage::checkpoint_session_delta(
+                        &session_id,
+                        CheckpointDelta {
+                            run_id: "retry-run".into(),
+                            base_revision: page.window.revision.clone(),
+                            sequence: 2,
+                            messages: vec![page.data.messages[1].clone()],
+                            artifacts: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    retry_checkpointed.take().unwrap().send(()).unwrap();
+                }
+                let done = event["type"] == "done";
+                events.push(event);
+                if done {
+                    break;
+                }
+            }
+            runner.await.unwrap();
+        })
+        .await
+        .expect("the retry fixture must finish without a provider stall");
+        let provider_request = server.await.unwrap();
+        let path = root.join(format!("{session_id}.json"));
+        assert!(session_journal::path_for(&path).exists());
+        let final_save = storage::save_session_page(page.data, page.window).await;
+        eprintln!("retry final save: {:?}", final_save.as_ref().map(|_| ()));
+        final_save.expect("retry arguments must not overwrite durable attempt A progress");
+        let stored = storage::load_session(&session_id).await.unwrap();
+        let message = &stored.messages[1];
+        let tools = message.tool_calls.as_ref().unwrap();
+        let segment_tools = message.segments.as_ref().unwrap()[0]
+            .tool_calls
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(segment_tools).unwrap(),
+            serde_json::to_value(tools).unwrap()
         );
+        let pending_a = pending_a.unwrap();
+        assert_eq!(pending_a.len(), 2);
+        assert_eq!(
+            pending_a[0].arguments_raw.as_deref(),
+            Some("{\"path\":\"abandoned-a.txt\"")
+        );
+        assert_eq!(
+            tools.len(),
+            3,
+            "both abandoned placeholders must survive beside the successful call"
+        );
+        let retry_notice = events
+            .iter()
+            .position(|event| event["type"] == "notice" && event["data"]["attempt"] == 2)
+            .unwrap();
+        assert_eq!(
+            events[retry_notice]["data"]["resetPartial"], true,
+            "tool-only deltas are attempt progress"
+        );
+        assert_eq!(message.checkpoint_epoch, Some(1));
+        for pending in pending_a {
+            let terminal = tools.iter().find(|tool| tool.id == pending.id).unwrap();
+            assert_eq!(terminal.status, "cancelled");
+            assert_eq!(terminal.name, pending.name);
+            assert_eq!(terminal.args, pending.args);
+            assert_eq!(terminal.arguments_raw, pending.arguments_raw);
+            assert_eq!(terminal.started_at, pending.started_at);
+            assert!(terminal
+                .result
+                .as_ref()
+                .is_some_and(|result| !result.is_empty()));
+            assert!(terminal.completed_at.unwrap() >= terminal.started_at.unwrap());
+            let cancelled = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "tool_update"
+                        && event["data"]["tool"]["id"] == pending.id
+                        && event["data"]["tool"]["status"] == "cancelled"
+                })
+                .unwrap();
+            assert!(
+                cancelled < retry_notice,
+                "close pending calls before announcing the next attempt"
+            );
+            assert_eq!(
+                serde_json::to_value(terminal).unwrap(),
+                events[cancelled]["data"]["tool"],
+                "abandoned terminal data is immutable through final save"
+            );
+        }
+        let successful = tools.iter().find(|tool| tool.name == "read_file").unwrap();
+        assert_eq!(successful.status, "done");
+        assert_eq!(successful.args, serde_json::json!({"path":"answer.txt"}));
+        assert!(successful
+            .result
+            .as_ref()
+            .unwrap()
+            .contains("successful retry tool output"));
+        let updates: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event["type"] == "tool_update" && event["data"]["tool"]["id"] == successful.id
+            })
+            .map(|event| event["data"]["tool"]["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            updates,
+            ["pending", "running", "done"],
+            "streaming and preparation must share the successful attempt UI ID"
+        );
+        assert_eq!(
+            provider_request["messages"][2]["tool_calls"][0]["id"],
+            "provider-attempt-b"
+        );
+        assert_eq!(
+            provider_request["messages"][3]["tool_call_id"],
+            "provider-attempt-b"
+        );
+        assert!(!provider_request.to_string().contains("provider-attempt-a"));
+        let transcript = message.provider_messages.as_ref().unwrap();
+        assert_eq!(transcript[0]["tool_calls"][0]["id"], "provider-attempt-b");
+        assert_eq!(transcript[1]["tool_call_id"], "provider-attempt-b");
+        assert_eq!(message.run_status.as_deref(), Some("completed"));
+        assert!(!session_journal::path_for(&path).exists());
+        assert!(!session_journal::is_active(&path));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_terminal_cancel_preserves_malformed_error_and_checkpoint_finalization() {
+        use super::super::{session_journal, storage, types::CheckpointDelta, types::SessionData};
+
+        let events = ToolEventCollector::default();
+        let session_id = format!("terminal-cancel-{}", Uuid::new_v4());
+        let root = std::env::temp_dir().join(&session_id);
+        storage::register_session_test_directory(&session_id, root.clone());
+        let emitter = EmitterContext {
+            app: AgentHost::new(events.clone()),
+            run_id: "malformed-run".into(),
+            session_id: session_id.clone(),
+        };
+        let arguments_raw = r#"{"command":"#;
+        let error = format!(
+            "Tool 'run_command' returned malformed JSON arguments: {}",
+            serde_json::from_str::<serde_json::Value>(arguments_raw).unwrap_err()
+        );
+        let prep = PreparedCall {
+            call_id: "provider-malformed-id".into(),
+            function_name: "run_command".into(),
+            arguments_raw: arguments_raw.into(),
+            ui_id: "turn_1_stream_1".into(),
+            args: serde_json::json!({}),
+            malformed_error: Some(error.clone()),
+        };
+        let original_tool = ToolCallItem {
+            id: prep.ui_id.clone(),
+            name: prep.function_name.clone(),
+            args: serde_json::json!({"raw": arguments_raw}),
+            status: "error".into(),
+            result: Some(error.clone()),
+            arguments_raw: Some(arguments_raw.into()),
+            started_at: Some(1),
+            completed_at: Some(1),
+            duration_ms: Some(0),
+            ..Default::default()
+        };
+        // Persiapan sudah menerbitkan error terminal sebelum antrean dibatalkan.
+        emitter.tool(original_tool.clone());
+        let prepared_events = events.0.lock().unwrap().clone();
+        let data: SessionData = serde_json::from_value(serde_json::json!({
+            "session": {"id": session_id, "title": "Terminal cancellation", "createdAt": 1, "updatedAt": 1, "messageCount": 2},
+            "messages": [
+                {"id": "user", "role": "user", "content": "question", "timestamp": 1},
+                {"id": "assistant", "role": "assistant", "content": "", "timestamp": 2,
+                 "runId": emitter.run_id, "isStreaming": true}
+            ],
+            "artifacts": []
+        }))
+        .unwrap();
+        storage::save_session(data).await.unwrap();
+        let mut page = storage::load_session_page(&session_id, None, 2, None)
+            .await
+            .unwrap();
+        page.data.messages[1].tool_calls = Some(vec![
+            serde_json::from_value(prepared_events[0]["data"]["tool"].clone()).unwrap(),
+        ]);
+        storage::checkpoint_session_delta(
+            &session_id,
+            CheckpointDelta {
+                run_id: emitter.run_id.clone(),
+                base_revision: page.window.revision.clone(),
+                sequence: 1,
+                messages: vec![page.data.messages[1].clone()],
+                artifacts: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let path = root.join(format!("{session_id}.json"));
+        assert!(session_journal::path_for(&path).exists());
+        assert!(session_journal::is_active(&path));
+
+        let (call_id, execution) = cancelled_call(prep, &emitter);
+        let final_events = events.0.lock().unwrap().clone();
+        page.data.messages[1].tool_calls = Some(vec![
+            serde_json::from_value(final_events.last().unwrap()["data"]["tool"].clone()).unwrap(),
+        ]);
+        page.data.messages[1].is_streaming = Some(false);
+        page.data.messages[1].run_status = Some("cancelled".into());
+        let saved = storage::save_session_page(page.data, page.window).await;
+        eprintln!(
+            "prepared_events={}, final_events={}, result_cancelled={}, final_save={:?}",
+            prepared_events.len(),
+            final_events.len(),
+            execution.cancelled,
+            saved.as_ref().map(|_| ()),
+        );
+        assert_eq!(
+            final_events, prepared_events,
+            "cancellation must not emit an overwrite for a terminal malformed error"
+        );
+        assert_eq!(call_id, "provider-malformed-id");
+        assert_eq!(execution.output, error);
+        assert!(!execution.success);
+        assert!(!execution.cancelled);
+        saved.expect("the checkpointed malformed error must allow finalization");
+        let stored = storage::load_session(&session_id).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&stored.messages[1].tool_calls.as_ref().unwrap()[0]).unwrap(),
+            serde_json::to_value(original_tool).unwrap(),
+        );
+        assert_eq!(stored.messages[1].is_streaming, Some(false));
+        assert_eq!(stored.messages[1].run_status.as_deref(), Some("cancelled"));
+        assert!(!session_journal::path_for(&path).exists());
+        assert!(!session_journal::is_active(&path));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runner_terminal_cancel_valid_queued_calls_emit_cancelled_in_provider_order() {
+        let events = ToolEventCollector::default();
+        let emitter = EmitterContext {
+            app: AgentHost::new(events.clone()),
+            run_id: "queued-run".into(),
+            session_id: "queued-session".into(),
+        };
+        let count = TOOL_BATCH_CONCURRENCY * 2;
+        let calls = (0..count).map(|index| {
+            let args = serde_json::json!({"command": format!("queued-{index}")});
+            PreparedCall {
+                call_id: format!("provider-id-{index}"),
+                function_name: "run_command".into(),
+                arguments_raw: args.to_string(),
+                ui_id: format!("turn_1_stream_{index}"),
+                args,
+                malformed_error: None,
+            }
+        });
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let results = dispatch_tool_batch(
+            calls,
+            &cancel,
+            |_| async { panic!("cancelled queued calls must not dispatch") },
+            |prep| cancelled_call(prep, &emitter),
+        )
+        .await;
+        let emitted = events.0.lock().unwrap();
+        assert_eq!(results.len(), count);
+        assert_eq!(emitted.len(), count);
+        for (index, ((call_id, execution), event)) in results.iter().zip(emitted.iter()).enumerate() {
+            assert_eq!(call_id, &format!("provider-id-{index}"));
+            assert_eq!(execution.output, "Cancelled by operator");
+            assert!(execution.cancelled);
+            assert!(!execution.success);
+            assert_eq!(event["type"], "tool_update");
+            assert_eq!(event["data"]["runId"], emitter.run_id);
+            assert_eq!(event["data"]["sessionId"], emitter.session_id);
+            let tool = &event["data"]["tool"];
+            let args = serde_json::json!({"command": format!("queued-{index}")});
+            assert_eq!(tool["id"], format!("turn_1_stream_{index}"));
+            assert_eq!(tool["name"], "run_command");
+            assert_eq!(tool["args"], args);
+            assert_eq!(tool["argumentsRaw"], args.to_string());
+            assert_eq!(tool["status"], "cancelled");
+            assert_eq!(tool["result"], "Cancelled by operator");
+            assert!(tool["completedAt"].is_i64());
+            assert_eq!(tool["durationMs"], 0);
+        }
+    }
+
+    #[test]
+    fn runner_concurrency_cancellation_skips_queued_side_effects_but_returns_every_id() {
+        use std::future::Future;
+        use std::task::{Context, Poll};
+
+        for initially_cancelled in [false, true] {
+            let count = TOOL_BATCH_CONCURRENCY * 3;
+            let cancel = CancellationToken::new();
+            if initially_cancelled {
+                cancel.cancel();
+            }
+            let dispatched = Mutex::new(Vec::new());
+            let side_effects = Mutex::new(Vec::new());
+            let (senders, receivers): (Vec<_>, Vec<_>) =
+                (0..count).map(|_| tokio::sync::oneshot::channel()).unzip();
+            let mut senders: Vec<_> = senders.into_iter().map(Some).collect();
+            let mut batch = Box::pin(dispatch_tool_batch(
+                receivers.into_iter().enumerate(),
+                &cancel,
+                |(index, gate)| {
+                    dispatched.lock().unwrap().push(index);
+                    let side_effects = &side_effects;
+                    async move {
+                        side_effects.lock().unwrap().push(index);
+                        gate.await.unwrap();
+                        (format!("provider-id-{index}"), ToolExecutionResult::success(format!("completed-{index}"), None))
+                    }
+                },
+                |(index, _)| {
+                    (format!("provider-id-{index}"), ToolExecutionResult {
+                        output: "Cancelled by operator".into(),
+                        cancelled: true,
+                        ..Default::default()
+                    })
+                },
+            ));
+            let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+            let mut state = batch.as_mut().poll(&mut cx);
+            let admitted = if initially_cancelled { 0 } else { TOOL_BATCH_CONCURRENCY };
+            if !initially_cancelled {
+                assert!(state.is_pending());
+                assert_eq!(dispatched.lock().unwrap().len(), admitted);
+                cancel.cancel();
+                for index in (0..admitted).rev() {
+                    senders[index].take().unwrap().send(()).unwrap();
+                }
+                state = batch.as_mut().poll(&mut cx);
+            }
+            eprintln!("initially_cancelled={initially_cancelled}, dispatched={}, side_effects={}, admitted={admitted}", dispatched.lock().unwrap().len(), side_effects.lock().unwrap().len());
+            assert_eq!(
+                dispatched.lock().unwrap().len(), admitted,
+                "cancellation must not invoke dispatch closures for queued calls"
+            );
+            assert_eq!(side_effects.lock().unwrap().len(), admitted);
+            let Poll::Ready(results) = state else {
+                panic!("cancelled queued calls must drain without waiting on their gates");
+            };
+            assert_eq!(results.len(), count);
+            for (index, (call_id, result)) in results.iter().enumerate() {
+                assert_eq!(call_id, &format!("provider-id-{index}"));
+                assert_eq!(result.cancelled, index >= admitted);
+                assert_eq!(result.success, index < admitted);
+                assert_eq!(result.output, if index < admitted { format!("completed-{index}") } else { "Cancelled by operator".into() });
+            }
+        }
+    }
+
+    #[test]
+    fn runner_concurrency_bounds_active_calls_and_preserves_provider_result_order() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll};
+
+        let count = TOOL_BATCH_CONCURRENCY * 3;
+        let cancel = CancellationToken::new();
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let started = Mutex::new(Vec::new());
+        let completed = Mutex::new(Vec::new());
+        let (senders, receivers): (Vec<_>, Vec<_>) =
+            (0..count).map(|_| tokio::sync::oneshot::channel()).unzip();
+        let mut senders: Vec<_> = senders.into_iter().map(Some).collect();
+        let mut batch = Box::pin(dispatch_tool_batch(
+            receivers.into_iter().enumerate(),
+            &cancel,
+            |(index, gate)| {
+                started.lock().unwrap().push(index);
+                let (active, peak, completed) = (&active, &peak, &completed);
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    gate.await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    completed.lock().unwrap().push(index);
+                    let result = if index % 3 == 1 {
+                        ToolExecutionResult::failure(format!("denied-{index}"))
+                    } else {
+                        ToolExecutionResult::success(format!("result-{index}"), None)
+                    };
+                    (format!("provider-id-{index}"), result)
+                }
+            },
+            |(index, _)| (format!("provider-id-{index}"), ToolExecutionResult::default()),
+        ));
+        let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+        assert!(batch.as_mut().poll(&mut cx).is_pending());
+        eprintln!(
+            "prepared={count}, dispatched={}, active={}, limit={TOOL_BATCH_CONCURRENCY}",
+            started.lock().unwrap().len(),
+            active.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            started.lock().unwrap().len(),
+            TOOL_BATCH_CONCURRENCY,
+            "queued dispatch closures must remain uninvoked until a batch slot is free"
+        );
+        assert_eq!(active.load(Ordering::SeqCst), TOOL_BATCH_CONCURRENCY);
+
+        let mut results = None;
+        for offset in (0..count).step_by(TOOL_BATCH_CONCURRENCY) {
+            for index in (offset..offset + TOOL_BATCH_CONCURRENCY).rev() {
+                senders[index].take().unwrap().send(()).unwrap();
+                if let Poll::Ready(value) = batch.as_mut().poll(&mut cx) {
+                    assert_eq!(index, count - TOOL_BATCH_CONCURRENCY);
+                    results = Some(value);
+                }
+            }
+        }
+        let results = results.expect("all gated calls must finish");
+        assert_eq!(results.len(), count);
+        for (index, (call_id, result)) in results.iter().enumerate() {
+            assert_eq!(call_id, &format!("provider-id-{index}"));
+            assert_eq!(result.success, index % 3 != 1);
+            assert_eq!(
+                result.output,
+                if result.success { format!("result-{index}") } else { format!("denied-{index}") }
+            );
+        }
+        let expected_completion: Vec<_> = (0..count)
+            .step_by(TOOL_BATCH_CONCURRENCY)
+            .flat_map(|offset| (offset..offset + TOOL_BATCH_CONCURRENCY).rev())
+            .collect();
+        assert_eq!(*completed.lock().unwrap(), expected_completion);
+        assert_eq!(peak.load(Ordering::SeqCst), TOOL_BATCH_CONCURRENCY);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 }

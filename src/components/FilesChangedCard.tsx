@@ -23,7 +23,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
 }) => {
   // Aggregate all files changed across tools
   const { files, totalAdditions, totalDeletions } = React.useMemo(() => {
-    const fileMap: Record<string, { stat: FileDiffStat; artifactId?: string }> = {};
+    const fileMap = new Map<string, { stat: FileDiffStat; artifactId?: string }>();
     let totalAdd = 0;
     let totalDel = 0;
 
@@ -31,12 +31,13 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
       if (tool.filesChanged && tool.filesChanged.length > 0) {
         tool.filesChanged.forEach((fc) => {
           const key = fc.path;
-          if (!fileMap[key]) {
-            fileMap[key] = { stat: { ...fc }, artifactId: tool.artifactId };
+          const existing = fileMap.get(key);
+          if (!existing) {
+            fileMap.set(key, { stat: { ...fc }, artifactId: tool.artifactId });
           } else {
-            fileMap[key].stat.additions += fc.additions;
-            fileMap[key].stat.deletions += fc.deletions;
-            if (tool.artifactId) fileMap[key].artifactId = tool.artifactId;
+            existing.stat.additions += fc.additions;
+            existing.stat.deletions += fc.deletions;
+            if (tool.artifactId) existing.artifactId = tool.artifactId;
           }
           totalAdd += fc.additions;
           totalDel += fc.deletions;
@@ -45,7 +46,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
     });
 
     return {
-      files: Object.values(fileMap),
+      files: Array.from(fileMap.values()),
       totalAdditions: totalAdd,
       totalDeletions: totalDel,
     };
@@ -108,21 +109,6 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
       setCommitMessage(`feat: update ${names}${files.length > 2 ? ' and more' : ''}`);
     }
   }, [files]);
-
-  // Check git status in workspace
-  useEffect(() => {
-    let active = true;
-    invoke<GitStatusResult>('git_status')
-      .then((status) => {
-        if (active) setGitStatus(status);
-      })
-      .catch(() => {
-        if (active) setGitStatus(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const handleCommit = async (push: boolean) => {
     if (!canMutate || !(commitMessage || '').trim()) return;

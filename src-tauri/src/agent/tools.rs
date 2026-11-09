@@ -74,8 +74,17 @@ impl ToolExecutionResult {
     }
 }
 
-pub fn get_agent_tools() -> serde_json::Value {
+/// Shared review/foreground skill contracts. Review fallback schemas reuse these.
+pub fn review_tool_definitions() -> serde_json::Value {
     serde_json::json!([
+        {"type":"function","function":{"name":"skills_list","description":"List discovered skills for review.","parameters":{"type":"object","properties":{}}}},
+        {"type":"function","function":{"name":"skill_view","description":"Read an exact skill file before changing it.","parameters":{"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"}},"required":["name"]}}},
+        {"type":"function","function":{"name":"skill_manage","description":"Create or update skills through the restricted review store; preserve metadata and read existing files first.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","patch","edit","write_file","remove_file"]},"name":{"type":"string"},"description":{"type":"string"},"content":{"type":"string"},"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["action","name"]}}}
+    ])
+}
+
+pub fn get_agent_tools() -> serde_json::Value {
+    let mut tools = serde_json::json!([
         {
             "type": "function",
             "function": {
@@ -285,7 +294,15 @@ pub fn get_agent_tools() -> serde_json::Value {
                 }
             }
         }
-    ])
+    ]);
+    tools.as_array_mut().expect("static tool array").extend(
+        review_tool_definitions()
+            .as_array()
+            .expect("static review tools")
+            .iter()
+            .cloned(),
+    );
+    tools
 }
 
 pub async fn execute_tool(
@@ -340,6 +357,7 @@ fn new_artifact(
     file_path: Option<String>,
 ) -> Artifact {
     Artifact {
+        stream_revision: None,
         id: format!("art-{}", Uuid::new_v4()),
         title,
         artifact_type: artifact_type.into(),
@@ -598,6 +616,30 @@ async fn write_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecution
     Ok(res)
 }
 
+fn checked_edit_result_len(
+    original_len: usize,
+    matches: usize,
+    old_len: usize,
+    new_len: usize,
+) -> Result<usize, String> {
+    let projected = matches.checked_mul(old_len).and_then(|removed| {
+        original_len.checked_sub(removed).and_then(|remaining| {
+            matches
+                .checked_mul(new_len)
+                .and_then(|added| remaining.checked_add(added))
+        })
+    });
+    projected
+        .filter(|&len| len <= MAX_FILE_BYTES as usize)
+        .ok_or_else(|| "edit_file result exceeds the 10 MiB limit".into())
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static FORBID_EDIT_ALLOCATION: bool;
+    static EDIT_DIFF_BUILDS: std::cell::Cell<usize>;
+}
+
 async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionResult, String> {
     let path = resolve_workspace_path(cwd, required_string(args, "path")?)?;
     let old = optional_string(args, "oldString", "old_string").ok_or("Missing oldString")?;
@@ -634,26 +676,31 @@ async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionR
             "oldString matched {matches} locations; set replaceAll=true or provide a unique target"
         ));
     }
+    checked_edit_result_len(original.len(), matches, old.len(), new.len())?;
+    #[cfg(test)]
+    assert!(
+        !FORBID_EDIT_ALLOCATION.try_with(|forbid| *forbid).unwrap_or(false),
+        "edit_file attempted replacement allocation before rejecting oversized output"
+    );
     let updated = if replace_all {
         original.replace(old, new)
     } else {
         original.replacen(old, new, 1)
     };
-    if updated.len() > MAX_FILE_BYTES as usize {
-        return Err("edit_file result exceeds the 10 MiB limit".into());
-    }
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
-    let diff = TextDiff::from_lines(&original, &updated)
+    #[cfg(test)]
+    let _ = EDIT_DIFF_BUILDS.try_with(|builds| builds.set(builds.get() + 1));
+    let text_diff = TextDiff::from_lines(&original, &updated);
+    let diff = text_diff
         .unified_diff()
         .context_radius(3)
         .header(&format!("a/{filename}"), &format!("b/{filename}"))
         .to_string();
     let mut additions = 0;
     let mut deletions = 0;
-    let text_diff = TextDiff::from_lines(&original, &updated);
     for change in text_diff.iter_all_changes() {
         match change.tag() {
             similar::ChangeTag::Insert => additions += 1,
@@ -972,6 +1019,18 @@ where
     })
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct ForegroundProbe {
+    polls: std::sync::atomic::AtomicUsize,
+    closed_while_running: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static FOREGROUND_PROBE: Arc<ForegroundProbe>;
+}
+
 async fn run_command(
     args: &serde_json::Value,
     context: &ToolContext,
@@ -1057,11 +1116,19 @@ async fn run_command(
     let stdout_task = spawn_process_reader(stdout, "stdout", sender.clone());
     let stderr_task = spawn_process_reader(stderr, "stderr", sender.clone());
     drop(sender);
+    #[cfg(test)]
+    if FOREGROUND_PROBE.try_with(|_| ()).is_ok() {
+        // Tutup pembaca agar EOF saat proses masih hidup dapat diuji tanpa balapan shell.
+        stdout_task.abort();
+        stderr_task.abort();
+        while receiver.recv().await.is_some() {}
+    }
 
     let artifact_id = format!("art-{}", Uuid::new_v4());
     let title = format!("Terminal: {}", command.chars().take(80).collect::<String>());
     if let Some(sink) = &context.sink {
         sink(ToolEvent::Artifact(Artifact {
+            stream_revision: None,
             id: artifact_id.clone(),
             title: title.clone(),
             artifact_type: "terminal".into(),
@@ -1079,7 +1146,12 @@ async fn run_command(
     let mut exit_code: Option<i32> = None;
     let mut cancelled = false;
     let mut timed_out = false;
+    let mut output_closed = false;
     loop {
+        #[cfg(test)]
+        let _ = FOREGROUND_PROBE.try_with(|probe| {
+            probe.polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
         if let Ok(Some(status)) = child.try_wait() {
             exit_code = Some(status.code().unwrap_or(-1));
             break;
@@ -1089,27 +1161,37 @@ async fn run_command(
             terminate_child(&mut child).await;
             break;
         }
-        if started.elapsed() >= Duration::from_secs(timeout_seconds) {
+        let remaining = Duration::from_secs(timeout_seconds).saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             timed_out = true;
             terminate_child(&mut child).await;
             break;
         }
-        match tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await {
-            Ok(Some(line)) => append_process_line(
-                &mut output,
-                &mut total_bytes,
-                &mut output_truncated,
-                &line,
-                &artifact_id,
-                &context.sink,
-            ),
-            Ok(None) => {
-                if let Ok(Some(status)) = child.try_wait() {
-                    exit_code = Some(status.code().unwrap_or(-1));
-                    break;
+        // EOF tetap tertutup; tunggu tanpa memutar sambil menjaga pembatalan dan tenggat.
+        tokio::select! {
+            _ = context.cancel.cancelled() => {},
+            _ = tokio::time::sleep(remaining.min(Duration::from_millis(50))) => {},
+            line = receiver.recv(), if !output_closed => match line {
+                Some(line) => append_process_line(
+                    &mut output,
+                    &mut total_bytes,
+                    &mut output_truncated,
+                    &line,
+                    &artifact_id,
+                    &context.sink,
+                ),
+                None => {
+                    output_closed = true;
+                    #[cfg(test)]
+                    if matches!(child.try_wait(), Ok(None)) {
+                        let _ = FOREGROUND_PROBE.try_with(|probe| {
+                            probe
+                                .closed_while_running
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                        });
+                    }
                 }
-            }
-            Err(_) => {}
+            },
         }
     }
     if (cancelled || timed_out)
@@ -1151,6 +1233,7 @@ async fn run_command(
         output.push_str("\nCommand cancelled by user.\n");
     }
     let artifact = Artifact {
+        stream_revision: None,
         id: artifact_id,
         title,
         artifact_type: "terminal".into(),
@@ -1452,17 +1535,23 @@ async fn validate_public_url(url: &Url) -> Result<(), String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("URLs containing credentials are not allowed".into());
     }
-    let host = url.host_str().ok_or("URL must contain a host")?;
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
-        return Err("Local/private web targets are blocked".into());
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    let host = url.host().ok_or("URL must contain a host")?;
+    let ip = match host {
+        url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        url::Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        url::Host::Domain(_) => None,
+    };
+    if let Some(ip) = ip {
         if !is_public_ip(ip) {
             return Err(
                 "Private, loopback, link-local, and unspecified web targets are blocked".into(),
             );
         }
         return Ok(());
+    }
+    let host = url.host_str().ok_or("URL must contain a host")?;
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
+        return Err("Local/private web targets are blocked".into());
     }
     let port = url
         .port_or_known_default()
@@ -1824,6 +1913,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn edit_projected_utf8_length_checks_limits_and_overflow() {
+        let limit = MAX_FILE_BYTES as usize;
+        assert_eq!(checked_edit_result_len(limit, 1, 1, 1), Ok(limit));
+        assert_eq!(checked_edit_result_len(8, 2, 3, 1), Ok(4));
+        assert_eq!(checked_edit_result_len(4, 2, "é".len(), "界".len()), Ok(6));
+        assert_eq!(checked_edit_result_len(4, 2, 2, 0), Ok(0));
+        for lengths in [
+            (limit, 1, 1, 2),
+            (usize::MAX, 2, usize::MAX, 0),
+            (2, 2, 1, usize::MAX),
+            (usize::MAX, 1, 1, 2),
+            (1, 2, 1, 0),
+        ] {
+            assert_eq!(
+                checked_edit_result_len(lengths.0, lengths.1, lengths.2, lengths.3),
+                Err("edit_file result exceeds the 10 MiB limit".into()),
+                "{lengths:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_builds_one_diff_and_preserves_output_contract() {
+        let root = workspace();
+        for (original, old, new, replace_all, updated, additions, deletions) in [
+            ("one\ntwo\n", "two", "three", false, "one\nthree\n", 1, 1),
+            ("é\nkeep\né", "é", "界\nplus", true, "界\nplus\nkeep\n界\nplus", 4, 2),
+            ("one\ntwo\n", "two\n", "", false, "one\n", 0, 1),
+            ("same\n", "same", "same", false, "same\n", 0, 0),
+        ] {
+            std::fs::write(root.join("a.txt"), original).unwrap();
+            let args = serde_json::json!({
+                "path": "a.txt", "oldString": old, "newString": new, "replaceAll": replace_all
+            });
+            let (result, builds) = EDIT_DIFF_BUILDS
+                .scope(std::cell::Cell::new(0), async {
+                    let result = edit_file(&args, &root.to_string_lossy()).await.unwrap();
+                    (result, EDIT_DIFF_BUILDS.with(std::cell::Cell::get))
+                })
+                .await;
+            let expected_diff = TextDiff::from_lines(original, updated)
+                .unified_diff()
+                .context_radius(3)
+                .header("a/a.txt", "b/a.txt")
+                .to_string();
+            assert_eq!(result.artifact.as_ref().unwrap().content, expected_diff);
+            assert_eq!(result.artifact.as_ref().unwrap().title, "Diff: a.txt");
+            let stats = &result.files_changed.as_ref().unwrap()[0];
+            assert_eq!((&*stats.path, stats.additions, stats.deletions), ("a.txt", additions, deletions));
+            assert!(result.success);
+            assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), updated);
+            if original == "one\ntwo\n" && new == "three" {
+                assert_eq!(expected_diff, "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n");
+            }
+            if builds != 1 {
+                std::fs::remove_dir_all(&root).unwrap();
+            }
+            assert_eq!(builds, 1, "edit_file must compute the line diff only once");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_expansion_before_allocating_and_preserves_file() {
+        let root = workspace();
+        let file = root.join("expand.txt");
+        let original = "x".repeat(4096);
+        std::fs::write(&file, &original).unwrap();
+        let args = serde_json::json!({
+            "path": "expand.txt",
+            "oldString": "x",
+            "newString": "é".repeat(2048),
+            "replaceAll": true
+        });
+        let attempt = tokio::spawn(async move {
+            let result = FORBID_EDIT_ALLOCATION
+                .scope(true, edit_file(&args, &root.to_string_lossy()))
+                .await;
+            (root, result)
+        })
+        .await;
+        let unchanged = std::fs::read_to_string(&file).unwrap() == original;
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+        assert!(unchanged, "rejected expansion changed the original file");
+        let (_, result) = attempt.expect("oversized edits must reject before replacement allocation");
+        assert_eq!(result.unwrap_err(), "edit_file result exceeds the 10 MiB limit");
+    }
+
     #[tokio::test]
     async fn exact_edit_generates_diff_and_writes_once() {
         let root = workspace();
@@ -1871,6 +2049,148 @@ mod tests {
             .unwrap();
         assert_eq!(files, vec!["src/main.ts"]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn assert_foreground_poll_budget(probe: &ForegroundProbe, result: &ToolExecutionResult) {
+        assert!(probe
+            .closed_while_running
+            .load(std::sync::atomic::Ordering::Relaxed));
+        let polls = probe.polls.load(std::sync::atomic::Ordering::Relaxed);
+        let duration_ms = result.duration_ms.unwrap();
+        let budget = duration_ms / 50 + 6;
+        eprintln!("foreground closed output: polls={polls}, duration_ms={duration_ms}, budget={budget}");
+        assert!(
+            polls as u64 <= budget,
+            "closed output busy-spun: {polls} polls, budget {budget}"
+        );
+    }
+
+    #[tokio::test]
+    async fn foreground_closed_output_waits_without_spinning() {
+        let root = workspace();
+        let context = ToolContext {
+            session_id: "test-session".into(),
+            cwd: root.to_string_lossy().to_string(),
+            cancel: CancellationToken::new(),
+            sink: None,
+        };
+        let command = if cfg!(windows) {
+            "Start-Sleep -Milliseconds 750; exit 0"
+        } else {
+            "sleep 0.75; exit 0"
+        };
+        let probe = Arc::new(ForegroundProbe::default());
+        let args = serde_json::json!({"command": command, "timeoutSeconds": 5});
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            FOREGROUND_PROBE.scope(probe.clone(), run_command(&args, &context)),
+        )
+        .await;
+        std::fs::remove_dir_all(root).unwrap();
+        let result = result
+            .expect("closed output must not prevent process completion")
+            .unwrap();
+        assert!(result.success, "{}", result.output);
+        assert!(!result.cancelled);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(
+            result.duration_ms.unwrap() >= 600,
+            "the isolated child must really sleep"
+        );
+        assert_eq!(result.terminal_output.as_deref(), Some(""));
+        assert_foreground_poll_budget(&probe, &result);
+    }
+
+    #[tokio::test]
+    async fn foreground_closed_output_respects_timeout() {
+        let root = workspace();
+        let context = ToolContext {
+            session_id: "test-session".into(),
+            cwd: root.to_string_lossy().to_string(),
+            cancel: CancellationToken::new(),
+            sink: None,
+        };
+        let command = if cfg!(windows) {
+            "Start-Sleep -Seconds 30"
+        } else {
+            "exec sleep 30"
+        };
+        let probe = Arc::new(ForegroundProbe::default());
+        let args = serde_json::json!({"command": command, "timeoutSeconds": 1});
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            FOREGROUND_PROBE.scope(probe.clone(), run_command(&args, &context)),
+        )
+        .await;
+        std::fs::remove_dir_all(root).unwrap();
+        let result = result
+            .expect("closed output must not delay the deadline")
+            .unwrap();
+        assert!(!result.success);
+        assert!(!result.cancelled);
+        assert_eq!(result.exit_code, Some(1));
+        assert!(result
+            .output
+            .contains("Command timed out after 1s and was terminated."));
+        assert!(
+            (1000..4000).contains(&result.duration_ms.unwrap()),
+            "timeout duration was {:?} ms",
+            result.duration_ms
+        );
+        assert_foreground_poll_budget(&probe, &result);
+    }
+
+    #[tokio::test]
+    async fn foreground_closed_output_remains_cancellable() {
+        let root = workspace();
+        let cancel = CancellationToken::new();
+        let context = ToolContext {
+            session_id: "test-session".into(),
+            cwd: root.to_string_lossy().to_string(),
+            cancel: cancel.clone(),
+            sink: None,
+        };
+        let command = if cfg!(windows) {
+            "Start-Sleep -Seconds 30"
+        } else {
+            "exec sleep 30"
+        };
+        let probe = Arc::new(ForegroundProbe::default());
+        let captured = probe.clone();
+        let task = tokio::spawn(async move {
+            let args = serde_json::json!({"command": command, "timeoutSeconds": 60});
+            FOREGROUND_PROBE
+                .scope(captured, run_command(&args, &context))
+                .await
+        });
+        let ready = tokio::time::timeout(Duration::from_secs(5), async {
+            while !probe
+                .closed_while_running
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        })
+        .await;
+        let cancelled_at = Instant::now();
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(8), task).await;
+        std::fs::remove_dir_all(root).unwrap();
+        ready.expect("the live child must be observed after output closes");
+        let result = result
+            .expect("closed output must remain cancellable")
+            .unwrap()
+            .unwrap();
+        let cancel_latency_ms = cancelled_at.elapsed().as_millis();
+        eprintln!("foreground cancellation latency_ms={cancel_latency_ms}");
+        assert!(cancel_latency_ms < 3000);
+        assert!(result.cancelled);
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(1));
+        assert!(result.output.contains("Command cancelled by user."));
+        assert!(!result.output.contains("timed out"));
+        assert_foreground_poll_budget(&probe, &result);
     }
 
     #[cfg(windows)]
@@ -1987,6 +2307,39 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fetch_rejects_private_ipv6_literal_urls_before_dns() {
+        for target in [
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:7f00:1]:8080/",
+            "https://[::ffff:10.0.0.1]/",
+        ] {
+            let error = validate_public_url(&Url::parse(target).unwrap())
+                .await
+                .expect_err("private IPv6 literals must be rejected before DNS");
+            assert_eq!(
+                error, "Private, loopback, link-local, and unspecified web targets are blocked",
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_accepts_public_ip_literal_urls_without_dns() {
+        for target in [
+            "https://[2606:4700:4700::1111]/",
+            "http://[::ffff:8.8.8.8]:8080/",
+            "https://8.8.8.8/",
+        ] {
+            assert_eq!(
+                validate_public_url(&Url::parse(target).unwrap()).await,
+                Ok(()),
+                "{target}"
+            );
+        }
+    }
+
     #[test]
     fn agent_tools_contain_subagent_and_skill_contracts() {
         let tools = get_agent_tools();
@@ -1995,6 +2348,13 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("function")?.get("name")?.as_str())
             .collect();
+        for name in ["skills_list", "skill_view", "skill_manage"] {
+            assert_eq!(
+                names.iter().filter(|&&n| n == name).count(),
+                1,
+                "missing or duplicate {name}"
+            );
+        }
         assert!(names.contains(&"spawn_subagent"));
         assert!(names.contains(&"use_skill"));
         assert!(names.contains(&"read_file"));

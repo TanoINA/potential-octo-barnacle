@@ -47,7 +47,8 @@ fn sse_invalid_utf8_is_an_explicit_error() {
 async fn sse_enforces_a_total_wire_budget_across_small_events() {
     let event = format!(
         "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n",
-        "x".repeat(1024)
+        // Cross the same 10 MiB wire bound with 160 rather than 10,000 events.
+        "x".repeat(64 * 1024)
     );
     let count = MAX_PROVIDER_RESPONSE_BYTES / event.len() + 1;
     let (base, server) = tests::sse_server(event.repeat(count) + "data: [DONE]\n\n").await;

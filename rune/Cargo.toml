@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/aether-core", "crates/aether-state", "crates/aether-rune"]
+resolver = "2"
+
+[profile.dev]
+debug = 0

@@ -67,6 +67,19 @@ describe('ContextMenu Component', () => {
     expect(input.value).toBe(expected);
   });
 
+  it.each(['aether-context-menu', 'aether-context-submenu'])('uses shared motion on %s without replacing top/left positioning', (testId) => {
+    render(<ContextMenu currentSessionId="session-1" onExportSession={vi.fn()} />);
+    fireEvent.contextMenu(document.body, { clientX: 100, clientY: 100 });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Export Session' }));
+    const panel = screen.getByTestId(testId);
+    expect(panel.classList.contains('ui-menu')).toBe(true);
+    expect(panel.classList.contains('ui-panel-enter')).toBe(true);
+    expect(panel.classList.contains('shadow-lg')).toBe(true);
+    expect(panel.style.top).not.toBe('');
+    expect(panel.style.left).not.toBe('');
+    expect(panel.style.transform).toBe('');
+    expect(panel.className).not.toMatch(/backdrop-blur|zoom-in|duration-100|shadow-2xl/);
+  });
   it('renders nothing initially until a contextmenu event fires', () => {
     render(<ContextMenu workspaceCwd="D:/AetherAgent" />);
     expect(screen.queryByTestId('aether-context-menu')).toBeNull();

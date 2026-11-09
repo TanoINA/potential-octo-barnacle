@@ -142,14 +142,14 @@ export function ModelPicker({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-4 pt-[8vh]"
+      className="ui-overlay-enter fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-4 pt-[8vh]"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       role="presentation"
     >
       <section
         ref={dialogRef}
         tabIndex={-1}
-        className="flex max-h-[84vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-2xl"
+        className="ui-panel-enter flex max-h-[84vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] text-[#e6edf3] shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-label="Select model"
@@ -198,7 +198,7 @@ export function ModelPicker({
                 <Brain size={13} /> Thinking <ChevronDown size={12} />
               </button>
               {thinkingOpen && (
-                <div className="absolute right-0 z-10 mt-2 max-h-[calc(84vh-220px)] w-64 overflow-y-auto overscroll-contain rounded-lg border border-[#30363d] bg-[#161b22] p-3 shadow-2xl">
+                <div className="ui-menu ui-panel-enter absolute right-0 z-10 mt-2 max-h-[calc(84vh-220px)] w-64 overflow-y-auto overscroll-contain rounded-lg border border-[#30363d] bg-[#161b22] p-3 shadow-lg">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium">Thinking</span>
                     <button

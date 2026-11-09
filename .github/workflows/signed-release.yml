@@ -1,0 +1,140 @@
+name: Signed release candidate
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable vVERSION tag pointing exactly to the selected main workflow SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: signed-candidate-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  identity:
+    if: github.repository == 'TanoINA/potential-octo-barnacle' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          # Manual runs use main's workflow definition: never build a different tag commit.
+          [[ "$sha" == "$WORKFLOW_SHA" && "$sha" == "$(git rev-parse --verify 'HEAD^{commit}')" ]]
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+          printf 'sha=%s\ntag=%s\nversion=%s\n' "$sha" "$RELEASE_TAG" "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+  quality:
+    needs: identity
+    uses: ./.github/workflows/release-quality.yml
+    with:
+      ref: ${{ needs.identity.outputs.sha }}
+  windows:
+    needs: [identity, quality]
+    environment: release-sign-windows
+    runs-on: [self-hosted, Windows, X64, aether-release-windows]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: cargo fetch --locked --manifest-path scripts/release-policy-tests/Cargo.toml
+      - name: Build and verify exact signed Windows installers
+        shell: powershell
+        env:
+          AETHER_RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+          AETHER_UPDATE_BASE_URL: ${{ vars.AETHER_UPDATE_BASE_URL }}
+          AETHER_UPDATE_PUBLIC_KEY: ${{ vars.AETHER_WINDOWS_UPDATE_PUBLIC_KEY }}
+          AETHER_CERTIFICATE_THUMBPRINT: ${{ vars.AETHER_CERTIFICATE_THUMBPRINT }}
+          AETHER_TIMESTAMP_URL: ${{ vars.AETHER_TIMESTAMP_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          ./scripts/build-signed-release.ps1 -Tag $env:AETHER_RELEASE_TAG -ArchiveRoot "$env:RUNNER_TEMP/retained-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -CandidateDirectory "$env:RUNNER_TEMP/windows-candidate-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-windows-x86_64
+          path: ${{ runner.temp }}/windows-candidate-${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: error
+          retention-days: 30
+  linux:
+    needs: [identity, quality]
+    environment: release-sign-linux
+    runs-on: [self-hosted, Linux, X64, aether-release-linux-24.04]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Build and verify exact signed Linux packages
+        shell: bash
+        env:
+          AETHER_RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+          AETHER_UPDATE_BASE_URL: ${{ vars.AETHER_UPDATE_BASE_URL }}
+          AETHER_UPDATE_PUBLIC_KEY: ${{ vars.AETHER_LINUX_UPDATE_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AETHER_CANDIDATE_DIRECTORY: ${{ runner.temp }}/linux-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/build-signed-release.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-linux-x86_64
+          path: ${{ runner.temp }}/linux-candidate-${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: error
+          retention-days: 30
+  prepared:
+    needs: [identity, windows, linux]
+    runs-on: ubuntu-24.04
+    env:
+      AETHER_UPDATE_BASE_URL: ${{ vars.AETHER_UPDATE_BASE_URL }}
+      AETHER_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.AETHER_WINDOWS_UPDATE_PUBLIC_KEY }}
+      AETHER_LINUX_UPDATE_PUBLIC_KEY: ${{ vars.AETHER_LINUX_UPDATE_PUBLIC_KEY }}
+      RELEASE_SHA: ${{ needs.identity.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: candidate-*
+          path: candidates
+      - run: cargo build --locked --manifest-path scripts/release-policy-tests/Cargo.toml --bin aether-release-policy-tests
+      - run: node scripts/release-pipeline.mjs prepare --windows candidates/candidate-windows-x86_64 --linux candidates/candidate-linux-x86_64 --out prepared --version "$RELEASE_VERSION" --sha "$RELEASE_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-update-candidate
+          path: prepared/*
+          if-no-files-found: error
+          retention-days: 30

@@ -33,6 +33,13 @@ export interface AttachedContext {
   isDir: boolean;
 }
 
+/** Prepared image bytes persisted with a user turn; never appended to display text. */
+export interface ImageInput {
+  sourcePath: string;
+  mediaType: string;
+  data: string;
+}
+
 export interface CouncilCandidate {
   providerId: string;
   model: string;
@@ -49,10 +56,22 @@ export interface CouncilTurn {
   chosenWinner?: 'A' | 'B';
 }
 
+export type SelfImprovementAction = 'skill_created' | 'skill_updated' | 'skill_staged' | 'no_action';
+
+export interface SelfImprovementChange {
+  action: SelfImprovementAction;
+  skill_name: string;
+  file_path?: string;
+  skill_path?: string;
+  pending_id?: string;
+  summary?: string;
+}
+
 export interface SelfImprovementEvent {
   run_id: string;
   session_id: string;
-  action: 'skill_created' | 'skill_updated' | 'no_action';
+  action: SelfImprovementAction;
+  changes?: SelfImprovementChange[];
   skill_name?: string;
   summary?: string;
   workspace_cwd?: string;
@@ -65,6 +84,7 @@ export interface MessageSegment {
 }
 
 export interface ChatMessage {
+  checkpointEpoch?: number;
   id: string;
   role: Role;
   content: string;
@@ -75,6 +95,10 @@ export interface ChatMessage {
   providerMessages?: Record<string, unknown>[];
   isStreaming?: boolean;
   attachments?: AttachedContext[];
+  imageInputs?: ImageInput[];
+  /** Derived lightweight-history hints, not authoritative stored payloads. */
+  hasImageInputs?: boolean;
+  hasProviderMessages?: boolean;
   councilTurn?: CouncilTurn;
   runId?: string;
   runStatus?: 'completed' | 'cancelled' | 'failed';
@@ -89,6 +113,7 @@ export interface ChatMessage {
 }
 
 export interface Artifact {
+  streamRevision?: number;
   id: string;
   title: string;
   type: ArtifactType;
@@ -106,6 +131,7 @@ export interface GlobalArtifactItem {
 }
 
 export interface DeepSearchResult {
+  matchMessageId?: string;
   sessionId: string;
   sessionTitle: string;
   sessionUpdatedAt: number;
@@ -138,6 +164,14 @@ export interface McpServerConfig {
 
 export type ExecutionMode = 'request_review' | 'default' | 'auto' | 'turbo';
 
+export interface ReviewConfig {
+  /** Successful-run cadence for creation nudges; 0 disables nudges. Default: 10. */
+  creationNudgeInterval?: number;
+  writeApproval?: boolean;
+  createDir?: string;
+  auxiliaryProviderId?: string;
+}
+
 export interface AgentSettings {
   providers: ProviderConfig[];
   activeProviderId: string;
@@ -154,6 +188,7 @@ export interface AgentSettings {
   notificationsEnabled?: boolean;
   soundChimeEnabled?: boolean;
   self_improvement_enabled: boolean;
+  reviewConfig?: ReviewConfig;
   autoCompactionEnabled?: boolean;
   autoCompactionThresholdTokens?: number;
   executionMode?: ExecutionMode;
@@ -178,7 +213,23 @@ export interface SessionModelOverride {
   reasoningEffort?: ReasoningEffort;
 }
 
+export interface SessionWindow {
+  /** Exclusive display end; absent on suffix cursors. */
+  end?: number;
+  offset: number;
+  total: number;
+  revision: string;
+  firstMessageId?: string | null;
+}
+
+export interface SessionPage {
+  data: SessionData;
+  window: SessionWindow;
+}
+
 export interface SessionData {
+  /** Transient frontend cursor; never part of canonical session JSON. */
+  historyWindow?: SessionWindow;
   session: Session;
   messages: ChatMessage[];
   artifacts: Artifact[];
@@ -195,9 +246,11 @@ export interface SkillInfo {
 export interface UndoTurnResult {
   content: string;
   attachments?: AttachedContext[];
+  imageInputs?: ImageInput[];
 }
 
 export interface AgentRunRequest {
+  historyWindow?: SessionWindow;
   runId: string;
   sessionId: string;
   workspaceCwd?: string;
@@ -213,6 +266,7 @@ export interface AgentRunRequest {
   skillPaths: string[];
   mcpServers: McpServerConfig[];
   self_improvement_enabled: boolean;
+  reviewConfig?: ReviewConfig;
   autoCompactionEnabled?: boolean;
   autoCompactionThresholdTokens?: number;
   executionMode?: ExecutionMode;

@@ -1,6 +1,6 @@
 {
   "name": "aether-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native Windows desktop AI coding agent built with Rust, Tauri 2, and React",
   "private": true,
   "type": "module",
@@ -18,12 +18,19 @@
     "@tauri-apps/plugin-fs": "^2.2.0",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "clsx": "^2.1.1",
+    "katex": "^0.19.1",
     "lucide-react": "^0.475.0",
+    "mdast-util-from-markdown": "^2.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "tailwind-merge": "^3.0.1"
+  },
+  "overrides": {
+    "katex": "$katex"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0",

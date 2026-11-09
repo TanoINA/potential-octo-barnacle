@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useId } from 'react';
+import React, { useState, useMemo, useEffect, useId, useRef } from 'react';
 import {
   Ban,
   BookOpen,
@@ -14,6 +14,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import type { ToolCallItem } from '../types/agent';
+import { safeEncodeURIComponent } from '../utils/encoding';
 import { TerminalOutput } from './TerminalOutput';
 
 interface ExecutionTraceProps {
@@ -221,6 +222,25 @@ function getToolDisplayInfo(tool: ToolCallItem): {
   };
 }
 
+// Jam lokal hanya hidup selama baris aktif ditampilkan.
+const ActiveToolDuration: React.FC<{ startedAt?: number }> = ({ startedAt }) => {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const elapsedSec = Math.max(1, Math.floor((now - (startedAt || now)) / 1000));
+
+  return (
+    <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
+      <Loader2 size={10} className="animate-spin text-[#f0883e]" />
+      <span>{elapsedSec}s</span>
+    </span>
+  );
+};
+
 export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   toolCalls,
   isStreaming = false,
@@ -229,6 +249,8 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   const [manualCollapsed, setManualCollapsed] = useState<boolean | null>(null);
   const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
   const traceId = useId();
+  // Pembaruan tool mengganti objeknya; metadata lama tidak perlu diurai ulang.
+  const displayInfoCache = useRef(new WeakMap<ToolCallItem, ReturnType<typeof getToolDisplayInfo>>());
 
   // Summary counts
   const summary = useMemo(() => {
@@ -278,16 +300,6 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   const hasRunning = isStreaming || toolCalls.some((t) => t.status === 'running' || t.status === 'pending');
   const hasCancelled = !hasRunning && toolCalls.some((t) => t.status === 'cancelled');
   const hasError = toolCalls.some(isToolFailed);
-
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!hasRunning) return;
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 250);
-    return () => clearInterval(interval);
-  }, [hasRunning]);
 
   // Manual choices apply within a phase, not across live/completed transitions.
   useEffect(() => {
@@ -347,7 +359,11 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
       {!isCollapsed && (
         <div className="max-h-80 overflow-y-auto overscroll-contain border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
           {toolCalls.map((tool) => {
-            const info = getToolDisplayInfo(tool);
+            let info = displayInfoCache.current.get(tool);
+            if (!info) {
+              info = getToolDisplayInfo(tool);
+              displayInfoCache.current.set(tool, info);
+            }
             const failed = isToolFailed(tool);
             const cancelled = tool.status === 'cancelled';
             const isDetailsOpen = expandedDetails[tool.id] ?? (tool.status === 'running' || failed);
@@ -355,9 +371,6 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
             const duration = formatDuration(tool.durationMs);
             const selectsArtifact = !info.isTerminal && Boolean(tool.artifactId && onSelectArtifact);
             const isToolRunning = tool.status === 'running' || tool.status === 'pending';
-            const liveElapsedSec = isToolRunning
-              ? Math.max(1, Math.floor((now - (tool.startedAt || now)) / 1000))
-              : null;
 
             return (
               <div key={tool.id} className="group">
@@ -369,7 +382,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                     data-file-link={info.filePath ? 'true' : undefined}
                     data-file-path={info.filePath}
                     data-code-block={info.command ? 'true' : undefined}
-                    data-code-content={info.command ? encodeURIComponent(info.command) : undefined}
+                    data-code-content={info.command ? safeEncodeURIComponent(info.command) : undefined}
                     data-code-lang={info.command ? 'powershell' : undefined}
                     onClick={() => {
                       if (selectsArtifact && tool.artifactId && onSelectArtifact) {
@@ -385,12 +398,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                       <span className="truncate text-[#c9d1d9]">{failed || cancelled ? tool.name : info.label}</span>
                     </span>{' '}
                     <span className="flex items-center gap-2 shrink-0">
-                      {isToolRunning && (
-                        <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
-                          <Loader2 size={10} className="animate-spin text-[#f0883e]" />
-                          <span>{liveElapsedSec}s</span>
-                        </span>
-                      )}
+                      {isToolRunning && <ActiveToolDuration startedAt={tool.startedAt} />}
 
                       {failed && (
                         <span className="rounded bg-[#da3633]/20 px-1.5 py-0.5 text-[9px] font-medium text-[#f85149]">

@@ -5,14 +5,17 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface CouncilViewProps {
   councilTurn: CouncilTurn;
+  isStreaming?: boolean;
   onSelectWinner?: (winner: 'A' | 'B') => void;
 }
 
 export const CouncilView: React.FC<CouncilViewProps> = ({
   councilTurn,
+  isStreaming = false,
   onSelectWinner,
 }) => {
   const { candidateA, candidateB, chosenWinner } = councilTurn;
+  const selectionDisabled = Boolean(isStreaming || candidateA.isStreaming || candidateB.isStreaming);
 
   return (
     <div className="my-3 w-full space-y-2">
@@ -52,8 +55,9 @@ export const CouncilView: React.FC<CouncilViewProps> = ({
             {onSelectWinner && (
               <button
                 type="button"
+                disabled={selectionDisabled}
                 onClick={() => onSelectWinner('A')}
-                className={`flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                className={`flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   chosenWinner === 'A'
                     ? 'bg-[#238636] text-white'
                     : 'border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3]'
@@ -110,8 +114,9 @@ export const CouncilView: React.FC<CouncilViewProps> = ({
             {onSelectWinner && (
               <button
                 type="button"
+                disabled={selectionDisabled}
                 onClick={() => onSelectWinner('B')}
-                className={`flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                className={`flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   chosenWinner === 'B'
                     ? 'bg-[#238636] text-white'
                     : 'border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#d29922] hover:text-[#e6edf3]'

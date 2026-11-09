@@ -256,3 +256,47 @@ describe('MessageRow Action Buttons', () => {
     expect(screen.getByText('reconnecting')).toBeTruthy();
   });
 });
+
+
+const councilMessage: ChatMessage = {
+  id: 'msg-council-1',
+  role: 'assistant',
+  content: 'Comparison complete',
+  timestamp: 1700000040000,
+  councilTurn: {
+    candidateA: { providerId: 'a', model: 'Model A', content: 'Answer A', isStreaming: false },
+    candidateB: { providerId: 'b', model: 'Model B', content: 'Answer B', isStreaming: false },
+  },
+};
+
+it('gates council selection on its own message, not a later global run', () => {
+  const onSelectCouncilWinner = vi.fn();
+  const onSelectArtifact = vi.fn();
+  const { rerender } = render(
+    <MessageRow message={{ ...councilMessage, isStreaming: true }}
+      onSelectArtifact={onSelectArtifact} onSelectCouncilWinner={onSelectCouncilWinner} />,
+  );
+  for (const button of screen.getAllByRole('button', { name: 'Use response' })) {
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+  }
+  expect(onSelectCouncilWinner).not.toHaveBeenCalled();
+
+  rerender(
+    <MessageRow message={{ ...councilMessage, isStreaming: false }} isStreaming={true}
+      onSelectArtifact={onSelectArtifact} onSelectCouncilWinner={onSelectCouncilWinner} />,
+  );
+  for (const button of screen.getAllByRole('button', { name: 'Use response' })) {
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+  }
+  expect(onSelectCouncilWinner.mock.calls).toEqual([['msg-council-1', 'A'], ['msg-council-1', 'B']]);
+});
+
+
+it('hides council selection actions when no winner callback is provided', () => {
+  render(<MessageRow message={councilMessage} onSelectArtifact={vi.fn()} />);
+  expect(screen.getByText('Answer A')).toBeTruthy();
+  expect(screen.getByText('Answer B')).toBeTruthy();
+  expect(screen.queryAllByRole('button', { name: /Use response|Selected/ })).toHaveLength(0);
+});

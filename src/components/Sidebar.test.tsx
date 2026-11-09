@@ -114,6 +114,8 @@ describe('Sidebar Pinned Sessions', () => {
 
     const searchInput = screen.getByPlaceholderText(/Search messages/i);
     fireEvent.change(searchInput, { target: { value: 'database' } });
+    expect(searchInput.closest('label')?.getAttribute('aria-busy')).toBe('true');
+    expect(searchInput.closest('aside')?.innerHTML).not.toMatch(/animate-|shimmer|glow/);
 
     await waitFor(() => {
       expect(onDeepSearch).toHaveBeenCalledWith('database');
@@ -261,3 +263,117 @@ describe('Sidebar Git status & actions', () => {
   });
 });
 
+
+const navigationProps = () => ({
+  sessions: [{ id: 'history', title: 'History', createdAt: 1, updatedAt: 2, messageCount: 1 }],
+  currentSessionId: 'history',
+  onNewSession: vi.fn(), onSelectSession: vi.fn(), onDeleteSession: vi.fn(),
+  onRenameSession: vi.fn(), onTogglePinSession: vi.fn(), onExportSession: vi.fn(),
+  onOpenSettings: vi.fn(), onOpenArtifactsLibrary: vi.fn(),
+  workspaceCwd: 'D:/project', onSelectWorkspace: vi.fn(), onClearWorkspace: vi.fn(),
+  effectiveConfig: null,
+});
+
+describe('Sidebar calm navigation', () => {
+  it('limits entrance motion to overlay mode and exposes the selected conversation', () => {
+    const props = navigationProps();
+    const { container, rerender } = render(<Sidebar {...props} />);
+    expect(container.querySelector('aside')?.classList.contains('ui-sidebar-enter')).toBe(false);
+    expect(screen.getByRole('button', { name: 'History' }).getAttribute('aria-current')).toBe('page');
+    const row = screen.getByRole('button', { name: 'History' }).closest('.group');
+    expect(row?.className).toContain('rounded-lg');
+    expect(row?.className).not.toMatch(/58a6ff|1f6feb/);
+    expect(container.innerHTML).not.toMatch(/animate-|shimmer|glow/);
+    rerender(<Sidebar {...props} overlay />);
+    expect(container.querySelector('aside')?.classList.contains('ui-sidebar-enter')).toBe(true);
+    rerender(<Sidebar {...props} />);
+    expect(container.querySelector('aside')?.classList.contains('ui-sidebar-enter')).toBe(false);
+  });
+
+  it('preserves rename Enter, Escape, IME handling and menu Escape', () => {
+    const props = navigationProps();
+    render(<Sidebar {...props} />);
+    const openRename = () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for History' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+      return screen.getByRole('textbox', { name: 'Session title' });
+    };
+    const title = openRename();
+    fireEvent.change(title, { target: { value: '  Renamed history  ' } });
+    fireEvent.keyDown(title, { key: 'Enter', isComposing: true });
+    expect(props.onRenameSession).not.toHaveBeenCalled();
+    fireEvent.keyDown(title, { key: 'Enter' });
+    expect(props.onRenameSession).toHaveBeenCalledWith('history', 'Renamed history');
+    const cancelTitle = openRename();
+    fireEvent.change(cancelTitle, { target: { value: 'Discarded' } });
+    fireEvent.keyDown(cancelTitle, { key: 'Escape' });
+    expect(props.onRenameSession).toHaveBeenCalledTimes(1);
+    const actions = screen.getByRole('button', { name: 'Actions for History' });
+    actions.focus();
+    expect(document.activeElement).toBe(actions);
+    fireEvent.click(actions);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
+  });
+
+  it('preserves navigation, export, pin, workspace and deletion callbacks', () => {
+    const props = navigationProps();
+    render(<Sidebar {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    expect(props.onSelectSession).toHaveBeenCalledWith('history');
+    fireEvent.click(screen.getByTitle('New chat (Ctrl+N)'));
+    expect(props.onNewSession).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Open global artifacts library' }));
+    expect(props.onOpenArtifactsLibrary).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByTitle('D:/project'));
+    expect(props.onSelectWorkspace).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Detach workspace' }));
+    expect(props.onClearWorkspace).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(props.onOpenSettings).toHaveBeenCalledOnce();
+    for (const [name, format] of [['Export HTML (.html)', 'html'], ['Export Markdown', 'markdown'], ['Export JSON', 'json']]) {
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for History' }));
+      fireEvent.click(screen.getByRole('button', { name }));
+      expect(props.onExportSession).toHaveBeenCalledWith('history', format);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for History' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pin chat to top' }));
+    expect(props.onTogglePinSession).toHaveBeenCalledWith('history');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for History' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(props.onDeleteSession).toHaveBeenCalledWith('history');
+  });
+
+  it('preserves Enter commit with IME protection and Git refresh', async () => {
+    const props = navigationProps();
+    const onCommitWorkspace = vi.fn().mockResolvedValue('abc');
+    const onRefreshGitStatus = vi.fn().mockResolvedValue(null);
+    render(<Sidebar {...props} gitStatus={{ isRepo: true, branch: 'main', hasChanges: true, summary: '1 change', files: [{ path: 'file.ts', status: 'M' }] }} onCommitWorkspace={onCommitWorkspace} onRefreshGitStatus={onRefreshGitStatus} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle git details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh git status' }));
+    expect(onRefreshGitStatus).toHaveBeenCalledOnce();
+    const input = screen.getByPlaceholderText(/Commit message/i);
+    fireEvent.change(input, { target: { value: '  fix: keyboard  ' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(onCommitWorkspace).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: /Committing/ }).hasAttribute('disabled')).toBe(true);
+    expect(input.closest('aside')?.innerHTML).not.toMatch(/animate-|shimmer|glow/);
+    await waitFor(() => expect(onCommitWorkspace).toHaveBeenCalledWith('fix: keyboard'));
+    await waitFor(() => expect(screen.queryByTestId('git-drawer')).toBeNull());
+  });
+});
+
+it('opens the exact deep search hit rather than selecting the session tail', async () => {
+  const hit = { sessionId: 'history', sessionTitle: 'History', sessionUpdatedAt: 2, snippet: 'needle', matchCount: 1, score: 1, matchMessageId: 'old-message' };
+  const props = navigationProps();
+  const jump = vi.fn(async () => true);
+  render(<Sidebar {...props} onDeepSearch={async () => [hit]} onOpenSearchResult={jump} />);
+  fireEvent.change(screen.getByPlaceholderText(/Search messages/i), { target: { value: 'needle' } });
+  await waitFor(() => expect(screen.getByText('needle')).toBeTruthy());
+  fireEvent.click(screen.getByText('needle'));
+  expect(jump).toHaveBeenCalledWith(hit);
+  expect(props.onSelectSession).not.toHaveBeenCalled();
+});

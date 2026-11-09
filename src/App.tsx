@@ -1,23 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, useCallback, useEffect, useState } from 'react';
 import { AlertCircle, X } from 'lucide-react';
-import { ArtifactPane } from './components/ArtifactPane';
-import { ArtifactsLibraryModal } from './components/ArtifactsLibraryModal';
 import { ChatCanvas } from './components/ChatCanvas';
 import { ContextMenu } from './components/ContextMenu';
-import { InteractiveTerminal } from './components/InteractiveTerminal';
-import { MemoryModal } from './components/MemoryModal';
-import { ModelPicker } from './components/ModelPicker';
-import { SessionHistoryModal } from './components/SessionHistoryModal';
-import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
-import { SpotlightBar } from './components/SpotlightBar';
-import { ToolsInspectorModal } from './components/ToolsInspectorModal';
+import { OptionalPanel } from './components/OptionalPanel';
 import { useAgent } from './hooks/useAgent';
 import { useIsNarrowViewport } from './hooks/useIsNarrowViewport';
+
+const ArtifactPane = lazy(() => import('./components/ArtifactPane').then((module) => ({ default: module.ArtifactPane })));
+const ArtifactsLibraryModal = lazy(() => import('./components/ArtifactsLibraryModal').then((module) => ({ default: module.ArtifactsLibraryModal })));
+const InteractiveTerminal = lazy(() => import('./components/InteractiveTerminal').then((module) => ({ default: module.InteractiveTerminal })));
+const MemoryModal = lazy(() => import('./components/MemoryModal').then((module) => ({ default: module.MemoryModal })));
+const ModelPicker = lazy(() => import('./components/ModelPicker').then((module) => ({ default: module.ModelPicker })));
+const SessionHistoryModal = lazy(() => import('./components/SessionHistoryModal').then((module) => ({ default: module.SessionHistoryModal })));
+const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
+const SpotlightBar = lazy(() => import('./components/SpotlightBar').then((module) => ({ default: module.SpotlightBar })));
+const ToolsInspectorModal = lazy(() => import('./components/ToolsInspectorModal').then((module) => ({ default: module.ToolsInspectorModal })));
+
+const AboutModal = lazy(() => import('./components/AboutModal').then((module) => ({ default: module.AboutModal })));
 
 export function App() {
   const agent = useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [artifactOpen, setArtifactOpen] = useState(false);
   const [artifactsLibraryOpen, setArtifactsLibraryOpen] = useState(false);
@@ -101,6 +106,7 @@ export function App() {
           onRenameSession={agent.renameSession}
           onTogglePinSession={agent.togglePinSession}
           onDeepSearch={agent.deepSearch}
+          onOpenSearchResult={agent.openSearchResult}
           onExportSession={agent.exportSession}
           onOpenSettings={openSettings}
           onOpenArtifactsLibrary={openArtifactsLibrary}
@@ -115,8 +121,25 @@ export function App() {
         />
       )}
       <main className="flex h-full min-w-0 flex-1 flex-col">
+        {agent.isHistoryPreview && (
+          <div role="status" className="flex items-center justify-between border-b border-[#30363d] bg-[#161b22] px-4 py-2 text-xs">
+            <span>History preview ? read-only ? live work continues in the background</span>
+            <button type="button" onClick={agent.loadLatestMessages} className="rounded border border-[#58a6ff] px-3 py-1">Return to latest</button>
+          </div>
+        )}
         <ChatCanvas
+          workspaceCwd={agent.workspaceCwd}
           messages={agent.messages}
+          isHistoryPreview={agent.isHistoryPreview}
+          jumpToMessage={agent.jumpToMessage}
+          isSessionLoading={agent.isSessionLoading}
+          loadingOlderMessages={agent.loadingOlderMessages}
+          onLoadOlderMessages={agent.loadOlderMessages}
+          onLoadLatestMessages={agent.loadLatestMessages}
+          hasOlderMessages={agent.hasOlderMessages}
+          totalMessageCount={agent.totalMessageCount}
+          historyError={agent.historyError}
+          runStatus={agent.runStatus}
           isStreaming={agent.isStreaming}
           stopRequested={agent.stopRequested}
           onSendMessage={agent.sendMessage}
@@ -132,16 +155,16 @@ export function App() {
           isArtifactOpen={artifactOpen && agent.artifacts.length > 0}
           onToggleArtifacts={() => setArtifactOpen((value) => !value)}
           onListFiles={agent.listWorkspaceFiles}
-          onReviewSession={agent.reviewSession}
+          onReviewSession={agent.isHistoryPreview ? undefined : agent.reviewSession}
           isReviewing={agent.isReviewing}
-          onCompactSession={agent.compactSession}
-          onUndoTurn={agent.undoTurn}
-          onRetryTurn={agent.retryTurn}
-          onEditAndResendMessage={agent.editAndResendMessage}
-          onRollbackToMessage={agent.rollbackToMessage}
+          onCompactSession={agent.isHistoryPreview ? undefined : agent.compactSession}
+          onUndoTurn={agent.isHistoryPreview ? undefined : agent.undoTurn}
+          onRetryTurn={agent.isHistoryPreview ? undefined : agent.retryTurn}
+          onEditAndResendMessage={agent.isHistoryPreview ? undefined : agent.editAndResendMessage}
+          onRollbackToMessage={agent.isHistoryPreview ? undefined : agent.rollbackToMessage}
           onInitAgentsMd={agent.initAgentsMd}
           onExportSession={(format, destination) => { void agent.exportSession(agent.currentSessionId, format, destination); }}
-          onSelectCouncilWinner={agent.selectCouncilWinner}
+          onSelectCouncilWinner={agent.isHistoryPreview ? undefined : agent.selectCouncilWinner}
           onRenameSession={agent.renameSession}
           currentSessionId={agent.currentSessionId}
           settings={agent.settings}
@@ -163,85 +186,104 @@ export function App() {
         />
       </main>
       {artifactOpen && agent.artifacts.length > 0 && (
-        <ArtifactPane
-          artifacts={agent.artifacts}
-          activeArtifactId={agent.activeArtifactId}
-          onSelectArtifact={agent.setActiveArtifactId}
-          onClose={() => setArtifactOpen(false)}
-          overlay={true}
-        />
+        <OptionalPanel label="Artifacts" onClose={() => setArtifactOpen(false)}>
+          <ArtifactPane
+            artifacts={agent.artifacts}
+            activeArtifactId={agent.activeArtifactId}
+            onSelectArtifact={agent.setActiveArtifactId}
+            onClose={() => setArtifactOpen(false)}
+            overlay={true}
+          />
+        </OptionalPanel>
       )}
 
       {modelOpen && agent.settings && agent.effectiveConfig && (
-        <ModelPicker
-          open={modelOpen}
-          settings={agent.settings}
-          effective={agent.effectiveConfig}
-          override={agent.modelOverride}
-          onClose={() => setModelOpen(false)}
-          onSelect={agent.selectModel}
-          onUpdateOverride={agent.updateRunConfig}
-          onClearOverride={agent.clearModelOverride}
-          onToggleFavorite={agent.toggleFavorite}
-          onAddCustomModel={agent.addCustomModel}
-          onRefreshModels={agent.refreshModels}
-        />
+        <OptionalPanel label="Model picker" onClose={() => setModelOpen(false)}>
+          <ModelPicker
+            open={modelOpen}
+            settings={agent.settings}
+            effective={agent.effectiveConfig}
+            override={agent.modelOverride}
+            onClose={() => setModelOpen(false)}
+            onSelect={agent.selectModel}
+            onUpdateOverride={agent.updateRunConfig}
+            onClearOverride={agent.clearModelOverride}
+            onToggleFavorite={agent.toggleFavorite}
+            onAddCustomModel={agent.addCustomModel}
+            onRefreshModels={agent.refreshModels}
+          />
+        </OptionalPanel>
       )}
 
       {artifactsLibraryOpen && (
-        <ArtifactsLibraryModal
-          open={artifactsLibraryOpen}
-          onClose={() => setArtifactsLibraryOpen(false)}
-          onLoadArtifacts={agent.listAllArtifacts}
-          onSelectSession={agent.switchSession}
-        />
+        <OptionalPanel label="Artifacts library" onClose={() => setArtifactsLibraryOpen(false)}>
+          <ArtifactsLibraryModal
+            open={artifactsLibraryOpen}
+            onClose={() => setArtifactsLibraryOpen(false)}
+            onLoadArtifacts={agent.listAllArtifacts}
+            onSelectSession={agent.switchSession}
+          />
+        </OptionalPanel>
       )}
 
       {settingsOpen && agent.settings && (
-        <SettingsModal
-          settings={agent.settings}
-          onSave={agent.updateSettings}
-          onClose={() => setSettingsOpen(false)}
-        />
+        <OptionalPanel label="Settings" onClose={() => setSettingsOpen(false)}>
+          <SettingsModal
+            settings={agent.settings}
+            onSave={agent.updateSettings}
+            onAbout={() => { setSettingsOpen(false); setAboutOpen(true); }}
+            onClose={() => setSettingsOpen(false)}
+          />
+        </OptionalPanel>
       )}
 
+      {aboutOpen && <OptionalPanel label="About AetherAgent" onClose={() => setAboutOpen(false)}><AboutModal onClose={() => setAboutOpen(false)} onBeforeInstall={agent.prepareForUpdate} /></OptionalPanel>}
+
       {historyOpen && (
-        <SessionHistoryModal
-          open={historyOpen}
-          onClose={() => setHistoryOpen(false)}
-          sessionTitle={agent.sessionTitle}
-          sessionId={agent.currentSessionId ?? ''}
-          messages={agent.messages}
-          onCompact={() => { void agent.compactSession(); }}
-          onExport={(format) => { void agent.exportSession(agent.currentSessionId, format); }}
-        />
+        <OptionalPanel label="Session history" onClose={() => setHistoryOpen(false)}>
+          <SessionHistoryModal
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+            sessionTitle={agent.sessionTitle}
+            sessionId={agent.currentSessionId ?? ''}
+            messages={agent.messages}
+            onCompact={() => { void agent.compactSession(); }}
+            onExport={(format) => { void agent.exportSession(agent.currentSessionId, format); }}
+          />
+        </OptionalPanel>
       )}
 
       {toolsOpen && agent.settings && (
-        <ToolsInspectorModal
-          open={toolsOpen}
-          onClose={() => setToolsOpen(false)}
-          settings={agent.settings}
-        />
+        <OptionalPanel label="Tools" onClose={() => setToolsOpen(false)}>
+          <ToolsInspectorModal
+            open={toolsOpen}
+            onClose={() => setToolsOpen(false)}
+            settings={agent.settings}
+          />
+        </OptionalPanel>
       )}
 
       {memoryOpen && (
-        <MemoryModal
-          open={memoryOpen}
-          onClose={() => setMemoryOpen(false)}
-          workspaceCwd={agent.workspaceCwd}
-          onReadMemory={agent.readAgentsMd}
-          onSaveMemory={agent.saveAgentsMd}
-          onInitMemory={agent.initAgentsMd}
-        />
+        <OptionalPanel label="Memory" onClose={() => setMemoryOpen(false)}>
+          <MemoryModal
+            open={memoryOpen}
+            onClose={() => setMemoryOpen(false)}
+            workspaceCwd={agent.workspaceCwd}
+            onReadMemory={agent.readAgentsMd}
+            onSaveMemory={agent.saveAgentsMd}
+            onInitMemory={agent.initAgentsMd}
+          />
+        </OptionalPanel>
       )}
 
       {spotlightOpen && (
-        <SpotlightBar
-          isOpen={spotlightOpen}
-          onClose={() => setSpotlightOpen(false)}
-          onSubmitPrompt={agent.sendMessage}
-        />
+        <OptionalPanel label="Spotlight" onClose={() => setSpotlightOpen(false)}>
+          <SpotlightBar
+            isOpen={spotlightOpen}
+            onClose={() => setSpotlightOpen(false)}
+            onSubmitPrompt={agent.sendMessage}
+          />
+        </OptionalPanel>
       )}
 
       {liveShellOpen && (
@@ -254,7 +296,9 @@ export function App() {
           >
             <X size={14} />
           </button>
-          <InteractiveTerminal />
+          <OptionalPanel label="Live shell" onClose={() => setLiveShellOpen(false)}>
+            <InteractiveTerminal />
+          </OptionalPanel>
         </div>
       )}
 
