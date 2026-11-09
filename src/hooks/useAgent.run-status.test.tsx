@@ -89,6 +89,42 @@ it('keeps active origin status out of a different viewed session and never persi
  expect(saves.at(-1).runStatus).toBeUndefined();
  expect(saves.at(-1).phaseSince).toBeUndefined();
 });
+it('publishes sidebar activity for a hidden run and completes only after its save acknowledgement', async () => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ expect(hook.result.current.sessionActivities.origin).toBeUndefined();
+ await act(async () => {await hook.result.current.sendMessage('work');});
+ const scope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ expect(hook.result.current.sessionActivities.origin).toBe('running');
+ await act(async () => {hook.result.current.newSession();});
+ expect(hook.result.current.runStatus).toBeNull();
+ expect(hook.result.current.sessionActivities.origin).toBe('running');
+ let resolve!:()=>void; saveAck=new Promise<void>(r=>{resolve=r;});
+ await act(async () => {event({type:'done',data:{...scope,cancelled:false}});});
+ expect(hook.result.current.sessionActivities.origin).toBe('saving');
+ await act(async () => {resolve();});
+ expect(hook.result.current.sessionActivities.origin).toBe('completed');
+ expect(hook.result.current.runStatus).toBeNull();
+ await act(async () => {await hook.result.current.switchSession('origin');});
+ await act(async () => {await hook.result.current.sendMessage('next');});
+ expect(hook.result.current.sessionActivities.origin).toBe('running');
+ const retryScope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ await act(async () => {event({type:'done',data:{...retryScope,cancelled:true}});});
+ await waitFor(() => expect(hook.result.current.sessionActivities.origin).toBe('cancelled'));
+ await act(async () => {hook.result.current.clearCurrentSession();});
+ expect(hook.result.current.sessionActivities.origin).toBeUndefined();
+});
+
+it('does not label a failed final save as completed in the sidebar', async () => {
+ const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => {await hook.result.current.sendMessage('work');});
+ const scope={sessionId:'origin',runId:hook.result.current.messages.at(-1)!.runId!};
+ let reject!:(error:Error)=>void; saveAck=new Promise<void>((_,r)=>{reject=r;});
+ await act(async () => {event({type:'done',data:{...scope,cancelled:false}});});
+ expect(hook.result.current.sessionActivities.origin).toBe('saving');
+ await act(async () => {reject(new Error('disk full'));});
+ expect(hook.result.current.sessionActivities.origin).toBe('failed');
+});
+
 it('removes the run surface when the viewed conversation is cleared', async () => {
  const hook=renderHook(useAgent); await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
  await act(async () => {await hook.result.current.sendMessage('work');});

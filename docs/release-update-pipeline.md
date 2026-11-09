@@ -60,7 +60,7 @@ Provision protected environments dengan approval reviewer dan pembatasan branch/
 Perintah reusable:
 
 ```powershell
-./scripts/build-signed-release.ps1 -Tag vVERSION -ArchiveRoot D:/retained-releases -CandidateDirectory D:/candidates/unique-run
+./scripts/build-signed-release.ps1 -ArchiveRoot D:/retained-releases -CandidateDirectory D:/candidates/unique-run
 ```
 
 ```bash

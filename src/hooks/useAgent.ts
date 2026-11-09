@@ -19,6 +19,7 @@ import type {
   ProviderConfig,
   ReasoningEffort,
   Session,
+  SessionActivity,
   SessionData,
   SessionPage,
   SessionWindow,
@@ -172,6 +173,25 @@ function resolveEffective(settings: AgentSettings | null, override?: SessionMode
   };
 }
 
+function normalizeSelectedSkills(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('Selected skills must be a list of skill names.');
+  if (value.length > 5) throw new Error('Select at most five skills for the next turn.');
+  const names = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string') throw new Error('Selected skill names must be strings.');
+    const trimmed = entry.trim();
+    // Match reflection::validate_name, including ASCII-only case normalization.
+    if (trimmed.length > 64 || !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(trimmed)) {
+      throw new Error('Selected skill names must be ASCII slugs of at most 64 characters.');
+    }
+    const name = trimmed.toLowerCase();
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(name)) throw new Error('Selected skill names cannot be Windows device names.');
+    names.add(name);
+  }
+  return [...names];
+}
+
 function hasExactKeys(value: unknown, keys: string[]): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
@@ -206,6 +226,8 @@ export function useAgent() {
   const [projection, setProjection] = useState<{ data: SessionData; runStatus: RunStatus | null }>(() => ({ data: createSession(), runStatus: null }));
   const { data, runStatus } = projection;
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionActivities, setSessionActivities] = useState<Record<string, SessionActivity>>({});
+  const sessionActivitiesRef = useRef(sessionActivities);
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -257,7 +279,18 @@ export function useAgent() {
   }, []);
 
   const publishLive = useCallback((live: LiveSession) => {
-    if (sessionIdRef.current !== live.data.session.id) return;
+    const id = live.data.session.id;
+    const phase = live.runStatus?.phase;
+    const activity: SessionActivity | undefined = !phase ? undefined : phase === 'error' ? 'failed'
+      : phase === 'saving_results' ? 'saving' : phase === 'completed' || phase === 'cancelled' ? phase : 'running';
+    if (sessionActivitiesRef.current[id] !== activity) {
+      const next = { ...sessionActivitiesRef.current };
+      if (activity) next[id] = activity;
+      else delete next[id];
+      sessionActivitiesRef.current = next;
+      setSessionActivities(next);
+    }
+    if (sessionIdRef.current !== id) return;
     dataRef.current = live.data;
     currentRunRef.current = live.runId;
     streamingMessageIdRef.current = live.messageId;
@@ -1218,6 +1251,7 @@ export function useAgent() {
       candidateB?: { provider: ProviderConfig; thinking?: boolean; reasoningEffort?: ReasoningEffort };
       executionMode?: ExecutionMode;
       imageInputs?: import('../types/agent').ImageInput[];
+      selectedSkills?: string[];
     },
   ) => {
     const prompt = (rawPrompt || '').trim();
@@ -1225,7 +1259,14 @@ export function useAgent() {
       setLastError('Wait for local state to finish loading.');
       return false;
     }
-    if (/^\/(review|reflect|refine)$/i.test(prompt)) return reviewSession();
+    let selectedSkills: string[] | undefined;
+    try {
+      selectedSkills = normalizeSelectedSkills(options?.selectedSkills);
+    } catch (error) {
+      setLastError(String(error));
+      return false;
+    }
+    if (!selectedSkills?.length && /^\/(review|reflect|refine)$/i.test(prompt)) return reviewSession();
     const currentSettings = settingsRef.current;
     const effective = resolveEffective(currentSettings, dataRef.current.modelOverride);
     if ((!prompt && (!attachments || attachments.length === 0)) || currentRunRef.current || viewedLive().runStatus?.phase === 'saving_results' || sessionOperationRef.current || !currentSettings || !effective) {
@@ -1300,9 +1341,10 @@ export function useAgent() {
     const userMessage: ChatMessage = {
       id: makeId('msg'),
       role: 'user',
-      content: prompt,
+      content: prompt ? rawPrompt : '',
       attachments,
       imageInputs,
+      ...(selectedSkills === undefined ? {} : { selectedSkills }),
       timestamp: Date.now(),
     };
     const assistantId = `msg_assistant_${runId}`;
@@ -1332,7 +1374,7 @@ export function useAgent() {
         },
       } : undefined,
     };
-    let activePrompt = prompt;
+    let activePrompt = userMessage.content;
     if (/^\/plan(\s+.*)?$/i.test(prompt)) {
       const task = prompt.replace(/^\/plan\s*/i, '').trim();
       activePrompt = `Please formulate a structured step-by-step execution plan for: ${task || 'the current task'}.\n\nFormat your plan inside a \`\`\`plan code block with checkable steps:\n\`\`\`plan\n- [ ] Step 1: <Description>\n- [ ] Step 2: <Description>\n- [ ] Step 3: <Description>\n\`\`\`\n\nThen proceed to carry out the steps sequentially, updating and reporting progress as each step completes.`;
@@ -1406,6 +1448,7 @@ export function useAgent() {
         skillPaths: currentSettings.skillPaths,
         mcpServers: [],
         self_improvement_enabled: false,
+        reviewConfig: currentSettings.reviewConfig,
         autoCompactionEnabled: currentSettings.autoCompactionEnabled ?? true,
         autoCompactionThresholdTokens: currentSettings.autoCompactionThresholdTokens ?? 65536,
         executionMode: selectedExecutionMode,
@@ -1426,6 +1469,7 @@ export function useAgent() {
         skillPaths: currentSettings.skillPaths,
         mcpServers: [],
         self_improvement_enabled: false,
+        reviewConfig: currentSettings.reviewConfig,
         autoCompactionEnabled: currentSettings.autoCompactionEnabled ?? true,
         autoCompactionThresholdTokens: currentSettings.autoCompactionThresholdTokens ?? 65536,
         executionMode: selectedExecutionMode,
@@ -1825,6 +1869,10 @@ export function useAgent() {
       }
     }
     liveSessionsRef.current.delete(sessionId);
+    const activities = { ...sessionActivitiesRef.current };
+    delete activities[sessionId];
+    sessionActivitiesRef.current = activities;
+    setSessionActivities(activities);
     try {
       await persistenceQueueRef.current;
       await invoke('delete_session', { sessionId });
@@ -1913,7 +1961,8 @@ export function useAgent() {
   }, []);
 
   const listSkills = useCallback(async (paths?: string[]) => {
-    return invoke<import('../types/agent').SkillInfo[]>('list_skills', { paths });
+    return invoke<import('../types/agent').SkillInfo[]>('list_skills', { paths,
+      expectedWorkspace: dataRef.current.session.workspaceCwd ?? workspaceRef.current });
   }, []);
 
   const listAllArtifacts = useCallback(async (): Promise<import('../types/agent').GlobalArtifactItem[]> => {
@@ -2145,7 +2194,8 @@ export function useAgent() {
     try {
       await persistData(next, false, isOrigin);
       if (!isOrigin()) return null;
-      return { content: undone.content, attachments: undone.attachments, imageInputs: undone.imageInputs };
+      return { content: undone.content, attachments: undone.attachments, imageInputs: undone.imageInputs,
+        ...(undone.selectedSkills === undefined ? {} : { selectedSkills: undone.selectedSkills }) };
     } catch {
       if (isOrigin() && !currentRunRef.current) {
         mutateData(() => previous);
@@ -2301,7 +2351,10 @@ export function useAgent() {
     if (navigationRef.current !== navigation || sessionIdRef.current !== previous.session.id) return false;
 
     const retainedInputs = replayImageInputs ?? targetMsg.imageInputs;
-    return sendMessage(clean, attachments, retainedInputs?.length ? { imageInputs: retainedInputs } : undefined);
+    return sendMessage(newContent, attachments, {
+      ...(retainedInputs?.length ? { imageInputs: retainedInputs } : {}),
+      ...(targetMsg.selectedSkills === undefined ? {} : { selectedSkills: targetMsg.selectedSkills }),
+    });
   }, [ensureFullHistory, mutateData, persistData, sendMessage, detachCurrentRun]);
 
   const retryTurn = useCallback(async (messageId: string): Promise<boolean> => {
@@ -2447,6 +2500,7 @@ export function useAgent() {
     hasOlderMessages: (preview.page?.window.offset ?? data.historyWindow?.offset ?? 0) > 0,
     totalMessageCount: preview.page?.window.total ?? ((data.historyWindow?.offset ?? 0) + data.messages.length),
     sessions,
+    sessionActivities,
     currentSessionId: data.session.id,
     sessionTitle: data.session.title,
     modelOverride: data.modelOverride,

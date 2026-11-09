@@ -54,9 +54,135 @@ function renderCanvas(overrides: Partial<CanvasProps> = {}) {
     onListFiles: async () => [],
     ...overrides,
   } as CanvasProps;
-  render(<ChatCanvas {...props} />);
-  return props;
+  const view = render(<ChatCanvas {...props} />);
+  return { ...props, rerender: view.rerender };
 }
+
+describe('ChatCanvas selected skills', () => {
+  const skills = [{ name: 'ponytail', description: 'Smallest complete implementation', path: '/skills/ponytail/SKILL.md', source: '/skills' }];
+  it('selects a skill as removable turn context without replacing or appending prompt text', async () => {
+    const props = renderCanvas({ onListSkills: vi.fn(async () => skills) });
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Fix the parser' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Smallest/ }));
+    expect(input.value).toBe('Fix the parser');
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('Fix the parser', undefined,
+      expect.objectContaining({ selectedSkills: ['ponytail'] })));
+    expect(screen.queryByRole('button', { name: 'Remove skill ponytail' })).toBeNull();
+  });
+
+  it('selects a discovered skill from slash autocomplete without submitting a template', async () => {
+    const props = renderCanvas({ onListSkills: vi.fn(async () => skills) });
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    await waitFor(() => expect(props.onListSkills).toHaveBeenCalled());
+    fireEvent.change(input, { target: { value: '/ponytail' } });
+    await screen.findByRole('button', { name: /\/ponytail.*Smallest/ });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(input.value).toBe('');
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends a typed skill slash command as metadata and leaves the task text clean', async () => {
+    const props = renderCanvas({ onListSkills: vi.fn(async () => skills) });
+    await waitFor(() => expect(props.onListSkills).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Message AetherAgent'), { target: { value: '/ponytail Fix parser' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('Fix parser', undefined,
+      expect.objectContaining({ selectedSkills: ['ponytail'] })));
+  });
+
+  it('treats a local command after a skill prefix as task text, including after queueing', async () => {
+    const props = renderCanvas({ currentSessionId: 'a', onListSkills: vi.fn(async () => skills) });
+    await waitFor(() => expect(props.onListSkills).toHaveBeenCalled());
+    props.rerender(<ChatCanvas {...props} isStreaming />);
+    fireEvent.change(screen.getByLabelText('Message AetherAgent'), { target: { value: '/ponytail /clear' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    expect(props.onClearSession).not.toHaveBeenCalled();
+    props.rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('/clear', undefined,
+      expect.objectContaining({ selectedSkills: ['ponytail'] })));
+    expect(props.onClearSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old workspace catalog response after navigation', async () => {
+    let resolveOld!: (value: typeof skills) => void;
+    const old = new Promise<typeof skills>((resolve) => { resolveOld = resolve; });
+    const list = vi.fn().mockReturnValueOnce(old).mockResolvedValue([]);
+    const props = renderCanvas({ workspaceCwd: '/a', currentSessionId: 'a', onListSkills: list });
+    props.rerender(<ChatCanvas {...props} workspaceCwd="/b" currentSessionId="b" />);
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await act(async () => resolveOld(skills));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    await screen.findByText('No skills detected');
+    expect(screen.queryByRole('button', { name: /ponytail/ })).toBeNull();
+  });
+
+  it('keeps Stop reachable with selected skills while a run is streaming', async () => {
+    const props = renderCanvas({ isStreaming: true, onListSkills: vi.fn(async () => skills) });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Smallest/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/stop' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onStop).toHaveBeenCalledOnce());
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps rejected selections and clears them when moving to another session', async () => {
+    const props = renderCanvas({ currentSessionId: 'a', onListSkills: vi.fn(async () => skills), onSendMessage: vi.fn(async () => false) });
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Fix this' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Smallest/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledOnce());
+    expect(input.value).toBe('Fix this');
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove skill ponytail' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Smallest/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    props.rerender(<ChatCanvas {...props} currentSessionId="b" />);
+    expect(screen.queryByRole('button', { name: 'Remove skill ponytail' })).toBeNull();
+  });
+
+  it('snapshots skills into the queue and restores them when editing a queued prompt', async () => {
+    const props = { messages: [], isStreaming: true, stopRequested: false, onSendMessage: vi.fn(async () => true),
+      onStop: vi.fn(), onSelectArtifact: vi.fn(), onClearSession: vi.fn(), onNewSession: () => 'new',
+      onOpenSettings: vi.fn(), onOpenModelPicker: vi.fn(), effectiveConfig: null, sessionTitle: 'Queue skills',
+      currentSessionId: 'a', artifactCount: 0, isArtifactOpen: false, onToggleArtifacts: vi.fn(), onListFiles: async () => [],
+      onListSkills: vi.fn(async () => skills) } satisfies CanvasProps;
+    const { rerender } = render(<ChatCanvas {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Smallest/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    fireEvent.change(screen.getByLabelText('Message AetherAgent'), { target: { value: 'Queued task' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    expect(screen.queryByRole('button', { name: 'Remove skill ponytail' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued prompt' }));
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    rerender(<ChatCanvas {...props} currentSessionId="b" />);
+    expect(screen.queryByRole('button', { name: 'Remove skill ponytail' })).toBeNull();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('Queued task', undefined,
+      expect.objectContaining({ selectedSkills: ['ponytail'] })));
+  });
+});
 
 describe('ChatCanvas review commands', () => {
   it.each(['/refine', '/review', '/reflect'])('runs bare %s locally and describes the full conversation', async (command) => {
@@ -156,6 +282,104 @@ describe('ChatCanvas queue dispatch contract', () => {
     fireEvent.change(screen.getByLabelText('Message AetherAgent'), { target: { value: text } });
     fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
   }
+
+  it('sends the chosen queued prompt after stopping and saving, without consuming the draft or other items', async () => {
+    const { props, rerender } = queuedCanvas();
+    enqueue('wait for later');
+    enqueue('run this now');
+    const input = screen.getByLabelText('Message AetherAgent') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'unfinished draft' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Send queued prompt now' })[1]);
+    expect(props.onStop).toHaveBeenCalledOnce();
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} stopRequested />);
+    rerender(<ChatCanvas {...props} isStreaming={false} stopRequested={false}
+      runStatus={{ runId: 'run', sessionId: 'session-a', origin: 'chat', phase: 'saving_results', startedAt: 1, phaseSince: 2 }} />);
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledOnce());
+    expect(props.onSendMessage).toHaveBeenCalledWith('run this now', undefined, expect.objectContaining({ executionMode: expect.any(String) }));
+    await waitFor(() => expect(screen.queryByText('run this now')).toBeNull());
+    expect(screen.getByText('wait for later')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume Queue' })).toBeTruthy();
+    expect(input.value).toBe('unfinished draft');
+  });
+
+  it('retries a selected paused item only on explicit Send now and never duplicates a pending send', async () => {
+    let settle!: (accepted: boolean) => void;
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    const { props, rerender } = queuedCanvas({ onSendMessage: send });
+    enqueue('keep until accepted');
+    rerender(<ChatCanvas {...props} stopRequested />);
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    const button = screen.getByRole('button', { name: 'Send queued prompt now' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    await act(async () => settle(false));
+    expect(screen.getByText('keep until accepted')).toBeTruthy();
+    expect(send).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Send queued prompt now' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    await act(async () => settle(true));
+    expect(screen.queryByTestId('queued-prompts-banner')).toBeNull();
+  });
+
+  it('preserves queued skills, Council candidates and mode when Send now is selected', async () => {
+    localStorage.setItem('aether_execution_mode', 'request_review');
+    const skill = { name: 'ponytail', description: 'Keep it small', path: '/skills/ponytail/SKILL.md', source: '/skills' };
+    const { props, rerender } = queuedCanvas({ onListSkills: vi.fn(async () => [skill]) });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Context' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions & Skills' }));
+    fireEvent.click(await screen.findByRole('button', { name: /ponytail.*Keep it small/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close skills' }));
+    fireEvent.click(screen.getByTitle('Council Mode (Dual Model A/B Test)'));
+    enqueue('selected context');
+    fireEvent.click(screen.getByRole('button', { name: 'Send queued prompt now' }));
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('selected context', undefined,
+      expect.objectContaining({ executionMode: 'request_review', selectedSkills: ['ponytail'], council: true,
+        candidateA: expect.objectContaining({ provider: expect.objectContaining({ model: 'model-a' }) }),
+        candidateB: expect.objectContaining({ provider: expect.objectContaining({ model: 'model-b' }) }) })));
+  });
+
+  it('can remove a requested item before Stop completes without sending it or resuming other items', async () => {
+    const { props, rerender } = queuedCanvas();
+    enqueue('keep paused');
+    enqueue('cancel this');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Send queued prompt now' })[1]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove queued prompt' })[0]);
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await act(async () => {});
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+    expect(screen.queryByText('cancel this')).toBeNull();
+    expect(screen.getByText('keep paused')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume Queue' })).toBeTruthy();
+  });
+
+  it('keeps Send now scoped to its chat while waiting for Stop', async () => {
+    const { props, rerender } = queuedCanvas();
+    enqueue('session A priority');
+    fireEvent.click(screen.getByRole('button', { name: 'Send queued prompt now' }));
+    rerender(<ChatCanvas {...props} currentSessionId="session-b" isStreaming={false} />);
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+    rerender(<ChatCanvas {...props} isStreaming={false} />);
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith('session A priority', undefined, expect.any(Object)));
+  });
+
+  it.each([
+    { isSessionLoading: true }, { isHistoryPreview: true }, { isReviewing: true },
+    { runStatus: { runId: 'run', sessionId: 'session-a', origin: 'chat', phase: 'saving_results', startedAt: 1, phaseSince: 2 } },
+  ] satisfies Partial<CanvasProps>[])('disables Send now while the session cannot accept a new turn: %j', (blocked) => {
+    const { props, rerender } = queuedCanvas();
+    enqueue('not ready');
+    rerender(<ChatCanvas {...props} {...blocked} />);
+    const button = screen.getByRole('button', { name: 'Send queued prompt now' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(props.onStop).not.toHaveBeenCalled();
+    expect(props.onSendMessage).not.toHaveBeenCalled();
+  });
 
   it('preserves the queued execution mode and Council candidates until accepted', async () => {
     localStorage.setItem('aether_execution_mode', 'request_review');

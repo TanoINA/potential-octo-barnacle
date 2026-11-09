@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 const SUBAGENT_MAX_TURNS: usize = 25;
 const TOOL_BATCH_CONCURRENCY: usize = 4;
+const LEAN_WORKFLOW: &str = "\n## Proportionate execution\nHandle small tasks directly without subagents. Delegate only substantial independent work or when explicitly requested; do not create automatic reviewer/fixer chains. Inspect partial work before replacing a failed subagent. Run focused tests while editing, then broader checks once after the final change when risk warrants them. Monitor a long-running task through its existing task handle; avoid repeated sleep-and-status shell commands. Preserve required security, validation and data-loss safeguards.\n";
 
 async fn dispatch_tool_batch<I, F, Fut, C, T>(
     calls: I,
@@ -324,6 +325,65 @@ struct SubagentToolOutcome {
     activated_skill: Option<SkillInfo>,
 }
 
+fn selected_skill_names(messages: &[ChatMessage]) -> Result<Vec<String>, String> {
+    let Some(latest) = messages.iter().rfind(|message| message.role == "user") else {
+        return Ok(Vec::new());
+    };
+    if latest.selected_skills.len() > 5 {
+        return Err("Select at most five skills for the next turn.".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for name in &latest.selected_skills {
+        let key = name.to_ascii_lowercase();
+        super::reflection::validate_name(&key)
+            .map_err(|error| format!("Invalid selected skill name: {error}"))?;
+        if seen.insert(key.clone()) {
+            names.push(key);
+        }
+    }
+    Ok(names)
+}
+
+async fn load_selected_skill_context(
+    messages: &[ChatMessage],
+    catalog: &[SkillInfo],
+    emitter: &EmitterContext,
+) -> Result<String, String> {
+    let names = selected_skill_names(messages)?;
+    let mut context = String::new();
+    let mut activated = Vec::new();
+    for name in names {
+        let skill = find_skill(catalog, &name)
+            .ok_or_else(|| format!("Selected skill '{name}' was not found in the catalog."))?;
+        let instructions = read_skill_content(skill)
+            .await
+            .map_err(|error| format!("Could not load selected skill '{}': {error}", skill.name))?;
+        let header = format!("\n\n## Selected skill: {}\n", skill.name);
+        context
+            .len()
+            .checked_add(header.len())
+            .and_then(|length| length.checked_add(instructions.len()))
+            .filter(|length| *length <= 256 * 1024)
+            .ok_or("Selected skill instructions exceed the aggregate 256 KiB limit.")?;
+        context.push_str(&header);
+        context.push_str(&instructions);
+        activated.push(skill.clone());
+    }
+    for skill in activated {
+        emitter.skill(skill);
+    }
+    Ok(context)
+}
+
+fn messages_with_skill_context(messages: &[ChatMessage], context: &str) -> Vec<ChatMessage> {
+    let mut messages = messages.to_vec();
+    if let Some(latest) = messages.iter_mut().rfind(|message| message.role == "user") {
+        latest.content.push_str(context);
+    }
+    messages
+}
+
 /// Outcome of resolving a `use_skill` tool call against the skill catalog.
 struct SkillActivation {
     result: ToolExecutionResult,
@@ -494,7 +554,7 @@ fn inherited_run_policy(
     memory: Option<&str>,
     mode: ExecutionMode,
 ) -> String {
-    let mut policy = String::new();
+    let mut policy = LEAN_WORKFLOW.to_string();
     if let Some(operator) = operator.filter(|value| !value.trim().is_empty()) {
         policy.push_str(&format!("\n## Operator instructions\n{operator}"));
     }
@@ -1408,6 +1468,28 @@ impl AgentRunner {
             emitter.done(false, false);
             return;
         }
+        let all_skill_paths = match effective_skill_paths(
+            &workspace_cwd,
+            &request.skill_paths,
+            &request.review_config,
+        ) {
+            Ok(paths) => paths,
+            Err(error) => {
+                emitter.error(error);
+                emitter.done(false, false);
+                return;
+            }
+        };
+        let skills = load_skills(&all_skill_paths).await;
+        let selected_context =
+            match load_selected_skill_context(&request.messages, &skills, &emitter).await {
+                Ok(context) => context,
+                Err(error) => {
+                    emitter.error(error);
+                    emitter.done(false, false);
+                    return;
+                }
+            };
         let mcp_servers = if mcp_connections_allowed(request.execution_mode) {
             request.mcp_servers.as_slice()
         } else {
@@ -1433,20 +1515,6 @@ impl AgentRunner {
             });
         }
 
-        let all_skill_paths = match effective_skill_paths(
-            &workspace_cwd,
-            &request.skill_paths,
-            &request.review_config,
-        ) {
-            Ok(paths) => paths,
-            Err(error) => {
-                emitter.error(error);
-                mcp.shutdown().await;
-                emitter.done(false, false);
-                return;
-            }
-        };
-        let skills = load_skills(&all_skill_paths).await;
         let default_prompt = "You are AetherAgent, a native expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic (like Cursor and Linear).\n- CRITICAL: Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Keep explanations concise, clear, and direct without conversational filler or chatbot pleasantries.\n- Inspect before editing, use native tools deliberately, and route long outputs to artifacts.\n- For long-running commands, dev servers, or background watchers, use run_command with isDaemon: true to run in the background. Use manage_task to inspect logs, send input, or terminate tasks.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system = match request
             .system_prompt
@@ -1457,6 +1525,7 @@ impl AgentRunner {
             Some(custom) => format!("{default_prompt}\n\n## Operator instructions\n{custom}"),
             None => default_prompt.to_string(),
         };
+        system.push_str(LEAN_WORKFLOW);
         system.push_str(&render_skill_catalog(&skills));
         let skills_shared = Arc::new(RwLock::new(skills));
         let foreground_skill_tools = ForegroundSkillTools::new(
@@ -1484,7 +1553,7 @@ impl AgentRunner {
         system.push_str(&format!("\n## Active workspace\n{workspace_cwd}"));
         system.push_str(mode_instructions(request.execution_mode));
 
-        let mut request_messages = request.messages.clone();
+        let mut request_messages = messages_with_skill_context(&request.messages, &selected_context);
         if request.auto_compaction_enabled {
             let threshold = request.auto_compaction_threshold_tokens.unwrap_or(65_536);
             if let Some(compaction_evt) = apply_micro_compaction(
@@ -2138,6 +2207,29 @@ impl AgentRunner {
             return;
         }
 
+        let selected_context = async {
+            let mut names_a = selected_skill_names(&request_a.messages)?;
+            let mut names_b = selected_skill_names(&request_b.messages)?;
+            names_a.sort();
+            names_b.sort();
+            if names_a != names_b {
+                return Err("Council requests must use the same selected skills.".into());
+            }
+            let paths = effective_skill_paths(
+                &workspace_cwd, &request_a.skill_paths, &request_a.review_config,
+            )?;
+            let skills = load_skills(&paths).await;
+            load_selected_skill_context(&request_a.messages, &skills, &emitter).await
+        }.await;
+        let selected_context = match selected_context {
+            Ok(context) => context,
+            Err(error) => {
+                emitter.error(error);
+                emitter.done(false, false);
+                return;
+            }
+        };
+
         let default_prompt = "You are AetherAgent, an expert developer assistant. Follow these strict guidelines:\n- Maintain a clean, minimalist developer aesthetic.\n- Never use emojis, emotes, smileys, decorative symbols, or gamified AI tropes in responses.\n- Provide a direct, comprehensive, and high-quality response.\n- When referencing or creating generated files (documents, scripts, reports, images, etc.), always provide a clickable Markdown link with the exact absolute file path (e.g. `[filename.ext](file:///D:/path/to/filename.ext)` or `[filename.ext](D:/path/to/filename.ext)`), so the user can click it to open the file directly in their operating system.";
         let mut system_a = match request_a
             .system_prompt
@@ -2169,6 +2261,8 @@ impl AgentRunner {
             ExecutionMode::Auto => "\n## Permission & Execution Mode: AUTO (PREVIEW)\nAutomatically evaluate the impact of operations. Proceed autonomously on routine actions, but pause and request operator confirmation if an operation has significant risk of data loss.",
             ExecutionMode::Turbo => "\n## Permission & Execution Mode: TURBO\nRun all commands, tool calls, and workflows autonomously without restrictions or confirmation prompts unless explicitly requested by the operator.",
         };
+        system_a.push_str(LEAN_WORKFLOW);
+        system_b.push_str(LEAN_WORKFLOW);
         system_a.push_str(mode_instructions);
         system_b.push_str(mode_instructions);
         match load_workspace_memory(&workspace_cwd).await {
@@ -2181,7 +2275,7 @@ impl AgentRunner {
             Err(error) => emitter.error(error),
         }
 
-        let mut req_a_messages = request_a.messages.clone();
+        let mut req_a_messages = messages_with_skill_context(&request_a.messages, &selected_context);
         if request_a.auto_compaction_enabled {
             let threshold = request_a.auto_compaction_threshold_tokens.unwrap_or(65_536);
             let _ = apply_micro_compaction(
@@ -2197,7 +2291,7 @@ impl AgentRunner {
             append_history_message(&mut conv_a, message);
         }
 
-        let mut req_b_messages = request_b.messages.clone();
+        let mut req_b_messages = messages_with_skill_context(&request_b.messages, &selected_context);
         if request_b.auto_compaction_enabled {
             let threshold = request_b.auto_compaction_threshold_tokens.unwrap_or(65_536);
             let _ = apply_micro_compaction(
@@ -2911,6 +3005,204 @@ mod tests {
     use super::super::skills::workspace_skill_paths;
     use super::super::types::{ProviderKind, ReasoningEffort};
     use super::*;
+
+    #[tokio::test]
+    async fn selected_skills_reach_latest_provider_user_without_mutating_display_or_images() {
+        let (cwd, _) = workspace_with_skill("selected-fixture", "Follow every fixture instruction.");
+        let catalog = load_skills(&workspace_skill_paths(&cwd, &[])).await;
+        let messages: Vec<ChatMessage> = serde_json::from_value(serde_json::json!([
+            {"id":"old", "role":"user", "content":"Old prompt", "timestamp":1,
+             "selectedSkills":["removed-historical-skill"]},
+            {"id":"answer", "role":"assistant", "content":"Display answer", "timestamp":2,
+             "providerMessages":[{"role":"assistant","content":"Native answer"}]},
+            {"id":"latest", "role":"user", "content":"Current prompt", "timestamp":3,
+             "selectedSkills":["selected-fixture"],
+             "imageInputs":[{"sourcePath":"image.png","mediaType":"image/png","data":"aW1hZ2U="}]},
+            {"id":"trailing", "role":"assistant", "content":"", "timestamp":4,
+             "selectedSkills":["ignored-assistant-selection"]}
+        ])).unwrap();
+        let original = serde_json::to_value(&messages).unwrap();
+        let events = ToolEventCollector::default();
+        let emitter = EmitterContext {
+            app: AgentHost::new(events.clone()), run_id: "selected-run".into(),
+            session_id: "selected-session".into(),
+        };
+        let context = load_selected_skill_context(&messages, &catalog, &emitter).await.unwrap();
+        let augmented = messages_with_skill_context(&messages, &context);
+        let mut conversation = vec![serde_json::json!({"role":"system","content":"System unchanged"})];
+        for message in &augmented {
+            append_history_message(&mut conversation, message);
+        }
+        assert_eq!(conversation[0]["content"], "System unchanged");
+        assert_eq!(conversation[1]["content"], "Old prompt");
+        assert_eq!(conversation[2]["content"], "Native answer");
+        let blocks = &conversation[3]["content"];
+        let text = blocks[0]["text"].as_str().unwrap();
+        assert!(text.starts_with("Current prompt"));
+        assert!(text.contains("Follow every fixture instruction."), "{text}");
+        assert!(text.contains("name: selected-fixture"), "full skill content is required");
+        assert_eq!(blocks[1]["type"], "image_url");
+        assert_eq!(blocks[1]["image_url"]["url"], "data:image/png;base64,aW1hZ2U=");
+        assert_eq!(serde_json::to_value(&messages).unwrap(), original);
+        let events = events.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "skill_activated");
+        assert_eq!(events[0]["data"]["skill"]["name"], "selected-fixture");
+        assert_eq!(events[0]["data"]["runId"], "selected-run");
+    }
+
+    fn selected_skill_messages(names: &[&str]) -> Vec<ChatMessage> {
+        serde_json::from_value(serde_json::json!([{
+            "id":"selected-user", "role":"user", "content":"Prompt", "timestamp":1,
+            "selectedSkills":names
+        }])).unwrap()
+    }
+
+    fn selected_skill_emitter(events: &ToolEventCollector) -> EmitterContext {
+        EmitterContext {
+            app: AgentHost::new(events.clone()), run_id: "selected-run".into(),
+            session_id: "selected-session".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_skills_deduplicate_case_insensitively_and_reject_invalid_names() {
+        let (cwd, _) = workspace_with_skill("selected-fixture", "Unique instruction body.");
+        let catalog = load_skills(&workspace_skill_paths(&cwd, &[])).await;
+        let events = ToolEventCollector::default();
+        let emitter = selected_skill_emitter(&events);
+        let context = load_selected_skill_context(
+            &selected_skill_messages(&["selected-fixture", "SELECTED-FIXTURE", "Selected-Fixture"]),
+            &catalog, &emitter,
+        ).await.unwrap();
+        assert_eq!(context.matches("Unique instruction body.").count(), 1);
+        assert_eq!(events.0.lock().unwrap().len(), 1);
+        events.0.lock().unwrap().clear();
+        for name in ["", " ", " selected-fixture", "selected-fixture ", "../selected-fixture",
+                     "C:\\skills\\SKILL.md", "selected/fixture", "selected\nfixture", "unknown-skill"] {
+            assert!(load_selected_skill_context(
+                &selected_skill_messages(&["selected-fixture", name]), &catalog, &emitter,
+            ).await.is_err(), "must reject {name:?}");
+            assert!(events.0.lock().unwrap().is_empty(), "no activation on partial failure");
+        }
+        assert!(load_selected_skill_context(
+            &selected_skill_messages(&["selected-fixture"; 6]), &catalog, &emitter,
+        ).await.is_err(), "at most five selected names");
+    }
+
+    #[tokio::test]
+    async fn selected_skills_bound_aggregate_context_bytes_before_activation() {
+        let (cwd, root) = workspace_with_skill("selected-large-a", &"é".repeat(70 * 1024));
+        let first = std::fs::read_to_string(
+            root.join(".aether/skills/selected-large-a/SKILL.md"),
+        ).unwrap();
+        let second_dir = root.join(".aether/skills/selected-large-b");
+        std::fs::create_dir_all(&second_dir).unwrap();
+        let first_header = "\n\n## Selected skill: selected-large-a\n";
+        let second_header = "\n\n## Selected skill: selected-large-b\n";
+        let metadata = "---\nname: selected-large-b\ndescription: Regression fixture.\n---\n";
+        let padding = 256 * 1024 - first_header.len() - first.len()
+            - second_header.len() - metadata.len();
+        let mut second = format!("{metadata}{}", "x".repeat(padding));
+        let path = second_dir.join("SKILL.md");
+        std::fs::write(&path, &second).unwrap();
+        let catalog = load_skills(&workspace_skill_paths(&cwd, &[])).await;
+        let messages = selected_skill_messages(&["selected-large-a", "selected-large-b"]);
+        let events = ToolEventCollector::default();
+        let emitter = selected_skill_emitter(&events);
+        let context = load_selected_skill_context(&messages, &catalog, &emitter).await.unwrap();
+        assert_eq!(context.len(), 256 * 1024, "exactly 256 KiB is allowed");
+        assert_eq!(events.0.lock().unwrap().len(), 2);
+        events.0.lock().unwrap().clear();
+
+        second.push('x');
+        std::fs::write(&path, second).unwrap();
+        match load_selected_skill_context(&messages, &catalog, &emitter).await {
+            Err(error) => assert!(error.contains("256 KiB"), "{error}"),
+            Ok(_) => panic!("must reject aggregate context one byte over 256 KiB"),
+        }
+        assert!(events.0.lock().unwrap().is_empty(), "no activation on partial failure");
+    }
+
+    #[tokio::test]
+    async fn selected_skills_fail_closed_when_file_is_unreadable_after_discovery() {
+        let (cwd, root) = workspace_with_skill("selected-readable", "Readable instructions.");
+        let unreadable_dir = root.join(".aether/skills/selected-unreadable");
+        std::fs::create_dir_all(&unreadable_dir).unwrap();
+        let path = unreadable_dir.join("SKILL.md");
+        std::fs::write(&path,
+            "---\nname: selected-unreadable\ndescription: Regression fixture.\n---\nUnavailable instructions.\n",
+        ).unwrap();
+        let catalog = load_skills(&workspace_skill_paths(&cwd, &[])).await;
+        assert!(find_skill(&catalog, "selected-unreadable").is_some());
+        // Moving the discovered file makes it unreadable without platform-specific ACL changes.
+        std::fs::rename(&path, unreadable_dir.join("SKILL.unavailable")).unwrap();
+        let events = ToolEventCollector::default();
+        let error = load_selected_skill_context(
+            &selected_skill_messages(&["selected-readable", "selected-unreadable"]),
+            &catalog, &selected_skill_emitter(&events),
+        ).await.unwrap_err();
+        assert!(error.contains("Could not load selected skill 'selected-unreadable'"), "{error}");
+        assert!(events.0.lock().unwrap().is_empty(), "no activation on partial failure");
+    }
+
+    fn selected_skill_request(cwd: &str, names: &[&str]) -> AgentRunRequest {
+        serde_json::from_value(serde_json::json!({
+            "runId":"selected-run", "sessionId":"selected-session",
+            "provider":{"baseUrl":"", "model":"must-not-reach-provider"},
+            "messages":selected_skill_messages(names), "maxTurns":1,
+            "mcpServers":[{"id":"must-not-connect", "name":"must-not-connect",
+                "command":std::path::Path::new(cwd).join("must-not-spawn.exe"), "enabled":true}],
+            "autoCompactionEnabled":false,
+            "reviewConfig":{"createDir":std::path::Path::new(cwd).join("review-skills")}
+        })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn selected_skills_runner_missing_skill_emits_error_done_before_mcp_or_provider() {
+        let (cwd, _) = workspace_with_skill("selected-fixture", "Local instructions.");
+        let events = ToolEventCollector::default();
+        AgentRunner::new().run(
+            AgentHost::new(events.clone()), cwd.clone(),
+            selected_skill_request(&cwd, &["missing-selected-fixture"]),
+            CancellationToken::new(),
+        ).await;
+        let events = events.0.lock().unwrap();
+        assert_eq!(events.len(), 2, "only selection error + done, no MCP warning or provider events: {events:?}");
+        assert_eq!(events[0]["type"], "error");
+        assert_eq!(events[0]["data"]["message"],
+            "Selected skill 'missing-selected-fixture' was not found in the catalog.");
+        assert_eq!(events[1]["type"], "done");
+        assert_eq!(events[1]["data"]["successful"], false);
+        assert_eq!(events[1]["data"]["cancelled"], false);
+    }
+
+    #[tokio::test]
+    async fn selected_skills_council_validates_both_requests_before_either_provider() {
+        let (cwd, _) = workspace_with_skill("selected-fixture", "Shared instructions.");
+        for (names_a, names_b, expected) in [
+            (vec!["missing-selected-fixture"], vec!["missing-selected-fixture"], "was not found in the catalog"),
+            (vec!["../invalid"], vec!["selected-fixture"], "Invalid selected skill name"),
+            (vec!["selected-fixture"], vec!["../invalid"], "Invalid selected skill name"),
+            (vec!["selected-fixture"], vec!["selected-fixture"; 6], "at most five"),
+            (vec!["selected-fixture"], vec![], "same selected skills"),
+            (vec![], vec!["selected-fixture"], "same selected skills"),
+        ] {
+            let events = ToolEventCollector::default();
+            AgentRunner::new().run_council(
+                AgentHost::new(events.clone()), cwd.clone(),
+                selected_skill_request(&cwd, &names_a), selected_skill_request(&cwd, &names_b),
+                CancellationToken::new(),
+            ).await;
+            let events = events.0.lock().unwrap();
+            assert_eq!(events.len(), 2, "no provider or partial activation events: {events:?}");
+            assert_eq!(events[0]["type"], "error");
+            assert!(events[0]["data"]["message"].as_str().unwrap().contains(expected), "{events:?}");
+            assert_eq!(events[1]["type"], "done");
+            assert_eq!(events[1]["data"]["successful"], false);
+            assert_eq!(events[1]["data"]["cancelled"], false);
+        }
+    }
 
     #[test]
     fn update_gate_refuses_active_and_cancelled_runs_until_finish() {
@@ -3856,6 +4148,7 @@ mod tests {
             "ROOT_SENTINEL",
             "CHILD_SENTINEL",
             "REQUEST REVIEW",
+            LEAN_WORKFLOW,
         ] {
             assert!(system.contains(sentinel), "missing {sentinel}: {system}");
         }

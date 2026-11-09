@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    paths: ['scripts/**', '.github/workflows/**', 'package*.json', 'src/**', 'src-tauri/**']
+    paths: ['scripts/**', '.github/workflows/**', 'package*.json', 'src/**', 'src-tauri/**', '*.config.*', 'tsconfig*.json']
   workflow_call:
     inputs:
       ref:

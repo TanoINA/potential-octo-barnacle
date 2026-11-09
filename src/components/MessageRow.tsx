@@ -1,6 +1,7 @@
 import { memo, useCallback, useState } from 'react';
 import {
   Check,
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -119,6 +120,14 @@ export const MessageRow = memo(function MessageRow({
         {message.isStreaming && !message.notice && <span className="text-[10px] text-[#58a6ff] animate-pulse">streaming</span>}
         {message.isStreaming && message.notice && <span className="text-[10px] text-[#e3b341] animate-pulse">reconnecting</span>}
       </div>
+
+      {isUser && Boolean(message.selectedSkills?.length) && (
+        <div aria-label="Skills used for this message" className="mb-2 flex max-w-full flex-wrap justify-end gap-1.5">
+          {message.selectedSkills?.map((name) => <span key={name} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#30363d] bg-[#161b22] px-2 py-0.5 text-[11px] text-[#a5d6ff]">
+            <BookOpen size={11} className="shrink-0" /><span className="max-w-56 truncate">{name}</span>
+          </span>)}
+        </div>
+      )}
 
       {isUser && message.attachments && message.attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap justify-end gap-1.5 max-w-full">

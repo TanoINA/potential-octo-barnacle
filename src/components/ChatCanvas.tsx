@@ -3,6 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   LoaderCircle,
+  ArrowRight,
+  Pencil,
   AtSign,
   ChevronDown,
   BookOpen,
@@ -44,6 +46,7 @@ import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, Su
 import { MessageRow } from './MessageRow';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ActivityTray } from './ActivityTray';
+import { SkillPicker } from './SkillPicker';
 import { TimelineScrubber } from './TimelineScrubber';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 
@@ -102,6 +105,7 @@ interface ChatCanvasProps {
       candidateB?: { provider: import('../types/agent').ProviderConfig; thinking?: boolean; reasoningEffort?: import('../types/agent').ReasoningEffort };
       executionMode?: ExecutionMode;
       imageInputs?: import('../types/agent').ImageInput[];
+      selectedSkills?: string[];
     },
   ) => Promise<boolean>;
   onStop: () => void;
@@ -309,6 +313,7 @@ interface QueuedPrompt {
   attachments?: AttachedContext[];
   options: RunOptions;
   sessionId: string | null | undefined;
+  sendNow?: boolean;
 }
 
 const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
@@ -372,6 +377,7 @@ export function ChatCanvas({
   workspaceCwd = '',
 }: ChatCanvasProps) {
   const [input, setInput] = useState('');
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
@@ -467,6 +473,11 @@ export function ChatCanvas({
   }, []);
   useEffect(() => {
     setAttachedContexts([]);
+    setSelectedSkills([]);
+    setSkillsMenuOpen(false);
+    setLoadingSkills(false);
+    setSkillsError(null);
+    setAvailableSkills([]);
     preparedImageInputsRef.current.clear();
     setPendingAttachments(0);
     setAttachmentError(null);
@@ -478,22 +489,36 @@ export function ChatCanvas({
     if (stopRequested) setStoppedWithQueue(true);
   }, [stopRequested]);
 
+  const queueActionsBlocked = isSessionLoading || isHistoryPreview || isReviewing || runStatus?.phase === 'saving_results'
+    || dispatchingQueueRef.current.has(currentSessionId);
+
+  const handleSendQueuedNow = (id: string) => {
+    if (queueActionsBlocked || !queuedPrompts.some((item) => item.id === id) || queuedPrompts.some((item) => item.sendNow)) return;
+    setStoppedWithQueue(true);
+    setQueuedPrompts((items) => {
+      const item = items.find((queued) => queued.id === id);
+      return item ? [{ ...item, sendNow: true }, ...items.filter((queued) => queued.id !== id)] : items;
+    });
+    if (isStreaming && !stopRequested) onStop();
+  };
+
   const handleResumeQueue = () => {
     if (!isStreaming && !isReviewing) setStoppedWithQueue(false);
   };
 
   const handleEditQueued = useCallback((id: string) => {
     const item = queuedPrompts.find((q) => q.id === id);
-    if (!item) return;
+    if (!item || dispatchingQueueRef.current.has(currentSessionId)) return;
     setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
     invalidateAttachments();
     setInput(item.prompt);
+    setSelectedSkills(item.options.selectedSkills ?? []);
     preparedImageInputsRef.current = new Map((item.options.imageInputs ?? []).map((image) => [image.sourcePath, { ...image }]));
     setAttachedContexts(item.attachments ?? []);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
-  }, [queuedPrompts, setQueuedPrompts, invalidateAttachments]);
+  }, [queuedPrompts, currentSessionId, setQueuedPrompts, invalidateAttachments]);
 
   useEffect(() => {
     const handleInsertPrompt = (e: Event) => {
@@ -518,6 +543,7 @@ export function ChatCanvas({
       invalidateAttachments();
       setInput('');
       setAttachedContexts([]);
+      setSelectedSkills([]);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
@@ -538,8 +564,9 @@ export function ChatCanvas({
   }, [isStreaming, isReviewing, onSendMessage]);
 
   const handleRemoveQueued = useCallback((id: string) => {
+    if (dispatchingQueueRef.current.has(currentSessionId)) return;
     setQueuedPrompts((prev) => prev.filter((q) => q.id !== id));
-  }, [setQueuedPrompts]);
+  }, [currentSessionId, setQueuedPrompts]);
 
   const availableModelsList = useMemo(() => {
     if (!settings) return [];
@@ -605,6 +632,8 @@ export function ChatCanvas({
   const [addContextOpen, setAddContextOpen] = useState(false);
   const [skillsMenuOpen, setSkillsMenuOpen] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
+  const [loadingSkills, setLoadingSkills] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(() => {
     try {
@@ -802,12 +831,15 @@ export function ChatCanvas({
 
   // Preload skills automatically on mount and whenever streaming finishes
   useEffect(() => {
+    let disposed = false;
+    const origin = { ...attachmentScopeRef.current };
     if (onListSkills && !isStreaming) {
       onListSkills()
-        .then((skills) => setAvailableSkills(skills))
-        .catch((err) => console.error('Failed to preload skills', err));
+        .then((skills) => { if (!disposed && isAttachmentOrigin(origin)) setAvailableSkills(skills); })
+        .catch((error) => { if (!disposed && isAttachmentOrigin(origin)) setSkillsError(String(error)); });
     }
-  }, [onListSkills, isStreaming]);
+    return () => { disposed = true; };
+  }, [onListSkills, isStreaming, currentSessionId, workspaceCwd, isAttachmentOrigin]);
 
   type ViewAnchor = { id: string; offset: number };
   const visibleAnchorRef = useRef<ViewAnchor | null>(null);
@@ -1090,11 +1122,11 @@ export function ChatCanvas({
 
   useEffect(() => () => { requestRef.current = null; cancelAnchorCorrection(); }, []);
 
-  // Slash entries are native operations; skills remain available through Add Context.
-  const allSlashItems: SlashItem[] = useMemo(
-    () => [...COMMAND_ITEMS, ...TOOL_ITEMS],
-    [],
-  );
+  const allSlashItems: SlashItem[] = useMemo(() => {
+    const commands = [...COMMAND_ITEMS, ...TOOL_ITEMS];
+    return [...commands, ...availableSkills.filter((skill) => !commands.some((item) => item.command.toLowerCase() === `/${skill.name.toLowerCase()}`))
+      .map((skill): SlashItem => ({ id: `skill-${skill.name}`, category: 'SKILLS', command: `/${skill.name}`, description: skill.description, iconType: 'skill' }))];
+  }, [availableSkills]);
 
   const slashQuery = useMemo(() => {
     if (!input.startsWith('/') || input.includes('\n')) return null;
@@ -1273,24 +1305,24 @@ export function ChatCanvas({
 
   const handleOpenSkillsList = async () => {
     setAddContextOpen(false);
-    if (onListSkills) {
-      try {
-        const skills = await onListSkills();
-        setAvailableSkills(skills);
-        setSkillsMenuOpen(true);
-      } catch (error) {
-        console.error('Failed to list skills', error);
-      }
+    setSkillsMenuOpen(true);
+    setSkillsError(null);
+    if (!onListSkills) { setSkillsError('Skill discovery is unavailable.'); return; }
+    const origin = { ...attachmentScopeRef.current };
+    setLoadingSkills(true);
+    try {
+      const skills = await onListSkills();
+      if (isAttachmentOrigin(origin)) setAvailableSkills(skills);
+    } catch (error) {
+      if (isAttachmentOrigin(origin)) setSkillsError(String(error));
+    } finally {
+      if (isAttachmentOrigin(origin)) setLoadingSkills(false);
     }
   };
 
-  const handleSelectSkillAction = (skill: SkillInfo) => {
-    setSkillsMenuOpen(false);
-    setInput((prev) => {
-      const prefix = prev ? `${prev}\n` : '';
-      return `${prefix}Please follow the '${skill.name}' skill to execute this task: `;
-    });
-    textareaRef.current?.focus();
+  const toggleSelectedSkill = (name: string) => {
+    setSelectedSkills((previous) => previous.includes(name) ? previous.filter((skill) => skill !== name)
+      : previous.length < 5 ? [...previous, name] : previous);
   };
 
   const handleAddBrowser = () => {
@@ -1303,6 +1335,16 @@ export function ChatCanvas({
   };
 
   const handleSelectSlashItem = (item: SlashItem) => {
+    if (item.category === 'SKILLS') {
+      const name = item.command.slice(1);
+      if (!selectedSkills.includes(name) && selectedSkills.length >= 5) return;
+      setSelectedSkills((previous) => previous.includes(name) ? previous : [...previous, name]);
+      setInput(input.replace(/^\/\S+\s*/, ''));
+      setCursor(0);
+      setMenuDismissed(true);
+      textareaRef.current?.focus();
+      return;
+    }
     if (item.needsPrompt) {
       const nextVal = `${item.command} `;
       setInput(nextVal);
@@ -1400,8 +1442,8 @@ export function ChatCanvas({
         if (onUndoTurn) {
           void onUndoTurn().then(async (undone) => {
             if (undone) {
-              if (undone.imageInputs?.length) {
-                await onSendMessage(undone.content || '', undone.attachments, { imageInputs: undone.imageInputs });
+              if (undone.imageInputs?.length || undone.selectedSkills?.length) {
+                await onSendMessage(undone.content || '', undone.attachments, { imageInputs: undone.imageInputs, selectedSkills: undone.selectedSkills });
               } else {
                 await onSendMessage(undone.content || '', undone.attachments);
               }
@@ -1417,6 +1459,7 @@ export function ChatCanvas({
               invalidateAttachments();
               preparedImageInputsRef.current = new Map((undone.imageInputs ?? []).map((image) => [image.sourcePath, { ...image }]));
               setInput(undone.content || '');
+              setSelectedSkills(undone.selectedSkills ?? []);
               setAttachedContexts(undone.attachments || []);
               setCursor(undone.content.length);
               requestAnimationFrame(() => {
@@ -1448,7 +1491,7 @@ export function ChatCanvas({
   };
 
   const runOptions = useMemo<RunOptions>(() => {
-    const options: RunOptions = { executionMode };
+    const options: RunOptions = { executionMode, ...(selectedSkills.length ? { selectedSkills } : {}) };
     if (councilMode && councilModelA && councilModelB && settings) {
       const providerA = settings.providers.find((provider) => provider.id === councilModelA.providerId);
       const providerB = settings.providers.find((provider) => provider.id === councilModelB.providerId);
@@ -1459,17 +1502,17 @@ export function ChatCanvas({
       }
     }
     return options;
-  }, [executionMode, councilMode, councilModelA, councilModelB, settings, effectiveConfig]);
+  }, [executionMode, councilMode, councilModelA, councilModelB, settings, effectiveConfig, selectedSkills]);
 
   useEffect(() => {
     const next = queuedPrompts[0];
-    if (!next || next.sessionId !== currentSessionId || isSessionLoading || isHistoryPreview || isStreaming || isReviewing || runStatus?.phase === 'saving_results' || stopRequested || stoppedWithQueue || dispatchingQueueRef.current.has(currentSessionId)) return;
+    if (!next || next.sessionId !== currentSessionId || isSessionLoading || isHistoryPreview || isStreaming || isReviewing || runStatus?.phase === 'saving_results' || stopRequested || (stoppedWithQueue && !next.sendNow) || dispatchingQueueRef.current.has(currentSessionId)) return;
     dispatchingQueueRef.current.set(next.sessionId, next.id);
     const dispatch = async () => {
       let accepted = false;
       try {
         const clean = next.prompt.trim();
-        const localCommand = allSlashItems.find((item) => item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
+        const localCommand = next.options.selectedSkills?.length ? undefined : allSlashItems.find((item) => item.category !== 'SKILLS' && item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
         if (localCommand) {
           executeSlashCommand(localCommand, clean.split(/\s+/).slice(1).join(' '), false);
           accepted = true;
@@ -1482,7 +1525,10 @@ export function ChatCanvas({
       if (dispatchingQueueRef.current.get(next.sessionId) !== next.id) return;
       dispatchingQueueRef.current.delete(next.sessionId);
       if (accepted) updateSessionQueue(next.sessionId, (items) => items.filter((item) => item.id !== next.id));
-      else pauseSessionQueue(next.sessionId, true);
+      else {
+        pauseSessionQueue(next.sessionId, true);
+        updateSessionQueue(next.sessionId, (items) => items.map((item) => item.id === next.id ? { ...item, sendNow: false } : item));
+      }
     };
     void dispatch();
     // Hasil penerimaan tetap memperbarui antrean asal meskipun pengguna sudah pindah chat.
@@ -1491,19 +1537,30 @@ export function ChatCanvas({
   const send = async () => {
     if (isSessionLoading || attachmentScopeRef.current.pending > 0) return;
     const origin = { ...attachmentScopeRef.current };
-    const draft = input;
+    let draft = input;
+    const originalDraft = input;
+    const draftSkills = [...selectedSkills];
+    while (draft.startsWith('/')) {
+      const token = draft.match(/^\/(\S+)(?:\s+|$)/);
+      const name = availableSkills.find((skill) => skill.name.toLowerCase() === token?.[1].toLowerCase())?.name;
+      if (!token || !name || [...COMMAND_ITEMS, ...TOOL_ITEMS].some((item) => item.command.toLowerCase() === `/${name.toLowerCase()}`)) break;
+      if (!draftSkills.includes(name)) draftSkills.push(name);
+      draft = draft.slice(token[0].length);
+    }
+    if (draftSkills.length > 5) { setAttachmentError('Select at most five skills for the next message.'); return; }
     const draftAttachments = attachedContexts;
     const reusedImages = draftAttachments.flatMap((attachment) => {
       const image = !attachment.isDir && preparedImageInputsRef.current.get(attachment.path);
       return image ? [{ ...image }] : [];
     });
-    const draftOptions = reusedImages.length ? { ...runOptions, imageInputs: reusedImages } : runOptions;
+    const draftOptions = { ...runOptions, ...(draftSkills.length ? { selectedSkills: draftSkills } : {}), ...(reusedImages.length ? { imageInputs: reusedImages } : {}) };
     const clean = (draft || '').trim();
-    const slashItem = clean.startsWith('/')
-      ? allSlashItems.find((item) => item.command.toLowerCase() === clean.split(/\s+/)[0].toLowerCase() && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command))
+    const slashItem = !draftSkills.length && clean.startsWith('/')
+      ? allSlashItems.find((item) => item.category !== 'SKILLS' && item.command.toLowerCase() === clean.split(/\s+/)[0].toLowerCase() && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command))
       : undefined;
     // /stop must stay reachable while a turn streams so the run can always be interrupted.
-    const interruptsRun = slashItem?.command === '/stop';
+    const interruptsRun = originalDraft.trim().toLowerCase() === '/stop';
+    if (interruptsRun) { onStop(); setInput(''); return; }
     if ((!clean && draftAttachments.length === 0) || isReviewing) return;
 
     if (!isStreaming) {
@@ -1529,6 +1586,7 @@ export function ChatCanvas({
       invalidateAttachments();
       setInput('');
       setAttachedContexts([]);
+      setSelectedSkills([]);
       setCursor(0);
       return;
     }
@@ -1536,8 +1594,9 @@ export function ChatCanvas({
     const clearIfUnchanged = (accepted: boolean) => {
       if (!accepted || !isAttachmentOrigin(origin)) return;
       invalidateAttachments();
-      setInput((current) => (current === draft ? '' : current));
+      setInput((current) => (current === originalDraft ? '' : current));
       setAttachedContexts((current) => (current === draftAttachments ? [] : current));
+      setSelectedSkills((current) => (current === selectedSkills ? [] : current));
       setCursor(0);
     };
 
@@ -2157,20 +2216,33 @@ export function ChatCanvas({
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
+                    onClick={() => handleSendQueuedNow(item.id)}
+                    disabled={queueActionsBlocked || queuedPrompts.some((queued) => queued.sendNow)}
+                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] disabled:opacity-40 transition-colors"
+                    aria-label="Send queued prompt now"
+                    title="Send now (stops the current run)"
+                  >
+                    {item.sendNow ? <LoaderCircle size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleEditQueued(item.id)}
-                    className="rounded px-2 py-0.5 text-[11px] font-medium text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] transition-colors"
+                    disabled={dispatchingQueueRef.current.has(currentSessionId)}
+                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] disabled:opacity-40 transition-colors"
+                    aria-label="Edit queued prompt"
                     title="Edit prompt in composer"
                   >
-                    Edit
+                    <Pencil size={13} />
                   </button>
                   <button
                     type="button"
                     onClick={() => handleRemoveQueued(item.id)}
-                    className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#f85149] transition-colors"
+                    disabled={dispatchingQueueRef.current.has(currentSessionId)}
+                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#f85149] disabled:opacity-40 transition-colors"
                     aria-label="Remove queued prompt"
                     title="Remove from queue"
                   >
-                    <X size={12} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
               </div>
@@ -2180,6 +2252,14 @@ export function ChatCanvas({
 
         <RunStatusBar status={isHistoryPreview ? null : runStatus} onCancelPreparation={onStop} />
         <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
+          {selectedSkills.length > 0 && (
+            <div aria-label="Selected skills" className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-b border-[#30363d]/50 px-3 py-2">
+              {selectedSkills.map((name) => <span key={name} className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-[#30363d] bg-[#0d1117] px-2 py-1 text-[11px] text-[#a5d6ff]">
+                <BookOpen size={12} className="shrink-0" /><span className="max-w-48 truncate">{name}</span>
+                <button type="button" aria-label={`Remove skill ${name}`} onClick={() => setSelectedSkills((previous) => previous.filter((skill) => skill !== name))} className="rounded text-[#8b949e] hover:text-[#e6edf3]"><X size={12} /></button>
+              </span>)}
+            </div>
+          )}
           {pendingAttachments > 0 && <div role="status" className="px-3 py-2 text-xs text-[#8b949e]">Preparing attachments ({pendingAttachments})...</div>}
           {attachmentError && <div role="alert" className="px-3 py-2 text-xs text-[#f85149]">{attachmentError}</div>}
           {attachedContexts.some((att) => !att.isDir && /\.(svg|bmp|tiff?|heic|heif|avif)$/i.test(att.name)) && (
@@ -2311,31 +2391,8 @@ export function ChatCanvas({
                     </button>
                   </div>
                 )}
-                {skillsMenuOpen && (
-                  <div className="ui-menu absolute bottom-9 left-0 z-30 max-h-60 w-64 overflow-y-auto rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg">
-                    <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">
-                      <span>Available Skills</span>
-                      <button type="button" onClick={() => setSkillsMenuOpen(false)} className="text-[#8b949e] hover:text-white" aria-label="Close skills">
-                        <X size={12} />
-                      </button>
-                    </div>
-                    {availableSkills.length === 0 ? (
-                      <div className="px-2 py-3 text-center text-xs text-[#6e7681]">No skills detected</div>
-                    ) : (
-                      availableSkills.map((sk) => (
-                        <button
-                          key={sk.name}
-                          type="button"
-                          onClick={() => handleSelectSkillAction(sk)}
-                          className="flex w-full flex-col items-start rounded-lg px-2 py-1.5 text-left hover:bg-[#21262d]"
-                        >
-                          <span className="font-mono text-xs text-[#58a6ff]">{sk.name}</span>
-                          <span className="line-clamp-1 text-[10px] text-[#8b949e]">{sk.description || 'No description'}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
+                {skillsMenuOpen && <SkillPicker skills={availableSkills} selected={selectedSkills} loading={loadingSkills} error={skillsError}
+                  onToggle={toggleSelectedSkill} onClose={() => { setSkillsMenuOpen(false); textareaRef.current?.focus(); }} />}
               </div>
 
               {/* Model & Thinking pill - directly next to [+] like Antigravity & Hermes */}

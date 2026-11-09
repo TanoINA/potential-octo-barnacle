@@ -308,6 +308,7 @@ mod tests {
                 pinned_at: None,
             },
             messages: vec![ChatMessage {
+                selected_skills: Vec::new(),
                 checkpoint_epoch: None,
                 id: format!("msg_{id}"),
                 role: "assistant".into(),
@@ -456,6 +457,7 @@ mod tests {
         let mut busy = sample_session("busy", "Busy session", "zebra");
         busy.messages = (0..150)
             .map(|i| ChatMessage {
+                selected_skills: Vec::new(),
                 checkpoint_epoch: None,
                 id: format!("m{i}"),
                 role: "assistant".into(),

@@ -1525,6 +1525,7 @@ fn compact_data(mut data: SessionData) -> Result<SessionData, String> {
     let summary = deterministic_summary(&messages_to_summarize);
 
     let checkpoint_message = ChatMessage {
+        selected_skills: Vec::new(),
         checkpoint_epoch: None,
         id: format!("compact_{}", Uuid::new_v4().simple()),
         role: "system".into(),
@@ -5396,6 +5397,7 @@ mod tests {
     #[test]
     fn creates_compact_preview() {
         let data = vec![ChatMessage {
+            selected_skills: Vec::new(),
             checkpoint_epoch: None,
             id: "1".into(),
             role: "user".into(),

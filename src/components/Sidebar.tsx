@@ -1,11 +1,12 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Download, Folder, FolderPlus, GitBranch, GitCommit, Layers, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
-import type { DeepSearchResult, EffectiveRunConfig, Session } from '../types/agent';
+import type { DeepSearchResult, EffectiveRunConfig, Session, SessionActivity } from '../types/agent';
 import { AetherLogo } from './AetherLogo';
 
 interface SidebarProps {
   sessions: Session[];
+  sessionActivities?: Record<string, SessionActivity>;
   currentSessionId: string;
   onNewSession: () => void;
   onSelectSession: (id: string) => void;
@@ -69,6 +70,7 @@ function renderSnippetWithHighlights(snippet: string): ReactNode[] {
 export const Sidebar = memo(function Sidebar({
   sessions,
   currentSessionId,
+  sessionActivities,
   onNewSession,
   onSelectSession,
   onDeleteSession,
@@ -188,6 +190,8 @@ export const Sidebar = memo(function Sidebar({
     const active = session.id === currentSessionId;
     const renaming = renamingId === session.id;
     const deepResult = deepResults[session.id];
+    const activity = sessionActivities?.[session.id];
+    const statusLabel = activity && { running: 'Running', saving: 'Saving', completed: 'Completed', cancelled: 'Stopped', failed: 'Failed' }[activity];
 
     return (
       <div key={session.id} className={`group relative mb-1 rounded-lg border ${active ? 'border-[#45454b] bg-[#27272a] text-[#f4f4f5]' : 'border-transparent hover:bg-[#1c1c1f]'}`}>
@@ -236,7 +240,12 @@ export const Sidebar = memo(function Sidebar({
                 ) : (
                   <MessageSquare size={13} className={`shrink-0 ${active ? 'text-[#d4d4d8]' : 'text-[#92929c]'}`} />
                 )}
-                <span className="truncate text-[13px]">{session.title || 'Untitled'}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px]">{session.title || 'Untitled'}</span>
+                {statusLabel && <span aria-label={`Chat status: ${statusLabel}`} title={statusLabel}
+                  className={`inline-flex shrink-0 items-center gap-1 text-[10px] ${activity === 'failed' ? 'text-[#f85149]' : activity === 'completed' ? 'text-[#3fb950]' : 'text-[#a1a1aa]'}`}>
+                  {activity === 'running' || activity === 'saving' ? <Loader2 size={10} className="animate-spin" /> : activity === 'completed' ? <Check size={10} /> : null}
+                  {statusLabel}
+                </span>}
               </span>
               {session.preview && !deepResult && (
                 <span className="ml-5 mt-0.5 block truncate text-xs text-[#92929c]">{session.preview}</span>

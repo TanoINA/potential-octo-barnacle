@@ -58,11 +58,13 @@ const markdownComponents: Components = {
       </blockquote>
     );
   },
-  a({ href, children }) {
+  a: function MarkdownLink({ href, children }) {
+    const [error, setError] = useState<string | null>(null);
     const isWeb = Boolean(href && /^(https?:\/\/|mailto:)/i.test(href));
     const handleClick = (e: React.MouseEvent) => {
       e.preventDefault();
       if (!href) return;
+      setError(null);
       let target = href;
       try {
         target = decodeURIComponent(href);
@@ -74,8 +76,14 @@ const markdownComponents: Components = {
         }
       }
       if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-        invoke('open_path_or_url', { pathOrUrl: target }).catch((err) => {
-          console.error('Failed to open link or file', err);
+        invoke('open_path_or_url', { pathOrUrl: target }).catch(async (err) => {
+          if (String(err).includes('Opening executable, shortcut, or unknown file types is not allowed')) {
+            await invoke('reveal_in_explorer', { path: target });
+          } else {
+            throw err;
+          }
+        }).catch((err) => {
+          setError(String(err));
         });
       } else {
         window.open(target, '_blank', 'noopener,noreferrer');
@@ -83,6 +91,7 @@ const markdownComponents: Components = {
     };
 
     return (
+      <>
       <a
         href={href}
         onClick={handleClick}
@@ -98,6 +107,8 @@ const markdownComponents: Components = {
           <FileText size={11} className="shrink-0 opacity-70 text-[#a371f7]" />
         )}
       </a>
+      {error && <span role="alert" className="block text-xs text-[#f85149]">Could not open link: {error}</span>}
+      </>
     );
   },
   h1({ children }) {

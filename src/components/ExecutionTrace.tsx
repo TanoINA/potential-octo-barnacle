@@ -34,6 +34,11 @@ function isToolFailed(tool: ToolCallItem): boolean {
   return tool.status !== 'cancelled' && (tool.status === 'error' || (tool.exitCode != null && tool.exitCode !== 0));
 }
 
+function subagentScope(id: string): string | undefined {
+  const slash = id.indexOf('/');
+  return id.startsWith('sub-') && slash > 4 ? id.slice(0, slash) : undefined;
+}
+
 function extractArg(tool: ToolCallItem, key: string): string {
   if (tool.args && typeof tool.args[key] === 'string' && tool.args[key].trim()) {
     return tool.args[key].trim();
@@ -252,54 +257,26 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
   // Pembaruan tool mengganti objeknya; metadata lama tidak perlu diurai ulang.
   const displayInfoCache = useRef(new WeakMap<ToolCallItem, ReturnType<typeof getToolDisplayInfo>>());
 
-  // Summary counts
-  const summary = useMemo(() => {
-    // Do not describe attempted or interrupted work as successfully completed.
-    if (toolCalls.some((tool) => tool.status !== 'done' || isToolFailed(tool))) {
-      return `${toolCalls.length} step${toolCalls.length > 1 ? 's' : ''}`;
+  const [expandedSubagents, setExpandedSubagents] = useState<Record<string, boolean>>({});
+  const { mainTools, subagents, failureCount } = useMemo(() => {
+    const mainTools: ToolCallItem[] = [];
+    const subagents = new Map<string, ToolCallItem[]>();
+    let failureCount = 0;
+    for (const tool of toolCalls) {
+      if (isToolFailed(tool)) failureCount += 1;
+      const scope = subagentScope(tool.id);
+      if (scope) {
+        const tools = subagents.get(scope);
+        if (tools) tools.push(tool);
+        else subagents.set(scope, [tool]);
+      } else mainTools.push(tool);
     }
-    let skills = 0;
-    let files = 0;
-    let commands = 0;
-    let subagents = 0;
-    let managedTasks = 0;
-    const skillNames: string[] = [];
-
-    toolCalls.forEach((tool) => {
-      const name = tool.name;
-      if (name === 'use_skill' || (name === 'read_file' && String(tool.args?.path || '').endsWith('SKILL.md'))) {
-        skills += 1;
-        const skillName = typeof tool.args?.name === 'string' ? tool.args.name : '';
-        if (skillName && !skillNames.includes(skillName)) skillNames.push(skillName);
-      } else if (name === 'read_file' || name === 'search_files' || name === 'list_directory') {
-        files += 1;
-      } else if (name === 'run_command') {
-        commands += 1;
-      } else if (name === 'spawn_subagent') {
-        subagents += 1;
-      } else if (name === 'manage_task') {
-        managedTasks += 1;
-      }
-    });
-
-    const parts: string[] = [];
-    if (skillNames.length > 0) {
-      parts.push(`Loaded skill: ${skillNames.slice(0, 2).join(', ')}${skillNames.length > 2 ? ` +${skillNames.length - 2}` : ''}`);
-    } else if (skills > 0) {
-      parts.push(`Loaded ${skills} skill${skills > 1 ? 's' : ''}`);
-    }
-
-    if (files > 0) parts.push(`explored ${files} file${files > 1 ? 's' : ''}`);
-    if (commands > 0) parts.push(`ran ${commands} command${commands > 1 ? 's' : ''}`);
-    if (subagents > 0) parts.push(`spawned ${subagents} subagent${subagents > 1 ? 's' : ''}`);
-    if (managedTasks > 0) parts.push(`managed ${managedTasks} background task${managedTasks > 1 ? 's' : ''}`);
-
-    return parts.length > 0 ? parts.join(', ') : `${toolCalls.length} step${toolCalls.length > 1 ? 's' : ''} executed`;
+    return { mainTools, subagents, failureCount };
   }, [toolCalls]);
+  const summary = `${mainTools.length} main action${mainTools.length === 1 ? '' : 's'}${subagents.size ? ` · ${subagents.size} subagent${subagents.size === 1 ? '' : 's'}` : ''}`;
 
   const hasRunning = isStreaming || toolCalls.some((t) => t.status === 'running' || t.status === 'pending');
   const hasCancelled = !hasRunning && toolCalls.some((t) => t.status === 'cancelled');
-  const hasError = toolCalls.some(isToolFailed);
 
   // Manual choices apply within a phase, not across live/completed transitions.
   useEffect(() => {
@@ -313,6 +290,112 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
       ...prev,
       [id]: !isOpen,
     }));
+  };
+
+  const renderTool = (tool: ToolCallItem) => {
+    let info = displayInfoCache.current.get(tool);
+    if (!info) {
+      info = getToolDisplayInfo(tool);
+      displayInfoCache.current.set(tool, info);
+    }
+    const failed = isToolFailed(tool);
+    const cancelled = tool.status === 'cancelled';
+    const isDetailsOpen = expandedDetails[tool.id] ?? (tool.status === 'running' || failed);
+    const detailsId = `${traceId}-${tool.id}-details`;
+    const duration = formatDuration(tool.durationMs);
+    const selectsArtifact = !info.isTerminal && Boolean(tool.artifactId && onSelectArtifact);
+    const isToolRunning = tool.status === 'running' || tool.status === 'pending';
+
+    return (
+      <div key={tool.id} className="group">
+        <div className="flex items-center">
+          <button
+            type="button"
+            aria-expanded={selectsArtifact ? undefined : isDetailsOpen}
+            aria-controls={selectsArtifact ? undefined : detailsId}
+            data-file-link={info.filePath ? 'true' : undefined}
+            data-file-path={info.filePath}
+            data-code-block={info.command ? 'true' : undefined}
+            data-code-content={info.command ? safeEncodeURIComponent(info.command) : undefined}
+            data-code-lang={info.command ? 'powershell' : undefined}
+            onClick={() => {
+              if (selectsArtifact && tool.artifactId && onSelectArtifact) {
+                onSelectArtifact(tool.artifactId);
+              } else {
+                toggleDetails(tool.id, isDetailsOpen);
+              }
+            }}
+            className="flex min-w-0 flex-1 items-center justify-between px-3.5 py-1.5 text-left text-[11px] font-mono transition-colors cursor-pointer hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]"
+          >
+            <span className="flex items-center gap-2 min-w-0 flex-1 mr-3">
+              {info.icon}
+              <span className="truncate text-[#c9d1d9]">{failed || cancelled ? tool.name : info.label}</span>
+            </span>{' '}
+            <span className="flex items-center gap-2 shrink-0">
+              {isToolRunning && <ActiveToolDuration startedAt={tool.startedAt} />}
+
+              {failed && (
+                <span className="rounded bg-[#da3633]/20 px-1.5 py-0.5 text-[9px] font-medium text-[#f85149]">
+                  Failed
+                </span>
+              )}
+
+              {cancelled && (
+                <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
+                  Cancelled
+                </span>
+              )}
+
+              {!isToolRunning && duration && (
+                <span className="text-[10px] text-[#6e7681]">{duration}</span>
+              )}
+
+              {!selectsArtifact && (
+                <span className="text-[#6e7681] group-hover:text-[#c9d1d9]">
+                  {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+              )}
+            </span>
+          </button>
+          {selectsArtifact && (
+            <button
+              type="button"
+              aria-label={`Details for ${tool.name}`}
+              aria-expanded={isDetailsOpen}
+              aria-controls={detailsId}
+              onClick={() => toggleDetails(tool.id, isDetailsOpen)}
+              className="shrink-0 px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9] focus-visible:outline focus-visible:outline-[#58a6ff]"
+            >
+              {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
+        </div>
+
+        {isDetailsOpen && (
+          <div id={detailsId} className="px-3 pb-2 pt-0.5">
+            <div className="text-[10px] text-[#8b949e]">Arguments</div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+              {tool.argumentsRaw || JSON.stringify(tool.args, null, 2)}
+            </pre>
+            {info.isTerminal ? (
+              <TerminalOutput
+                command={info.command}
+                output={info.output}
+                exitCode={tool.exitCode}
+                isRunning={tool.status === 'running'}
+              />
+            ) : (
+              <>
+                <div className="mt-2 text-[10px] text-[#8b949e]">Result</div>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+                  {tool.result || tool.terminalOutput || (info.isRunning ? 'Waiting for result...' : '(no result)')}
+                </pre>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   if (!toolCalls || toolCalls.length === 0) return null;
@@ -337,11 +420,13 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
           ) : (
             <ChevronDown size={13} className="text-[#6e7681] shrink-0" />
           )}
-          <span className={`truncate text-[11px] font-mono ${hasError ? 'text-[#f85149]' : 'text-[#8b949e]'}`}>
+          <span className="truncate text-[11px] font-mono text-[#8b949e]">
             {summary}
           </span>
         </div>
 
+        <div className="flex shrink-0 items-center gap-2">
+        {failureCount > 0 && <span className="text-[10px] font-mono text-[#f85149]">{failureCount} failed</span>}
         {hasRunning ? (
           <span className="flex items-center gap-1.5 shrink-0 text-[10px] text-[#f0883e] font-mono animate-pulse">
             <span className="w-1.5 h-1.5 rounded-full bg-[#f0883e]" />
@@ -353,116 +438,31 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
             cancelled
           </span>
         ) : null}
+        </div>
       </button>
 
       {/* Expanded Detailed Status Rows */}
       {!isCollapsed && (
         <div className="max-h-80 overflow-y-auto overscroll-contain border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
-          {toolCalls.map((tool) => {
-            let info = displayInfoCache.current.get(tool);
-            if (!info) {
-              info = getToolDisplayInfo(tool);
-              displayInfoCache.current.set(tool, info);
-            }
-            const failed = isToolFailed(tool);
-            const cancelled = tool.status === 'cancelled';
-            const isDetailsOpen = expandedDetails[tool.id] ?? (tool.status === 'running' || failed);
-            const detailsId = `${traceId}-${tool.id}-details`;
-            const duration = formatDuration(tool.durationMs);
-            const selectsArtifact = !info.isTerminal && Boolean(tool.artifactId && onSelectArtifact);
-            const isToolRunning = tool.status === 'running' || tool.status === 'pending';
-
-            return (
-              <div key={tool.id} className="group">
-                <div className="flex items-center">
-                  <button
-                    type="button"
-                    aria-expanded={selectsArtifact ? undefined : isDetailsOpen}
-                    aria-controls={selectsArtifact ? undefined : detailsId}
-                    data-file-link={info.filePath ? 'true' : undefined}
-                    data-file-path={info.filePath}
-                    data-code-block={info.command ? 'true' : undefined}
-                    data-code-content={info.command ? safeEncodeURIComponent(info.command) : undefined}
-                    data-code-lang={info.command ? 'powershell' : undefined}
-                    onClick={() => {
-                      if (selectsArtifact && tool.artifactId && onSelectArtifact) {
-                        onSelectArtifact(tool.artifactId);
-                      } else {
-                        toggleDetails(tool.id, isDetailsOpen);
-                      }
-                    }}
-                    className="flex min-w-0 flex-1 items-center justify-between px-3.5 py-1.5 text-left text-[11px] font-mono transition-colors cursor-pointer hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]"
-                  >
-                    <span className="flex items-center gap-2 min-w-0 flex-1 mr-3">
-                      {info.icon}
-                      <span className="truncate text-[#c9d1d9]">{failed || cancelled ? tool.name : info.label}</span>
-                    </span>{' '}
-                    <span className="flex items-center gap-2 shrink-0">
-                      {isToolRunning && <ActiveToolDuration startedAt={tool.startedAt} />}
-
-                      {failed && (
-                        <span className="rounded bg-[#da3633]/20 px-1.5 py-0.5 text-[9px] font-medium text-[#f85149]">
-                          Failed
-                        </span>
-                      )}
-
-                      {cancelled && (
-                        <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
-                          Cancelled
-                        </span>
-                      )}
-
-                      {!isToolRunning && duration && (
-                        <span className="text-[10px] text-[#6e7681]">{duration}</span>
-                      )}
-
-                      {!selectsArtifact && (
-                        <span className="text-[#6e7681] group-hover:text-[#c9d1d9]">
-                          {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                  {selectsArtifact && (
-                    <button
-                      type="button"
-                      aria-label={`Details for ${tool.name}`}
-                      aria-expanded={isDetailsOpen}
-                      aria-controls={detailsId}
-                      onClick={() => toggleDetails(tool.id, isDetailsOpen)}
-                      className="shrink-0 px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9] focus-visible:outline focus-visible:outline-[#58a6ff]"
-                    >
-                      {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                    </button>
-                  )}
-                </div>
-
-                {isDetailsOpen && (
-                  <div id={detailsId} className="px-3 pb-2 pt-0.5">
-                    <div className="text-[10px] text-[#8b949e]">Arguments</div>
-                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
-                      {tool.argumentsRaw || JSON.stringify(tool.args, null, 2)}
-                    </pre>
-                    {info.isTerminal ? (
-                      <TerminalOutput
-                        command={info.command}
-                        output={info.output}
-                        exitCode={tool.exitCode}
-                        isRunning={tool.status === 'running'}
-                      />
-                    ) : (
-                      <>
-                        <div className="mt-2 text-[10px] text-[#8b949e]">Result</div>
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
-                          {tool.result || tool.terminalOutput || (info.isRunning ? 'Waiting for result...' : '(no result)')}
-                        </pre>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
+          {mainTools.map(renderTool)}
+          {Array.from(subagents, ([scope, tools]) => {
+            const open = expandedSubagents[scope] ?? false;
+            const failed = tools.filter(isToolFailed).length;
+            const running = tools.some((tool) => tool.status === 'running' || tool.status === 'pending');
+            const groupId = `${traceId}-${scope}-tools`;
+            return <div key={scope}>
+              <button type="button" aria-expanded={open} aria-controls={groupId}
+                onClick={() => setExpandedSubagents((previous) => ({ ...previous, [scope]: !open }))}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-[#8b949e] hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]">
+                {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
+                <span className="min-w-0 flex-1 truncate">Subagent {scope} · {tools.length} action{tools.length === 1 ? '' : 's'}</span>{' '}
+                {failed > 0 && <span className="shrink-0 text-[#f85149]">{failed} failed</span>}
+                {running && <Loader2 size={12} className="shrink-0 animate-spin text-[#f0883e]" aria-label="in progress" />}
+              </button>
+              {open && <div id={groupId} className="border-l border-[#30363d] ml-3">{tools.map(renderTool)}</div>}
+            </div>;
           })}
+
         </div>
       )}
     </div>

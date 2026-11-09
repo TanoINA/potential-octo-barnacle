@@ -818,12 +818,10 @@ async fn list_workspace_files(
 async fn list_skills(
     state: State<'_, AppState>,
     paths: Option<Vec<String>>,
+    expected_workspace: Option<String>,
 ) -> Result<Vec<SkillInfo>, String> {
-    let cwd = state
-        .workspace_cwd
-        .lock()
-        .map_err(|_| "Workspace lock is unavailable")?
-        .clone();
+    let fallback = state.workspace_cwd.lock().map_err(|_| "Workspace lock is unavailable")?.clone();
+    let cwd = bind_workspace(expected_workspace.as_deref(), &fallback)?;
     let settings = storage::load_settings().await?;
     let paths = agent::skills::effective_skill_paths(
         &cwd,

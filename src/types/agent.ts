@@ -2,6 +2,7 @@ export type Role = 'user' | 'assistant' | 'system' | 'tool';
 export type ProviderKind = 'openai' | 'anthropic' | 'deepseek' | 'ollama';
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'extra_high' | 'max' | 'ultra';
 export type ToolStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+export type SessionActivity = 'running' | 'saving' | 'completed' | 'cancelled' | 'failed';
 export type ArtifactType = 'code' | 'diff' | 'terminal' | 'markdown' | 'file';
 
 export interface FileDiffStat {
@@ -96,6 +97,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
   attachments?: AttachedContext[];
   imageInputs?: ImageInput[];
+  selectedSkills?: string[];
   /** Derived lightweight-history hints, not authoritative stored payloads. */
   hasImageInputs?: boolean;
   hasProviderMessages?: boolean;
@@ -247,6 +249,7 @@ export interface UndoTurnResult {
   content: string;
   attachments?: AttachedContext[];
   imageInputs?: ImageInput[];
+  selectedSkills?: string[];
 }
 
 export interface AgentRunRequest {

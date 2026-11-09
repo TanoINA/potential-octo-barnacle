@@ -330,6 +330,8 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub timestamp: i64,
+    #[serde(rename = "selectedSkills", default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_skills: Vec<String>,
     #[serde(default)]
     pub reasoning: Option<String>,
     #[serde(rename = "toolCalls", default)]
@@ -725,6 +727,21 @@ pub enum AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_skills_round_trip_preserves_names_and_legacy_default() {
+        let legacy = serde_json::json!({
+            "id": "user-1", "role": "user", "content": "Do the task", "timestamp": 1
+        });
+        let message: ChatMessage = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(serde_json::to_value(message).unwrap().get("selectedSkills").is_none());
+        let mut selected = legacy;
+        selected["selectedSkills"] = serde_json::json!(["test-driven-development"]);
+        let message: ChatMessage = serde_json::from_value(selected.clone()).unwrap();
+        let serialized = serde_json::to_value(message).unwrap();
+        assert_eq!(serialized["selectedSkills"], selected["selectedSkills"]);
+        assert_eq!(serialized["content"], "Do the task");
+    }
 
     #[test]
     fn reflection_defaults_to_hermes_cadence_and_preserves_explicit_opt_out() {

@@ -1,4 +1,4 @@
-import { render, fireEvent } from '@testing-library/react';
+import { render, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { invoke } from '@tauri-apps/api/core';
@@ -70,6 +70,34 @@ describe('MarkdownRenderer', () => {
       pathOrUrl: 'file:///D:/UNIKOM/Sistem Operasi/Tugas 1/doc.docx',
     });
     delete (window as any).__TAURI_INTERNALS__;
+  });
+
+  it.each(['exe', 'msi', 'AppImage', 'deb', 'rpm'])('reveals a blocked %s download without executing it', async (extension) => {
+    (window as any).__TAURI_INTERNALS__ = {};
+    const target = `file:///D:/release/setup.${extension}`;
+    vi.mocked(invoke).mockRejectedValueOnce('Opening executable, shortcut, or unknown file types is not allowed');
+    const { container } = render(<MarkdownRenderer content={`[Installer](${target})`} />);
+    try {
+      fireEvent.click(container.querySelector('a')!);
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('reveal_in_explorer', { path: target }));
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
+
+  it.each([false, true])('shows a visible error when opening fails (reveal fallback: %s)', async (fallback) => {
+    (window as any).__TAURI_INTERNALS__ = {};
+    vi.mocked(invoke).mockRejectedValueOnce(fallback
+      ? 'Opening executable, shortcut, or unknown file types is not allowed'
+      : 'Open target is unavailable: file not found');
+    if (fallback) vi.mocked(invoke).mockRejectedValueOnce('Failed to reveal in explorer');
+    const { container, findByRole } = render(<MarkdownRenderer content="[File](file:///D:/release/setup.exe)" />);
+    try {
+      fireEvent.click(container.querySelector('a')!);
+      expect((await findByRole('alert')).textContent).toContain(fallback ? 'Failed to reveal' : 'file not found');
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
   });
 
   it('reconciles a streaming plan through the real Markdown pipeline without remounting it', () => {

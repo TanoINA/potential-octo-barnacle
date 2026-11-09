@@ -1,37 +1,40 @@
-# Dependencies
+# Dependencies and build caches
 node_modules/
-
-# Production build artifacts
 dist/
 dist-ssr/
-*.local
-
-# Rust / Cargo
 target/
 **/target/
-src-tauri/target/
 src-tauri/gen/
+*.tsbuildinfo
+*.local
 
-# Aether Agent local workspace data & ephemeral test verification
-.aether-agent/
-verification/
-
-# Release build outputs & installer packages (use GitHub Releases for distribution)
+# Local profiles, artifacts and archived verification (never publish)
+/.local/
+/.aether-agent/
+/verification/
+/release/
+/release-artifacts/
 *.AppImage
 *.deb
 *.rpm
-release/linux/
-release/windows/
-/release-artifacts/
 
-# Logs & test runs
+# Credentials and private signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs and temporary test output
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# OS / Editor
+# OS and editor state
 .DS_Store
 Thumbs.db
 .vscode/

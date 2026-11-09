@@ -26,6 +26,15 @@ describe('MessageRow Action Buttons', () => {
     });
   });
 
+  it('shows selected skill metadata separately from copied prompt text', () => {
+    render(<MessageRow message={{ ...dummyUserMessage, selectedSkills: ['ponytail', 'systematic-debugging'] }} onSelectArtifact={vi.fn()} />);
+    const skills = screen.getByLabelText('Skills used for this message');
+    expect(skills.textContent).toContain('ponytail');
+    expect(skills.textContent).toContain('systematic-debugging');
+    fireEvent.click(screen.getByLabelText('Copy message'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(dummyUserMessage.content);
+  });
+
   it('renders a start failure even when the pre-created segments are empty', () => {
     render(<MessageRow message={{ ...dummyAssistantMessage, content: 'Error: Failed to start agent', segments: [{ id: 'seg_0', text: '', toolCalls: [] }] }} onSelectArtifact={vi.fn()} />);
     expect(screen.getByText('Error: Failed to start agent')).toBeTruthy();

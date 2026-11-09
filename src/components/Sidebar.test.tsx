@@ -274,6 +274,28 @@ const navigationProps = () => ({
   effectiveConfig: null,
 });
 
+describe('Sidebar chat activity', () => {
+  it('shows activity for each chat independently of which chat is open', () => {
+    const props = navigationProps();
+    const sessions = ['working', 'saved', 'stopped', 'broken', 'untouched'].map((id) => ({
+      id, title: id, createdAt: 1, updatedAt: 1, messageCount: 1,
+    }));
+    const { rerender } = render(<Sidebar {...props} sessions={sessions} currentSessionId="untouched"
+      sessionActivities={{ working: 'running', saved: 'completed', stopped: 'cancelled', broken: 'failed' }} />);
+    expect(screen.getByLabelText('Chat status: Running').closest('button')?.textContent).toContain('working');
+    expect(screen.getByLabelText('Chat status: Completed').closest('button')?.textContent).toContain('saved');
+    expect(screen.getByLabelText('Chat status: Stopped').closest('button')?.textContent).toContain('stopped');
+    expect(screen.getByLabelText('Chat status: Failed').closest('button')?.textContent).toContain('broken');
+    expect(screen.getAllByLabelText(/^Chat status:/)).toHaveLength(4);
+    rerender(<Sidebar {...props} sessions={sessions} currentSessionId="saved"
+      sessionActivities={{ working: 'saving', saved: 'running' }} />);
+    expect(screen.getByLabelText('Chat status: Saving').closest('button')?.textContent).toContain('working');
+    expect(screen.getByLabelText('Chat status: Running').closest('button')?.textContent).toContain('saved');
+    expect(screen.queryByLabelText('Chat status: Completed')).toBeNull();
+    expect(screen.queryByLabelText('Chat status: Failed')).toBeNull();
+  });
+});
+
 describe('Sidebar calm navigation', () => {
   it('limits entrance motion to overlay mode and exposes the selected conversation', () => {
     const props = navigationProps();

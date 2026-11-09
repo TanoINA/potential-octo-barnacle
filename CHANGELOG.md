@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Structured skill picker and per-turn skill context, preserved through queue, Undo, Retry, and Council runs.
+- Queued prompt send-now/edit/remove controls and per-chat Running/Saving/Completed/Stopped/Failed indicators.
+- Main/subagent activity grouping, separate failure counts, and proportionate execution guidance.
+- Safe reveal-in-file-manager fallback for blocked local executable links, with visible failures.
+- Repository cleanup: local builds/evidence under ignored `.local/`, historical reports under `docs/archive/`, and binaries removed from the source tree without rewriting Git history.
+- Windows release-pipeline fixtures resolve the real TEMP path before strict alias checks.
+
 ## 0.3.0
 
 ### Desktop and conversation UX

@@ -99,6 +99,7 @@ export function App() {
       {sidebarOpen && (
         <Sidebar
           sessions={agent.sessions}
+          sessionActivities={agent.sessionActivities}
           currentSessionId={agent.currentSessionId}
           onNewSession={agent.newSession}
           onSelectSession={selectSession}

@@ -11,7 +11,7 @@ const signature = Buffer.from('public test signature contents, not a filename').
 const sha = 'a'.repeat(40);
 const baseUrl = 'https://updates.example.com/aether';
 function fixture(platform) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-pipeline-node-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'aether-pipeline-node-'));
   const source = path.join(root, 'bundle');
   const names = platform === 'windows-x86_64' ? [ ['nsis', 'AetherAgent_0.3.0_x64-setup.exe'], ['msi', 'AetherAgent_0.3.0_x64_en-US.msi'] ] : [ ['appimage', 'AetherAgent_0.3.0_amd64.AppImage'], ['deb', 'AetherAgent_0.3.0_amd64.deb'], ['rpm', 'AetherAgent-0.3.0-1.x86_64.rpm'] ];
   for (const [kind, name] of names) {
@@ -295,7 +295,7 @@ test('signed workflow shell binds manual tag to workflow SHA and checked-out HEA
   const block = runBlock(workflowText('signed-release'), '- id: identity');
   const bash = process.platform === 'win32' ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git/bin/bash.exe') : '/bin/bash';
   if (!fs.existsSync(bash)) return t.skip('Bash unavailable; identity shell fixture cannot execute');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-pipeline-identity-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'aether-pipeline-identity-'));
   // Only git read queries are stubbed: no repository commits, credentials or network.
   const git = `git() {
     if [[ "$1 $2" == 'rev-parse --verify' && "$3" == refs/tags/* ]]; then printf '%s\\n' "$FIXTURE_TAG_SHA";
