@@ -1,56 +1,52 @@
 # AetherAgent
 
-A desktop AI coding assistant built with **Tauri 2, Rust, and React**. Windows and Linux builds are supported; the project is under active development.
+A desktop coding agent for Windows and Linux, built with Rust, Tauri 2, and React.
 
-## Features
+Still a work in progress. Expect bugs and rough edges.
 
-- Streaming conversations with workspace tools, image attachments, artifacts, and MCP.
-- Searchable skill selection with per-message context, not prompt templates.
-- Per-chat prompt queues with send-now, edit, and remove actions.
-- Sidebar run status and compact activity details grouped by subagent.
-- Paged, virtualized conversation history with guarded saves and recovery.
-- Signed-update infrastructure; automatic updates stay disabled until the operator configures a trusted endpoint and signing identity.
+It can read and edit files in your workspace, run commands, and connect to MCP servers. Chats support image attachments, skills, and subagents. You can queue prompts while a task is running and switch conversations without losing the queue.
 
-## Development
+## Run locally
 
-Install Node.js 22.12+ and Rust stable, plus the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+You'll need Node.js 22.12+, Rust stable, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```sh
 npm ci
 npm run tauri -- dev
 ```
 
-## Checks and builds
+Choose a provider and model in Settings once the app opens.
+
+## Build
+
+```sh
+# Windows
+npm run tauri -- build --bundles nsis,msi -- --locked
+
+# Linux
+npm run tauri -- build --bundles deb,rpm,appimage -- --locked
+```
+
+The binary and installers end up in `src-tauri/target/release/`. Linux compatibility depends on the distro used to build the packages.
+
+Local builds are unsigned unless you configure signing. In-app updates also need an update server and signing keys; they aren't enabled by default. See the [release guide](docs/release.md) for setup.
+
+## Tests
 
 ```sh
 npm test
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
-
-# Windows: EXE installer and MSI
-npm run tauri -- build --bundles nsis,msi -- --locked
-
-# Linux: use the documented GTK/WebKit prerequisites
-npm run tauri -- build --bundles deb,rpm,appimage -- --locked
 ```
 
-Build output is generated under `src-tauri/target/release/`. Installers and test logs are **not source files** and are not committed. Retain local packages under `.local/releases/`; use [GitHub Releases](https://github.com/TanoINA/potential-octo-barnacle/releases) for published packages. Unsigned local builds are not trusted updater releases.
+## Where things live
 
-## Repository map
+- `src/` contains the React app and its tests.
+- `src-tauri/` contains the Rust runtime, tools, and storage.
+- `scripts/` has development and release scripts.
+- [docs/](docs/README.md) has the longer explanations. Old audits are in [docs/archive/](docs/archive/README.md).
+- [rune/](rune/README.md) is an experimental native UI, separate from the Tauri app.
 
-| Path | Purpose |
-| --- | --- |
-| [`src/`](src/) | React UI and frontend tests |
-| [`src-tauri/`](src-tauri/) | Native runtime, tools, persistence, and Rust tests |
-| [`scripts/`](scripts/) | Development and release utilities |
-| [`docs/`](docs/README.md) | Architecture, usage notes, and release procedures |
-| [`rune/`](rune/README.md) | Separate experimental native UI; not the shipped Tauri app |
-| `.local/` | Ignored local packages, verification evidence, and maintenance backups |
+Sessions, settings, and skills are stored in `~/.aether-agent/`. Workspace attachments may also use a `.aether-agent/` folder inside the project. These files stay out of Git, as do the local builds and logs under `.local/`.
 
-Root configuration files are kept where the build tools expect them. Historical audits live in [`docs/archive/`](docs/archive/README.md), not alongside current guides.
-
-## Local data and safety
-
-User sessions, settings, and skills live in `~/.aether-agent/` (`%USERPROFILE%\.aether-agent\` on Windows). Workspace attachments may use `.aether-agent/` inside the project. These directories, credentials, signing keys, and local artifacts are excluded from Git.
-
-See [documentation](docs/README.md), [release procedures](docs/release.md), and the [changelog](CHANGELOG.md). A local compile or passing fixture test does not certify a signed upgrade or compatibility with every Linux distribution.
+[Changelog](CHANGELOG.md)
