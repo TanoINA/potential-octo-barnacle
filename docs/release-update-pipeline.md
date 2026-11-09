@@ -1,63 +1,65 @@
-# Pipeline update aplikasi
+# App update pipeline
 
-## Status dan batas nyata
+## Current status
 
-Implementasi check, download berbatas, progress, verifikasi Ed25519/signed-version, konfirmasi install/restart, readiness sesi, kandidat rilis Windows/Linux, dan promosi terpisah tersedia di source. **Infrastruktur produksi belum diprovisikan**: endpoint publik, private/public key operator, sertifikat publisher Windows, runner signing, dan GitHub protected environments belum tersedia pada mesin audit. Jangan menyebut build lokal sebagai signed production release.
+The source includes update checks, bounded downloads, progress reporting, Ed25519 signature and signed-version verification, install/restart confirmation, session readiness checks, Windows/Linux release candidates, and a separate promotion step.
 
-Binary tanpa endpoint/public key compile-time tetap fail-closed: tombol update tidak aktif. Satu rilis bootstrap yang sudah dikonfigurasi perlu dipasang manual terlebih dahulu; menerbitkan latest.json saja tidak mengaktifkan binary lama.
+Production still needs a public endpoint, operator-owned signing keys, a Windows publisher certificate, signing runners, and protected GitHub environments. Local builds are not signed production releases.
 
-## Alur aplikasi
+A binary built without an endpoint and public key keeps updates disabled. Users must manually install a configured bootstrap release first. Publishing `latest.json` does not enable updates in an older, unconfigured binary.
 
-Settings → About AetherAgent → Check for updates → konfirmasi → simpan sesi idle → download → verifikasi → install → restart eksplisit bila platform memerlukannya.
+## In the app
 
-- Endpoint/public key hanya disematkan saat build; webview tidak dapat memasok URL installer atau mengganti identitas signing.
-- requireSignedVersion tetap true; hanya semver yang lebih baru diterima. Build metadata saja tidak dianggap update.
-- Frontend memeriksa semua sesi cached, termasuk run tersembunyi, menunggu antrean save/settings, flush buffer, lalu menyimpan sesi dirty melalui jalur persistence canonical yang sama. Perubahan navigasi selama persiapan membatalkan readiness.
-- Native update permit menolak active run/review dan menahan admission run/review baru selama install. Task aktif global harus dihentikan, bukan dimatikan diam-diam.
-- Download dibatasi 512 MiB, connect 15 detik, idle header/chunk 30 detik, total 15 menit. HTTPS dan redirect tervalidasi; tidak menerima credential/query/fragment.
-- Signature dan signed-version diverifikasi oleh plugin resmi sebelum installer. Instalasi tidak otomatis terjadi ketika check.
-- Windows dapat menutup proses ketika handoff installer. Linux memerlukan relaunch eksplisit setelah paket terpasang. DEB/RPM memerlukan otorisasi OS dan pengujian distro tersendiri.
+Open **Settings → About AetherAgent → Check for updates**. Installation requires confirmation. The app saves idle sessions, downloads and verifies the package, then starts installation. Platforms that need a restart ask for one explicitly.
 
-## Identitas dan hosting
+- The endpoint and public key are embedded at build time. The webview cannot supply an installer URL or replace the signing identity.
+- `requireSignedVersion` stays enabled. Only a newer semantic version is accepted; changing build metadata alone does not count as an update.
+- The frontend checks all cached sessions, including background runs. It waits for pending session/settings saves, flushes buffers, and saves dirty sessions through the normal canonical persistence path. Navigation during preparation cancels readiness.
+- The native update permit rejects active runs/reviews and blocks new ones during installation. Users must stop active background tasks; the updater does not silently kill them.
+- Package downloads are limited to 512 MiB, with a 15-second connection timeout, 30-second header/chunk idle timeout, and 15-minute total timeout. HTTPS URLs and redirects are validated; embedded credentials, query strings, and fragments are rejected.
+- The official plugin verifies the signature and signed version before installation. Checking for updates never starts an installer by itself.
+- Windows may close the app when handing off to the installer. Linux requires an explicit relaunch after installation. DEB/RPM installation needs OS authorization and testing on the target distribution.
 
-Nilai publik:
+## Signing and hosting
 
-- AETHER_UPDATE_BASE_URL: origin/path HTTPS static hosting tanpa credential, query, atau fragment.
-- AETHER_UPDATE_ENDPOINT: BASE_URL/latest.json, disematkan saat build.
-- AETHER_UPDATE_PUBLIC_KEY: base64 file minisign public key, bukan raw Ed25519 bytes.
-- AETHER_WINDOWS_UPDATE_PUBLIC_KEY dan AETHER_LINUX_UPDATE_PUBLIC_KEY: pin platform untuk verifikasi/promosi.
-- AETHER_CERTIFICATE_THUMBPRINT dan AETHER_TIMESTAMP_URL: publisher Windows dan RFC3161 timestamp service.
+Public configuration:
 
-Secrets hanya pada signing environment:
+- `AETHER_UPDATE_BASE_URL`: a static HTTPS hosting origin/path without credentials, a query string, or a fragment.
+- `AETHER_UPDATE_ENDPOINT`: `BASE_URL/latest.json`, embedded at build time.
+- `AETHER_UPDATE_PUBLIC_KEY`: the base64-encoded minisign public-key file, not raw Ed25519 bytes.
+- `AETHER_WINDOWS_UPDATE_PUBLIC_KEY` and `AETHER_LINUX_UPDATE_PUBLIC_KEY`: platform key pins used during verification and promotion.
+- `AETHER_CERTIFICATE_THUMBPRINT` and `AETHER_TIMESTAMP_URL`: the Windows publisher certificate and RFC 3161 timestamp service.
 
-- TAURI_SIGNING_PRIVATE_KEY dan password opsional, identitas milik operator yang cocok dengan public key platform.
-- Sertifikat code-signing Windows beserta private key berada pada CurrentUser certificate store runner, sesuai thumbprint. Script tidak mengimpor atau membuat pengganti otomatis.
+Keep these private inputs in the signing environment only:
 
-Jangan mencetak secret atau menaruhnya di Git. Public key disuntikkan ke konfigurasi bundler dan native dengan nilai yang sama. Skrip menolak key/endpoint kosong daripada menghasilkan update unsigned.
+- `TAURI_SIGNING_PRIVATE_KEY` and its optional password. The key must match the platform's pinned public key.
+- The Windows code-signing certificate and private key, installed in the runner's CurrentUser certificate store under the configured thumbprint. The script does not import certificates or generate replacement keys.
 
-Policy saat ini sengaja memilih static HTTPS hosting. GitHub Releases download biasanya redirect ke CDN ber-query dan tidak sesuai policy URL ini; jangan memakai URL tersebut sebagai endpoint tanpa perubahan policy yang diuji secara sempit.
+Never print secrets or commit them to Git. The bundler and native runtime receive the same public key. Scripts reject missing keys or endpoints rather than producing an unsigned update.
 
-## Tahapan pipeline
+The current URL policy expects static HTTPS hosting. GitHub Releases downloads usually redirect to CDN URLs with query strings, which this policy rejects. Do not use those URLs without a narrowly scoped, tested policy change.
 
-### 1. Source dan quality
+## Pipeline stages
 
-Berkas `.github/workflows/release-quality.yml` menjalankan quality matrix tanpa signing secrets. Source release harus commit/tag immutable dan semua file implementasi lokal harus masuk version control sebelum CI digunakan. Audit ini tidak melakukan commit/push.
+### 1. Source and checks
 
-Versi npm, Cargo, Tauri, dan tag vVERSION harus sama. CLI wajib stable Tauri v2 >=2.12.0 agar signed-version tersedia. Lockfile dipakai; jangan mengambil build output lama sebagai fallback.
+`.github/workflows/release-quality.yml` runs the checks without signing secrets. Release source must be an immutable commit/tag, with all required implementation files committed before CI runs.
 
-### 2. Kandidat signed terproteksi
+The npm, Cargo, Tauri, and `vVERSION` tag versions must match. Use a stable Tauri v2 CLI version of at least 2.12.0 for signed-version support. Builds use lockfiles; old build output must not serve as a fallback.
+
+### 2. Protected signed candidates
 
 `.github/workflows/signed-release.yml`:
 
-- Tag push atau manual yang tag-nya menunjuk persis workflow SHA/HEAD, serta berada pada history main.
-- Menunggu quality gate.
-- Windows runner label: self-hosted, Windows, X64, aether-release-windows; environment release-sign-windows.
-- Linux runner label: self-hosted, Linux, X64, aether-release-linux-24.04; environment release-sign-linux. Jalankan bukan root.
-- Job tidak mempunyai contents:write dan tidak memublikasikan endpoint.
+- Accepts a tag push or a manual run whose selected tag points exactly to the workflow SHA/HEAD and belongs to `main` history.
+- Waits for the quality gate.
+- Uses Windows runner labels `self-hosted`, `Windows`, `X64`, `aether-release-windows`, with environment `release-sign-windows`.
+- Uses Linux runner labels `self-hosted`, `Linux`, `X64`, `aether-release-linux-24.04`, with environment `release-sign-linux`. The Linux build must not run as root.
+- Has no `contents:write` permission and does not publish the update endpoint.
 
-Provision protected environments dengan approval reviewer dan pembatasan branch/tag. Label runner saja tidak mengonfigurasi protection. Runner harus ephemeral atau dimiliki operator tepercaya; jangan menjalankan source PR tidak dipercaya pada runner signing.
+Configure protected environments with reviewer approval and branch/tag restrictions. Runner labels alone do not enforce protection. Use ephemeral or operator-controlled signing runners; never run untrusted pull-request code on them.
 
-Perintah reusable:
+The build scripts can also run directly:
 
 ```powershell
 ./scripts/build-signed-release.ps1 -ArchiveRoot D:/retained-releases -CandidateDirectory D:/candidates/unique-run
@@ -67,38 +69,38 @@ Perintah reusable:
 AETHER_RELEASE_TAG=vVERSION AETHER_CANDIDATE_DIRECTORY=/srv/candidates/unique-run bash scripts/build-signed-release.sh
 ```
 
-Placeholder VERSION/path harus diganti operator dengan identitas aktual. Skrip memerlukan environment yang valid dan tidak membuat key. Windows: Authenticode/timestamp dahulu, signature updater pada byte final sesudahnya. Linux: AppImage/DEB/RPM exact filenames dan metadata diverifikasi. Candidate output harus baru, bukan overwrite.
+Replace the example version and paths with the actual values. Scripts require configured signing inputs and do not generate keys. On Windows, Authenticode signing and timestamping happen first; the updater signature is then computed over the final bytes. Linux candidates verify the exact AppImage/DEB/RPM filenames and metadata. Candidate output must use a fresh directory, not overwrite an existing one.
 
-Baseline rilis CI Linux yang dimaksud Ubuntu 24.04 x86_64. Build lokal di Arch WSL tidak membuktikan kompatibilitas distro itu; periksa GLIBC seluruh bundled ELF AppImage dan uji install nyata pada baseline.
+The intended Linux release baseline is Ubuntu 24.04 x86_64. An Arch WSL build does not prove compatibility with that baseline. Inspect GLIBC requirements across all bundled AppImage ELF files and test installation on the target distribution.
 
-### 3. Record dan manifest
+### 3. Records and manifest
 
-`scripts/release-pipeline.mjs` mempunyai preflight, candidate, prepare, verify, promote-local. Verifier Rust di scripts/release-policy-tests memeriksa signature/global trusted comment dan tepat satu version yang sama.
+`scripts/release-pipeline.mjs` provides `preflight`, `candidate`, `prepare`, `verify`, and `promote-local`. The Rust verifier in `scripts/release-policy-tests` checks the signature, global trusted comment, and exactly one matching signed version.
 
-- Kandidat memuat exact artifact set, SHA-256, signature hash, versi, full source SHA, dan public-key digest.
-- Signature pada latest.json adalah **isi file .sig**, bukan path/URL signature atau hash.
-- Key platform spesifik: windows-x86_64-nsis/msi; linux-x86_64-appimage/deb/rpm. Generic fallback Windows menunjuk NSIS, Linux AppImage.
-- URL immutable: BASE_URL/releases/VERSION/FULL_SOURCE_SHA/FILENAME.
-- Verifikasi menolak stale/missing/tampered artifacts, key platform tertukar, version mismatch, symlink/junction, dan immutable collision.
+- Candidate records contain the exact artifact set, SHA-256 hashes, signature hashes, version, full source SHA, and public-key digest.
+- A signature in `latest.json` is the **contents of the `.sig` file**, not its path, URL, or hash.
+- Platform keys distinguish `windows-x86_64-nsis`/`msi` and `linux-x86_64-appimage`/`deb`/`rpm`. Generic fallbacks select NSIS on Windows and AppImage on Linux.
+- Artifact URLs are immutable: `BASE_URL/releases/VERSION/FULL_SOURCE_SHA/FILENAME`.
+- Verification rejects stale, missing, or tampered artifacts; swapped platform keys; version mismatches; symlinks/junctions; and immutable-path collisions.
 
-### 4. Promosi manual terpisah
+### 4. Separate manual promotion
 
-`.github/workflows/promote-release.yml`, protected environment release-promotion, runner aether-release-promotion:
+`.github/workflows/promote-release.yml` uses the protected `release-promotion` environment and `aether-release-promotion` runner:
 
-1. Operator memilih successful candidate run ID dan tag.
-2. Run metadata harus cocok repository/workflow/event/status dan head_sha/tag/branch release yang dipilih.
-3. Download kandidat CI dan verifikasi ulang tanpa private key.
-4. Salin byte immutable eksklusif ke publish directory.
-5. Verifikasi destination.
-6. Ganti pointer latest.json melalui rename satu direktori, **paling akhir**.
+1. The operator selects a successful candidate run ID and tag.
+2. Run metadata must match the repository, workflow, event, status, and selected release SHA/tag/branch.
+3. The job downloads the CI candidates and verifies them again without a private key.
+4. It copies the immutable files exclusively into the publish directory.
+5. It verifies the destination.
+6. It replaces `latest.json` through a same-directory rename, **last**.
 
-Publish directory/semua ancestor wajib trusted single-writer, bukan writable oleh pengguna lain atau web server upload. Path-based checks bukan descriptor-relative anti-race filesystem. Set AETHER_UPDATE_PUBLISH_DIRECTORY hanya pada runner tepercaya. Jangan gunakan junction/symlink/UNC/device path sebagai bypass.
+The publish directory and all its ancestors must have a trusted single writer. Other users and web-server uploads must not be able to modify them. Path checks are not descriptor-relative protection against filesystem races. Set `AETHER_UPDATE_PUBLISH_DIRECTORY` only on a trusted runner. Do not use junctions, symlinks, UNC paths, or device paths to bypass these checks.
 
-Apabila gagal setelah sebagian immutable files tersalin, latest lama tetap aktif. Partial tree dipertahankan dan retry identitas sama ditolak; operator harus audit dan menangani tree itu secara eksplisit. Script tidak menghapus data production otomatis. Jangan menimpa artifact versi yang sudah dirilis.
+If promotion fails after copying some immutable files, the previous `latest.json` remains active. The partial tree is retained, and retrying the same identity is rejected. The operator must inspect and handle that tree explicitly. Scripts never delete production data automatically or overwrite an artifact that has already been released.
 
-## Uji dan gate operator
+## Tests and release checks
 
-Fixture tests lokal:
+Run the local fixtures with:
 
 ```text
 node --test scripts/test-release-pipeline.mjs
@@ -107,10 +109,10 @@ bash scripts/test-release-linux.sh
 cargo test --locked --manifest-path scripts/release-policy-tests/Cargo.toml
 ```
 
-Fixtures orchestration memakai injected verifier; tests Rust membuktikan signature vector yang sah/tampered/signed-version. Keduanya bukan bukti bahwa sertifikat produksi atau hosting sudah benar.
+The orchestration fixtures use an injected verifier. The Rust tests cover valid and tampered signature vectors and signed-version checks. Neither proves that production certificates or hosting are configured correctly.
 
-Sebelum promosi pertama, VM/profil disposable harus membuktikan Windows dan Linux check → explicit confirm → download → signature verification → upgrade → relaunch. Uji signature salah, byte berubah, manifest versi baru dengan paket lama, URL/redirect tidak aman, jaringan putus, task/run aktif, failed save, cancel/UAC, dan rollback manual dengan backup. Aplikasi tidak melakukan automatic downgrade.
+Before the first promotion, test the full Windows and Linux upgrade flow in disposable VMs/profiles: check, confirm, download, verify, upgrade, and relaunch. Cover invalid signatures, changed bytes, a newer manifest pointing to an older package, unsafe URLs/redirects, network interruption, active tasks/runs, failed saves, cancellation/UAC, and manual rollback from a backup. The app does not downgrade automatically.
 
-## Build lokal saat signing belum tersedia
+## Local builds without signing
 
-Build lokal unsigned boleh diarsipkan sebagai hasil kompilasi/pengujian, tetapi tidak boleh dimasukkan ke manifest production atau diberi label trusted signed. Simpan record hash, source snapshot, compiler/platform, metadata paket, hasil smoke, dan batas GLIBC. Jangan mengganti artifact lama tanpa arsip.
+Unsigned local builds can be retained for compilation and testing. Do not put them in the production manifest or label them as trusted signed releases. Retain hashes, the source snapshot, compiler/platform details, package metadata, smoke-test results, and GLIBC requirements. Archive old artifacts before replacing them.
