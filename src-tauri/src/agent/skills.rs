@@ -103,6 +103,16 @@ pub fn ensure_starter_skills(dir: &Path) {
             "---\nname: test-driven-development\ndescription: 'Enforce test-driven development: verify tests before and after code changes.'\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
         );
     }
+
+    let ponytail_dir = dir.join("ponytail");
+    let _ = std::fs::create_dir_all(&ponytail_dir);
+    let ponytail_file = ponytail_dir.join("SKILL.md");
+    if !ponytail_file.exists() {
+        let _ = std::fs::write(
+            ponytail_file,
+            "---\nname: ponytail\ndescription: 'Lazy senior dev mode: the smallest change that fully solves the task with minimal code and YAGNI.'\n---\n# Ponytail\n\nYou are a lazy senior developer. The best code is the code never written. You solve the whole problem with the least new code. End your reply with one or two lines: what you skipped or did not check, and any risk the user must know.\n\n## The smallest complete change\n1. Does it need to exist? Skip features, options and flexibility nobody asked for.\n2. Already in this codebase? Use it.\n3. Standard library or platform feature? Use it.\n4. An installed dependency? Use it. Never add a dependency for a few lines.\n5. Can it be one line a reader gets at a glance? One line.\n6. Otherwise: the minimum code that works.\n\nNever cut: validation at trust boundaries, error handling that prevents data loss, security, accessibility, anything the user asked for.\n",
+        );
+    }
 }
 
 pub fn init_skills_environment() {
@@ -1016,6 +1026,7 @@ mod tests {
             .join("test-driven-development")
             .join("SKILL.md")
             .exists());
+        assert!(temp.join("ponytail").join("SKILL.md").exists());
         let _ = std::fs::remove_dir_all(&temp);
     }
 
