@@ -1,152 +1,125 @@
-# Lazy loading riwayat sesi
+# Session history pagination
 
-## Perilaku user
+## Design
 
-- Membuka sesi mengambil **50 pesan terbaru**, bukan seluruh pesan untuk tampilan.
-- Scroll sengaja ke atas dalam jarak 120 px dari batas atas mengambil hingga 50 pesan sebelumnya. Mount, scroll programatik dan posisi diam tidak memicu rentetan request.
-- Tombol **Load older messages** tetap tersedia untuk keyboard atau ketika auto-load tidak cocok. Loading menonaktifkan request ganda; error tampil inline dengan Retry eksplisit.
-- Header menampilkan jumlah pesan loaded/total. Timeline hanya mengacu pada pesan yang sudah dimuat.
-- Posisi pesan dijaga berdasarkan message ID dan offset piksel, bukan selisih scrollHeight. Perubahan tinggi row di atas anchor tetap dikoreksi.
-- Berpindah ke sesi yang belum cached memperlihatkan status loading dan menahan aksi composer, bukan mengizinkan aksi pada chat sebelumnya.
-- Kembali ke sesi cached memakai data dan posisi scroll yang tersimpan. Cache dibatasi ke enam sesi inactive yang aman dievikt; sesi aktif, berjalan, dirty, atau punya operasi persistence/history pending dilindungi. Karena sesi terlindungi dipin, enam bukan batas keras seluruh pemakaian memori.
-- Rename tidak mereset scroll. New/Clear membatalkan intent navigation/history lama; response terlambat tidak dipublikasikan ke sesi lain.
+History pagination limits what the UI loads and renders. It does **not** truncate the transcript on disk or the context sent to the provider.
 
-## Penyimpanan dan bounded read
+The canonical format remains `SessionData` with the complete `messages` array. A `.history-index.json` sidecar stores top-level message offsets, byte lengths, and lightweight summaries such as a label, tool count, role, and run status. The index is a disposable cache, not a new storage format. If it is missing, stale, or corrupt, the native layer validates and rebuilds it from the canonical JSON.
 
-Canonical JSON sesi tetap menjadi sumber kebenaran. Tidak ada penghapusan history atau migrasi destruktif.
+On the normal open path, the native layer reads the index and only the requested message range. It does not deserialize the full transcript again. Rebuilding the index is a one-time full read when the cache is invalid. The sidecar also stores the authoritative revision and message count for the window, so a tail write can check for conflicts without rereading a multi-gigabyte transcript. Updating an unchanged committed baseline does not rebuild the index.
 
-`~/.aether-agent/session-pages.sqlite` merupakan projection turunan yang dapat dibangun kembali:
+## Native API
 
-- metadata sesi dan model override disimpan terpisah dari row pesan/artifact;
-- request warm memeriksa stat canonical lalu melakukan query ordinal berindeks untuk maksimal 100 row pesan; UI memakai 50;
-- cold/invalidated projection membaca JSON canonical sekali untuk membangun projection;
-- listing sesi warm membaca header metadata, bukan content seluruh chat;
-- katalog yang rusak gagal dengan diagnostik, tidak pura-pura menjadi daftar kosong;
-- marker `.deleted` diterapkan pada katalog, page read, full read dan semua penulisan canonical.
+- `load_session_tail`: returns session metadata, the newest window, and `SessionHistoryWindow`.
+- `load_session_page`: reads an older range using a native cursor (`startIndex`).
+- `save_session_page`: atomically splices an untouched canonical prefix with the current window and tail. Partial saves must include both a cursor and the canonical prefix revision.
+- `load_session` and `load_session_for_run`: still return the full transcript for legacy consumers, export, clone, compact, undo/fork, and provider hydration.
 
-Page membawa artifact terbatas: maksimal 80 referenced dan 20 recent unlinked. Artifact lain dapat dibaca secara individual melalui `read_session_artifact`. Ini batas row, bukan byte: satu pesan atau artifact tetap dapat besar.
+Initial history windows and page chunks are limited to at most 100 turns/messages per native request. Cursors use the number of canonical messages, not the number of turns after `windowConversationMessages` has merged tool continuations.
 
-Freshness projection memakai ukuran dan mtime file. Internal writers memperbarui projection/revision secara eksplisit, sehingga penulisan internal equal-size tetap invalidated. Edit eksternal yang mempertahankan ukuran dan mtime persis berada di luar jaminan deteksi ini.
+### Partial-save rules
 
-Projection refresh transactional dan incremental. Pada fixture 300 pesan + 300 artifact, perubahan satu pesan menghasilkan satu UPDATE pesan, tanpa INSERT/DELETE pesan atau mutation artifact. Row dihapus hanya bila tidak lagi ada. Seluruh row masih diserialisasi/dibandingkan saat refresh; canonical JSON tetap ditulis penuh.
+1. A UI window must never go through legacy `save_session` or `save_session_checked`. The Rust command rejects it rather than overwriting the canonical prefix with a partial snapshot.
+2. A cursor alone is not enough: a partial save must carry a revision and match the canonical suffix anchor.
+3. If a save is rejected, the UI window stays marked partial and dirty. Rejection must not be treated as a successful full save.
+4. Fork, compact, undo, clone, and run startup must wait for the persistence queue. A failed pre-save prevents the operation from continuing.
+5. While a run is active, canonical journal progress and provider replay remain authoritative.
+6. A successful `load_session_for_run` hydration does not mean a later persistence step succeeded. The client merges the acknowledged baseline with the current active tail; it never replaces the current live transcript with the pre-run hydration snapshot.
+7. If the primary session JSON cannot be replaced during a journal-backed save, a durable materialized head becomes the canonical recovery source. `load_session`, tail/page APIs, and the session list all read the same selected head.
+8. Eviction removes only clean, idle live-session state. Dirty, saving, or running sessions stay in memory until they can be released safely.
 
-## Kontrak native
+## Frontend
 
-```typescript
-interface SessionWindow {
-  offset: number;            // banyaknya prefix yang belum dimuat
-  total: number;             // total canonical pada revision ini
-  revision: string;          // token opaque, bukan timestamp UI
-  firstMessageId?: string | null;
-}
-interface SessionPage {
-  data: SessionData;
-  window: SessionWindow;
-}
+- The frontend opens a session with `load_session_tail`, loads older pages with `load_session_page`, and persists a partial window with `save_session_page`.
+- The default settings are `historyInitialTurns = 30` and `historyPageChunkTurns = 20`. Both are clamped to `1..=100` when settings are loaded or saved, not just in the UI.
+- The load-more indicator reads `Loading older messages...` while a request is active. A button remains available as a keyboard-accessible fallback.
+- The top sentinel only runs automatic pagination after a real user scroll event. The observer does not recursively fetch history just because a short session's initial viewport already intersects the sentinel.
+- Scroll intent is reset by `sessionId` and `scrollResetKey`. Restoring a session through the viewport cache does not count as a user scroll gesture.
+- The virtualizer captures an anchor before the prepend-triggering request and retains it until the prepend is applied. It then measures the anchor delta while the pre-prepend virtual slice is still rendered. Tail-follow is temporarily disabled, and only then are spacer estimates and the virtual slice updated.
+- The anchor uses a stable canonical message ID and a viewport-relative offset. If its DOM node is recycled, the virtualizer reconstructs the anchor from the message index and height cache rather than using a raw scroll-height delta.
+- Late `ResizeObserver` measurements, delayed text reflow, and image loading reapply the reading anchor when the reader is away from the tail.
+- Full history can still be loaded with `load_session_for_run` when resuming a run. While a history window is partial, the UI says `Partial history; full context loads on run` instead of presenting its context estimate as complete.
+- Export and clone load canonical history on the native side, not the UI's current window.
+- `pageSessionHistory(sessionId)` reads the canonical cursor and updates that session's live record. A late page response never overwrites whichever session the user has since opened.
+- A background page result can merge with a still-valid hydrated run prefix. If the history changed in a way that invalidates the cursor, the result is discarded without replacing the newer transcript.
+- Unchanged prefix messages remain referentially stable: provider-state, tool, and status updates replace only the active tail.
+
+## Conflict and recovery behavior
+
+If a checkpoint conflict occurs and refreshing the latest canonical state also fails:
+
+- The existing `historyWindow` is retained, including the committed count/revision metadata.
+- Dirty state is not evicted by the inactive-session cache.
+- The next persistence attempt still uses `save_session_page` with a cursor and revision, rather than treating the partial snapshot as a full save.
+- The user sees the persistence error; the app does not retry in a background loop that keeps rewriting snapshots.
+
+An immutable committed baseline also keeps the next run from using volatile or partial state. An older in-flight snapshot may be acknowledged, but the acknowledgement merges into the current live transcript. Its old timestamp and message IDs must not be copied onto a different snapshot.
+
+## Verification
+
+Focused checks run for this change:
+
+```powershell
+npx vitest run src/hooks/useAgent.pagination.test.tsx src/components/ChatCanvas.pagination.test.tsx src/components/VirtualizedMessageList.test.tsx
+cargo test --manifest-path src-tauri/Cargo.toml history_ --lib --locked -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml materialized_recovery --lib --locked
 ```
 
-IPC baru:
+Before final delivery, the full frontend suite, production frontend build, complete Rust suite, and Windows release bundle were also checked. Older verification artifacts remain under `.local/` or the release archive; none were deleted.
 
-- `load_session_page({sessionId,before?,limit?,revision?})`
-- `save_session_page({data,window})`
-- `checkpoint_session_page({data,window})`
-- `read_session_artifact({sessionId,artifactId})`
-- `rename_session_summary({sessionId,title})`
-- `refresh_session_window({sessionId,data,window,allowMetadata,reviewRunId?})`
+### Lazy-history test scenarios
 
-`before` adalah ordinal exclusive. Pesan hasil selalu chronological. Halaman berikutnya menggunakan offset dari hasil sebelumnya dan revision yang sama.
+Frontend tests cover:
 
-Frontend `SessionData.historyWindow` bersifat transient. Metadata itu tidak disimpan sebagai canonical history, dan snapshot parsial tidak dikirim ke full-replacement save API.
+- Opening a large session through the tail API, including partial context metadata.
+- Merging pages by message ID without duplicates.
+- Keeping fork, compact, and run startup blocked while a required pre-save is pending.
+- Retaining the partial cursor after a failed save.
+- Handling late paging responses, including run hydration and provider replay updates.
+- Loading canonical full history for export and clone.
+- Restoring a session's viewport without automatically fetching older pages again.
+- Accepting a page for session A while B is visible without changing B's transcript, queue, status, cursor, or viewport.
+- Keeping session A clean without replacing its current live transcript when a long-running hydration save acknowledgement arrives.
+- Retaining a dirty partial cursor after a checkpoint conflict and a failed canonical refresh, including after a session switch, until a later explicit page save succeeds.
 
-## Perlindungan history
+Native tests cover:
 
-Partial save memvalidasi session ID, revision, offset, first-message identity, urutan suffix dan duplicate IDs sebelum menulis:
+- Tail/page reads use the indexed byte range.
+- Corrupt or stale sidecars are rebuilt safely.
+- Partial writes require a revision and suffix anchor.
+- Legacy/full-save APIs reject a `historyWindow`.
+- Message and provider replay content stays byte-for-byte equivalent across a partial rewrite of the prefix/tail boundary.
+- Updating an unchanged committed baseline skips index rebuilding, and the index revision matches the canonical message revision.
+- After primary JSON persistence fails, the recovery head serves the same message IDs, run status, and provider replay through `load_session` and the tail/page APIs.
 
-```
-canonical prefix yang belum dimuat + snapshot tail yang tervalidasi
-```
+### Performance evidence
 
-Native mempertahankan hidden artifact, metadata otoritatif, review result native, dan omitted image/provider payload. Partial snapshot tidak boleh memotong atau mengurutkan ulang suffix yang sudah tersimpan. Undo/edit/rollback melakukan full hydration on-demand sebelum operasi destruktif. Clear sengaja memakai full replacement, karena maksud user memang mengosongkan sesi.
+A real large-session fixture was used in Chromium with CDP metrics and Tauri IPC spies. The benchmark fixture contained 120 turns and about 1.17 MB of tool output.
 
-Queued snapshot mempertahankan offset dan boundary asalnya. Hanya acknowledgement revisi dari penulisan sah yang dapat dipakai untuk snapshot berikutnya. Acknowledgement yang datang saat streaming sudah maju tidak memublikasikan ulang data lama.
+- Initial open: 60 canonical messages, with roughly 21 DOM message shells. The rest were virtualized.
+- Initial open used `load_session_tail`; it made no full-session load call.
+- One upward user scroll requested one page. The UI then held 100 canonical messages rather than the entire transcript.
+- The visible anchor `a-109` had an offset change of **0 px** in the prepend probe. The browser suite also covers late image and measurement reflows.
+- The provider boundary was instrumented before completion: every canonical ID from `u-0` through `a-119` reached the run hydration request. The request did not come from a 60/100-message UI window.
+- A controlled status-only update kept the same 60-message array reference. The React Profiler showed no transcript rerender for that status commit, and there was no `agent:markdown-render` mark within the measured interval.
+- The exact CDP heap figures, parser telemetry, profiler commits, API call counts, and traces were stored as evidence rather than estimated in prose.
 
-### Native metadata dan review
+The benchmark is reproducible with `scripts/history-pagination-benchmark.ps1`. It starts an isolated Vite UI and localhost provider, seeds one synthetic disposable session under `%TEMP%` (including configuration, agent home, and workspace), and runs a real Chromium probe against the `AgentRunRequest` and `provider::stream_completion_with_options` boundary. It does not read normal configuration, session lists, provider secrets, or the user's workspace. The benchmark's `AgentRunRequest` contains only fixture fields; review configuration does not expose the normal agent home.
 
-Pin, rename dan review dapat mengubah revision tanpa mengubah teks history. Reconciliation memakai **last acknowledged committed snapshot**, bukan teks streaming yang belum tersimpan. Native membandingkan seluruh loaded suffix/artifact dan hanya mengizinkan perbedaan metadata yang diminta atau review dari run yang ditentukan. Ini bukan mekanisme generic stale-save retry.
+Evidence from the rerun:
 
-Review untuk turn yang belum dimuat tetap merekonsiliasi sesi cached. Foreground review sekarang dipancarkan setelah native commit, bukan sebelum detached write. Penulisan event review identik idempotent dan tidak mengganti revision lagi.
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-metrics.json`
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-trace.json`
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-browser-suite.json`
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-browser-suite-trace.json`
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-idle.png`
+- `.local/history-pagination-benchmark-20261109T153616633Z/history-pagination-scrolled.png`
 
-### Konflik eksternal
+Metrics from that run:
 
-Revision stale tidak diatasi dengan mengganti token berdasarkan satu boundary ID. Setelah error:
-
-- Dirty/running/persistence-busy session mempertahankan data dan revision lokal, lalu meminta user menyelesaikan pekerjaan dan reload. Tidak ada silent rebase/save.
-- Retry eksplisit pada sesi clean/idle merekonstruksi loaded suffix dari canonical melalui request bounded, kemudian memasang **content, revision, dan committed baseline secara bersamaan**.
-- Snapshot canonical baseline dipisahkan dari overlay review UI. External edits dengan ID sama tidak boleh ditimpa oleh tail lama.
-- Jika canonical berubah lagi saat recovery, atau user menavigasi/mengubah data, seluruh recovery dibuang tanpa meng-upgrade revision.
-
-Arbitrary external insertion/reordering dapat memindahkan anchor di luar loaded range. Recovery mempertahankan rentang ordinal dan loaded count jika memungkinkan; bukan pencarian ID global.
-
-## Konteks model tidak ikut terpotong
-
-Run request paged membawa historyWindow dan pesan tampilan yang tersedia. Native memvalidasi suffix lengkap lalu merakit history dari **canonical storage**, bukan mempercayai replacement isi history dari client:
-
-- semua ID dari offset sampai current-user harus sesuai urutan canonical;
-- historical role, content, image, provider transcript, reasoning dan tool fields berasal dari canonical;
-- hanya content current-user boleh memakai transformasi API seperti attachment expansion atau `/plan`;
-- assistant placeholder streaming milik run yang sama tidak ditambahkan ke konteks model;
-- normal dan Council sama-sama hydrate sebelum validasi gambar dan registrasi run.
-
-Karena itu browsing tetap ringan tanpa mengurangi konteks agent. Full load masih sah untuk kebutuhan tertentu—destructive edit, export, compaction, atau native model preparation—bukan untuk membuka/scroll UI.
-
-## Kontensi dan checkpoint
-
-Canonical I/O memakai keyed per-session locks: penulisan sesi A tidak memegang canonical lock sesi B. Catalog melepaskan lock per file. Registry koneksi SQLite tidak memegang mutex global registry sepanjang query.
-
-Review merge yang semula mencari ulang setiap pesan diganti indeks HashMap dengan semantik first-duplicate yang sama. Fixture 1.000 pesan turun dari 500.500 perbandingan key menjadi kurang dari 4.000.
-
-Batas: koneksi SQLite yang sama tetap serial; rebuild cold besar masih dapat menahan koneksi. Projection refresh masih synchronous dan canonical checkpoint masih membaca/menulis JSON lengkap. Tidak ada klaim sidecar/delta checkpoint penuh atau waktu loading native tertentu tanpa benchmark perangkat asli.
-
-## Verifikasi
-
-Regresi mencakup warm bounded row reads, revision persistence/reopening, legacy import, rollback transaksi, stale cursor, corrupted original preservation, tombstone, prefix/artifact/image/protocol preservation, current-user transformation, cache eviction, clean switch tanpa save, streaming pending tail, baseline acknowledgements, metadata/review races, conflicting external edits, origin navigation, and measured scroll anchors.
-
-Log final:
-
-- `verification/pagination-rust.log`
-- `verification/pagination-frontend.log`
-- `verification/pagination-build.log`
-- `verification/pagination-clippy.log`
-- `verification/pagination-whitespace.log`
-
-Production Chromium fixture sesi 1.000 pesan menghasilkan 29/29 checks pada build saat pengujian:
-
-- 50 pesan awal dengan 4 row mounted;
-- tepat satu request per upward intent;
-- 0 px anchor drift setelah prepend, resize row 137 px dan cache return;
-- recovery error eksplisit tanpa idle retry;
-- rename/pin revision acknowledgement;
-- same-ID canonical edit dipertahankan;
-- tidak ada full `load_session`, provider execution, unknown IPC, JS exception, console/network error saat browsing.
-
-Bukti final: `verification/session-pagination-2026-11-08T09-27-43-750Z/report.md`, `report.json` dan enam screenshot. Run ini menguji entry produksi `index-CNr7y1hF.js` setelah baseline-recovery dan navigation-cancellation fix. Harness menggunakan actual production React/TanStack di Chromium dengan IPC mock; tidak membuktikan native WebView latency atau live-provider performance.
-
-Perintah gate akhir:
-
-```sh
-cargo test --manifest-path src-tauri/Cargo.toml
-npm test -- --fileParallelism=false
-npm run build
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-```
-
-Hasil frontend final: **45 files, 433 passed, 0 failed** melalui `npm test -- --fileParallelism=false`. TypeScript noEmit juga lulus setelah perubahan test terakhir.
-
-Hasil native final: **320 passed, 0 failed, 2 ignored subprocess fixtures**, dengan `RUST_TEST_THREADS=2` pada proses verifikasi; command Cargo tetap sama. Main/doc tests lulus. Clippy strict, Rustfmt, whitespace dan production build juga lulus.
-
-Catatan transparansi: suite native dengan concurrency default tidak stabil pada mesin ini—run sebelumnya gagal pada elapsed-time Git/MCP/review provider fixtures. Satu run default sempat lulus, tetapi repeat tidak konsisten. Batas concurrency final mengurangi kontensi tanpa menambah timeout, mengabaikan tes, atau mengubah scheduling production. Ini bukan klaim default-parallel flakiness telah selesai.
-
-Test skill discovery kini memakai root sementara per-process, bukan library user asli. Regresi juga menemukan starter skill description YAML yang tidak valid; template baru sudah diquote, tanpa menimpa starter user yang sudah ada. Test App lazy panel disinkronkan terhadap actual import dan teardown async; assertions loaded dialog/callback tidak dilonggarkan.
-
-Tidak ada commit/push, instalasi, penghapusan history user atau rebuild installer yang tersirat. Installer/executable dari batch sebelumnya tidak otomatis berisi fitur ini.
+- Initial open: 60 model messages, 21 DOM shells, about **91.4 ms** of React commit duration, and a **2,229,504-byte** heap delta.
+- One prepend: 100 model messages, 21 DOM shells, about **75.0 ms** of React commit duration, and **0 px** of anchor drift.
+- Run hydration: **240 canonical messages** received at the provider boundary; the frontend `agent_run` request remained empty because hydration was native-authoritative.
+- Controlled status update: no changed message IDs, unchanged array identity, and **0 ms** of transcript render time.
+- Browser suite: **3 tests passed**, with no console errors. It checked that the `run_completed` payload contained no full transcript, that an unchanged baseline acknowledgement used the identical skip path (`baselineWriteCount` **1**), and that canonical history stayed identical after switching A to B and back and adding a follow-up.
+- Native corruption probe: invalid primary JSON caused the native read to fail explicitly, not return an apparently successful empty session.
