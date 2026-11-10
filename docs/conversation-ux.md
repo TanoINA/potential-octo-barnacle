@@ -28,6 +28,12 @@ Each live chat can show **Running**, **Saving**, **Completed**, **Stopped**, or 
 
 Activity badges reflect the current application lifetime. After restart, the UI does not guess historical completion from old messages. Clearing or deleting a session removes its activity state.
 
+## Context compaction
+
+`/compact` saves a full copy of the chat as a separate session titled `… (before compact)`, then replaces older turns with a local summary. The latest turn stays intact. If saving the backup fails, compaction is cancelled. The summary is lossy; open the backup from the sidebar if you need the original details.
+
+Automatic micro-compaction checks each model request and shortens verbose older tool outputs when the estimated context is large. It keeps the newest tool batch intact and leaves stored history unchanged. The estimate is not a guarantee that a request fits your model's context limit.
+
 ## File links
 
 Safe local documents open through the OS handler. Executable, installer, shortcut, and unknown types are not automatically executed: the chat falls back to revealing the file in the file manager. Open/reveal failures are shown near the link.

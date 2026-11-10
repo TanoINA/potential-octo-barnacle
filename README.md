@@ -1,39 +1,49 @@
 # AetherAgent
 
-A desktop coding agent for Windows and Linux, built with Rust, Tauri 2, and React.
+A desktop coding agent for Windows and Linux. Work with an AI model on a local codebase: read and edit files, run commands, and review the results in chat.
 
-Still a work in progress. Expect bugs and rough edges.
+Built with Rust, Tauri 2, React, and TypeScript. Still in development.
 
-It can read and edit files in your workspace, run commands, and connect to MCP servers. Chats support image attachments, skills, and subagents. You can queue prompts while a task is running and switch conversations without losing the queue.
+## Features
 
-## Run locally
+- File editing, code search, and command execution in your workspace
+- Image attachments, skills, MCP servers, and subagents
+- Multiple chats with prompt queues and per-chat run status
+- Saved conversations and context compaction
 
-You'll need Node.js 22.12+, Rust stable, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+## Getting started
+
+Install Node.js 22.12+, Rust stable, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```sh
+git clone https://github.com/TanoINA/potential-octo-barnacle.git
+cd potential-octo-barnacle
 npm ci
 npm run tauri -- dev
 ```
 
-Choose a provider and model in Settings once the app opens.
-
-`/compact` saves a full copy of the chat as a separate ` (before compact)` session, then replaces older turns with a lossy local summary. The latest turn stays intact. Automatic micro-compaction only shortens older tool outputs in model requests; it leaves stored history alone and keeps the newest tool batch. Its token estimate isn't a guarantee that every request fits your model.
+Open Settings to configure your model provider, then choose a workspace.
 
 ## Build
 
 ```sh
-# Windows
+# Windows: EXE and MSI installers
 npm run tauri -- build --bundles nsis,msi -- --locked
 
-# Linux
+# Linux: DEB, RPM, and AppImage packages
 npm run tauri -- build --bundles deb,rpm,appimage -- --locked
 ```
 
-The binary and installers end up in `src-tauri/target/release/`. Linux compatibility depends on the distro used to build the packages.
+Build on the target OS. The executable is in `src-tauri/target/release/`; installers are under `src-tauri/target/release/bundle/`. Linux compatibility depends on the build distro.
 
-Local builds are unsigned unless you configure signing. In-app updates also need an update server and signing keys; they aren't enabled by default. See the [release guide](docs/release.md) for setup.
+Local builds are unsigned by default. Signing and in-app update setup are covered in the [release guide](docs/release.md).
 
-## Tests
+## Development
+
+- `src/` — React UI and frontend tests
+- `src-tauri/` — Rust agent runtime, tools, and storage
+- `scripts/` — development and release scripts
+- `rune/` — experimental native UI, separate from the Tauri app
 
 ```sh
 npm test
@@ -41,14 +51,8 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
 ```
 
-## Where things live
+Local app data lives in `~/.aether-agent/`. Attachments can also use `.aether-agent/` inside a workspace. These folders and the build archives in `.local/` are excluded from Git.
 
-- `src/` contains the React app and its tests.
-- `src-tauri/` contains the Rust runtime, tools, and storage.
-- `scripts/` has development and release scripts.
-- [docs/](docs/README.md) has the longer explanations. Old audits are in [docs/archive/](docs/archive/README.md).
-- [rune/](rune/README.md) is an experimental native UI, separate from the Tauri app.
+## Documentation
 
-Sessions, settings, and skills are stored in `~/.aether-agent/`. Workspace attachments may also use a `.aether-agent/` folder inside the project. These files stay out of Git, as do the local builds and logs under `.local/`.
-
-[Changelog](CHANGELOG.md)
+[Architecture](docs/ARCHITECTURE.md) · [Chat and workflow](docs/conversation-ux.md) · [Releases](docs/release.md) · [All docs](docs/README.md) · [Changelog](CHANGELOG.md)
