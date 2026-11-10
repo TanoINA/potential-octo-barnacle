@@ -27,6 +27,8 @@ export interface LiveSession {
   /** Last immutable snapshot acknowledged by native storage, never the dirty stream. */
   committedData?: SessionData;
   dirty: boolean;
+  /** Invalidates queued snapshots after a native history replacement. */
+  historyEpoch: number;
   persistenceBusy: number;
   nativeWindow?: SessionWindow;
   loadingOlder: boolean;
@@ -62,7 +64,7 @@ export interface LiveSession {
 
 export function liveSession(data: SessionData): LiveSession {
   return {
-    data, runStatus: null, committedData: data.historyWindow ? data : undefined, dirty: false, persistenceBusy: 0, nativeWindow: data.historyWindow, loadingOlder: false, historyError: null, runId: null, messageId: null, failed: false, stopRequested: false, cancellationPending: false,
+    data, runStatus: null, committedData: data.historyWindow ? data : undefined, dirty: false, historyEpoch: 0, persistenceBusy: 0, nativeWindow: data.historyWindow, loadingOlder: false, historyError: null, runId: null, messageId: null, failed: false, stopRequested: false, cancellationPending: false,
     startedAt: null, text: { content: '', reasoning: '' },
     council: { contentA: '', reasoningA: '', contentB: '', reasoningB: '' },
     terminal: {}, frame: null, checkpointTimer: null, checkpointBusy: false, deltaBusy: false, checkpointArtifactIds: new Set<string>(), checkpointSequence: 0, checkpointGeneration: 0,

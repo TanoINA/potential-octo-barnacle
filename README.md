@@ -17,6 +17,8 @@ npm run tauri -- dev
 
 Choose a provider and model in Settings once the app opens.
 
+`/compact` saves a full copy of the chat as a separate ` (before compact)` session, then replaces older turns with a lossy local summary. The latest turn stays intact. Automatic micro-compaction only shortens older tool outputs in model requests; it leaves stored history alone and keeps the newest tool batch. Its token estimate isn't a guarantee that every request fits your model.
+
 ## Build
 
 ```sh

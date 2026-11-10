@@ -390,9 +390,13 @@ export function useAgent() {
     const navigation = navigationRef.current;
     const shouldReportError = reportError ?? (() => navigationRef.current === navigation && sessionIdRef.current === value.session.id);
     const live = liveSessionsRef.current.get(value.session.id);
+    const historyEpoch = live?.historyEpoch;
     if (live) live.persistenceBusy += 1;
     const queued = persistenceQueueRef.current.then(async () => {
       try {
+        if (live && live.historyEpoch !== historyEpoch) {
+          throw new Error('History was compacted; stale queued snapshot was not saved.');
+        }
         const { historyWindow, ...snapshot } = value;
         // Reviews and checkpoints may have been queued before metadata changed.
         // Preserve current metadata, but keep message/artifact contents and cursor
@@ -1704,7 +1708,7 @@ export function useAgent() {
   const loadLatestMessages = preview.clear;
 
   const clearCurrentSession = useCallback(() => {
-    if (preview.isActive()) return;
+    if (preview.isActive() || sessionOperationRef.current) return;
     navigationRef.current += 1;
     navigationPendingRef.current = false;
     detachCurrentRun();
@@ -2066,30 +2070,51 @@ export function useAgent() {
       setLastError('Conversation requires at least 3 messages to compact.');
       return;
     }
-    const sessionId = dataRef.current.session.id;
+    const origin = viewedLive();
+    const sessionId = origin.data.session.id;
     const navigation = navigationRef.current;
-    sessionOperationRef.current = true;
+    const operation = Symbol('compactSession');
+    sessionOperationRef.current = operation;
+    origin.persistenceBusy += 1;
+    setLastError(null);
     setIsLoading(true);
-    try {
-      await persistData(dataRef.current);
-      const updated = await invoke<SessionData>('compact_session', { sessionId });
+    const snapshot = origin.data;
+    const queued = persistData(snapshot).then(async () => {
       if (navigationRef.current !== navigation || sessionIdRef.current !== sessionId) return;
+      const updated = await invoke<SessionData>('compact_session', { sessionId });
+      origin.historyEpoch += 1;
       const normalized: SessionData = {
         ...updated,
         historyWindow: undefined,
         messages: updated.messages.map((message) => ({ ...message, isStreaming: false })),
       };
-      mutateData(() => normalized);
-      setSessions((current) =>
-        current.map((session) => (session.id === normalized.session.id ? normalized.session : session))
-      );
+      // Native already committed this replacement, including when we navigated away.
+      origin.data = normalized;
+      origin.committedData = normalized;
+      origin.nativeWindow = undefined;
+      origin.nativeCheckpointRevision = undefined;
+      origin.journalSnapshot = undefined;
+      origin.authoritative = true;
+      origin.dirty = false;
+      publishLive(origin);
+    });
+    persistenceQueueRef.current = queued.catch(() => undefined);
+    try {
+      await queued;
     } catch (error) {
-      setLastError(`Context compaction failed: ${String(error)}`);
+      if (navigationRef.current === navigation && sessionIdRef.current === sessionId) {
+        setLastError(`Context compaction failed: ${String(error)}`);
+      }
     } finally {
-      sessionOperationRef.current = false;
-      setIsLoading(false);
+      // Also show a saved backup if replacing the original failed afterward.
+      await refreshSessions();
+      origin.persistenceBusy -= 1;
+      if (sessionOperationRef.current === operation) {
+        sessionOperationRef.current = false;
+        setIsLoading(false);
+      }
     }
-  }, [persistData]);
+  }, [persistData, viewedLive, publishLive, refreshSessions]);
 
   const ensureFullHistory = useCallback(async (): Promise<SessionData | null> => {
     const live = viewedLive();

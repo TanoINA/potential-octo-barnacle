@@ -582,6 +582,94 @@ describe('useAgent reflection', () => {
     expect(hook.result.current.messages.map((message) => message.id)).toEqual(['summary']);
   });
 
+  it('cancels compaction if navigation queued an old snapshot before the initial save finished', async () => {
+    const original = structuredClone(initial);
+    original.messages.push({ id: 'u2', role: 'user', content: 'Second question', timestamp: 3 });
+    const pending = deferred<void>();
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'load_session') return structuredClone(original);
+      if (command === 'list_sessions') return [original.session];
+      if (command === 'save_session') return pending.promise;
+      if (command === 'compact_session') return original;
+      return undefined;
+    }));
+    const hook = renderHook(() => useAgent());
+    await waitFor(() => expect(hook.result.current.messages).toHaveLength(3));
+    act(() => hook.result.current.updateRunConfig({ thinking: true }));
+    let compacting!: Promise<void>;
+    act(() => { compacting = hook.result.current.compactSession(); });
+    await waitFor(() => expect(mocks.invoke.mock.calls.some(([name]) => name === 'save_session_page')).toBe(true));
+    act(() => hook.result.current.newSession());
+    await act(async () => { pending.resolve(); await compacting; });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'compact_session')).toBe(false);
+  });
+
+  it('rejects old snapshots queued while native compaction is in flight', async () => {
+    const original = structuredClone(initial);
+    original.messages.push({ id: 'u2', role: 'user', content: 'Second question', timestamp: 3 });
+    const compacted: SessionData = { ...original, messages: [
+      { id: 'compact_saved', role: 'system', content: 'Saved summary', timestamp: 4 },
+      original.messages[2],
+    ] };
+    const pending = deferred<SessionData>();
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'load_session') return structuredClone(original);
+      if (command === 'list_sessions') return [original.session];
+      if (command === 'compact_session') return pending.promise;
+      return undefined;
+    }));
+    const hook = renderHook(() => useAgent());
+    await waitFor(() => expect(hook.result.current.messages).toHaveLength(3));
+    let compacting!: Promise<void>;
+    act(() => { compacting = hook.result.current.compactSession(); });
+    await waitFor(() => expect(mocks.invoke.mock.calls.some(([name]) => name === 'compact_session')).toBe(true));
+    const savesBefore = mocks.invoke.mock.calls.filter(([name]) => name === 'save_session' || name === 'save_session_page').length;
+    act(() => hook.result.current.updateRunConfig({ thinking: true }));
+    await act(async () => { pending.resolve(compacted); await compacting; });
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'save_session' || name === 'save_session_page')).toHaveLength(savesBefore);
+    expect(hook.result.current.messages[0].id).toBe('compact_saved');
+    expect(hook.result.current.lastError).toContain('stale queued snapshot');
+  });
+
+  it('refreshes the backup in the sidebar and keeps compacted offscreen history authoritative', async () => {
+    const original = structuredClone(initial);
+    original.messages.push(
+      { id: 'u2', role: 'user', content: 'Second question', timestamp: 3 },
+      { id: 'a2', role: 'assistant', content: 'Second answer', timestamp: 4 },
+    );
+    const compacted: SessionData = { ...original, messages: [
+      { id: 'compact_saved', role: 'system', content: 'Saved summary', timestamp: 5 },
+      ...original.messages.slice(2),
+    ] };
+    const backup = { ...original.session, id: 'backup', title: 'Parser (before compact)' };
+    const pending = deferred<SessionData>();
+    let didCompact = false;
+    mocks.invoke.mockImplementation(pagingBackend(async (command: string) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'load_session') return structuredClone(original);
+      if (command === 'list_sessions') return didCompact ? [compacted.session, backup] : [original.session];
+      if (command === 'compact_session') { didCompact = true; return pending.promise; }
+      return undefined;
+    }));
+    const hook = renderHook(() => useAgent());
+    await waitFor(() => expect(hook.result.current.messages).toHaveLength(4));
+    let compacting!: Promise<void>;
+    act(() => { compacting = hook.result.current.compactSession(); });
+    await waitFor(() => expect(mocks.invoke.mock.calls.some(([name]) => name === 'compact_session')).toBe(true));
+    act(() => hook.result.current.newSession());
+    const viewed = hook.result.current.currentSessionId;
+    await act(async () => { pending.resolve(compacted); await compacting; });
+    expect(hook.result.current.currentSessionId).toBe(viewed);
+    expect(hook.result.current.messages).toHaveLength(0);
+    expect(hook.result.current.sessions.some((session) => session.id === 'backup')).toBe(true);
+    await act(async () => { await hook.result.current.switchSession('sess-1'); });
+    expect(hook.result.current.messages.map((message) => message.id)).toEqual(['compact_saved', 'u2', 'a2']);
+    act(() => hook.result.current.updateRunConfig({ thinking: true }));
+    expect(hook.result.current.messages[0].id).toBe('compact_saved');
+  });
+
   it('keeps completed offscreen state authoritative while final persistence is blocked', async () => {
     const hook = await mounted();
     await act(async () => { await hook.result.current.sendMessage('offscreen'); });

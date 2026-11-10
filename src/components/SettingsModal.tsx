@@ -681,7 +681,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
                 <p id="compaction-settings-description" className="text-[11px] leading-5 text-[#8b949e]">
 
-                  Automatically replaces verbose older tool outputs with concise receipt markers when context footprint grows large, preserving recent conversation turns intact.
+                  Checks each model request and replaces verbose older tool outputs with receipts when the estimated context is large. Keeps the newest tool batch intact; full outputs stay in chat history. This is an estimate, not a model context-limit guarantee.
 
                 </p>
 

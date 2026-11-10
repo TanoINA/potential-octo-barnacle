@@ -512,6 +512,7 @@ struct SubagentParams<'a> {
     inherited_policy: &'a str,
     execution_mode: ExecutionMode,
     completion_options: &'a CompletionOptions,
+    compaction_threshold: Option<u32>,
 }
 
 fn scope_subagent_artifact(scope: &str, mut artifact: Artifact) -> Artifact {
@@ -789,6 +790,10 @@ async fn run_subagent(
             };
         }
         turns += 1;
+        let mut outbound = conversation.clone();
+        if let Some(threshold) = params.compaction_threshold {
+            let _ = apply_micro_compaction(&mut outbound, &tools, &emitter.run_id, &emitter.session_id, threshold);
+        }
         let mut turn_text = String::new();
         let mut partial_tools: HashMap<usize, ToolCallItem> = HashMap::new();
         let mut subagent_attempt = 1;
@@ -816,7 +821,7 @@ async fn run_subagent(
 
             let attempt_result = stream_chat_completion(
                 provider,
-                &serde_json::Value::Array(conversation.clone()),
+                &serde_json::Value::Array(outbound.clone()),
                 &tools,
                 &options,
                 |chunk| {
@@ -1035,10 +1040,14 @@ async fn run_subagent(
 
         let mut synthesis_text = String::new();
         let synth_options = subagent_completion_options(&options);
+        let mut outbound = conversation.clone();
+        if let Some(threshold) = params.compaction_threshold {
+            let _ = apply_micro_compaction(&mut outbound, &serde_json::json!([]), &emitter.run_id, &emitter.session_id, threshold);
+        }
 
         let synth_res = stream_chat_completion(
             provider,
-            &serde_json::Value::Array(conversation.clone()),
+            &serde_json::Value::Array(outbound),
             &serde_json::json!([]),
             &synth_options,
             |chunk| {
@@ -1553,19 +1562,7 @@ impl AgentRunner {
         system.push_str(&format!("\n## Active workspace\n{workspace_cwd}"));
         system.push_str(mode_instructions(request.execution_mode));
 
-        let mut request_messages = messages_with_skill_context(&request.messages, &selected_context);
-        if request.auto_compaction_enabled {
-            let threshold = request.auto_compaction_threshold_tokens.unwrap_or(65_536);
-            if let Some(compaction_evt) = apply_micro_compaction(
-                &mut request_messages,
-                &request.run_id,
-                &request.session_id,
-                threshold,
-            ) {
-                let _ = app.emit("agent:micro-compaction", &compaction_evt);
-            }
-        }
-
+        let request_messages = messages_with_skill_context(&request.messages, &selected_context);
         let mut conversation = Vec::new();
         conversation.push(serde_json::json!({"role":"system","content":system}));
         for message in &request_messages {
@@ -1597,6 +1594,12 @@ impl AgentRunner {
                 }
             }
             turns += 1;
+            let mut outbound = conversation.clone();
+            if request.auto_compaction_enabled {
+                if let Some(event) = apply_micro_compaction(&mut outbound, &tools, &request.run_id, &request.session_id, request.auto_compaction_threshold_tokens.unwrap_or(65_536)) {
+                    let _ = app.emit("agent:micro-compaction", &event);
+                }
+            }
             let max_provider_attempts = 3;
             let mut current_attempt = 1;
             let mut last_provider_error = String::new();
@@ -1631,7 +1634,7 @@ impl AgentRunner {
 
                 let result = stream_chat_completion(
                     &request.provider,
-                    &serde_json::Value::Array(conversation.clone()),
+                    &serde_json::Value::Array(outbound.clone()),
                     &tools,
                     &options,
                     move |chunk| {
@@ -1844,6 +1847,7 @@ impl AgentRunner {
                 let inherited_policy = inherited_policy.clone();
                 let completion_options = options.clone();
                 let execution_mode = request.execution_mode;
+                let compaction_threshold = request.auto_compaction_enabled.then_some(request.auto_compaction_threshold_tokens.unwrap_or(65_536));
 
                 async move {
                     if let Some(err) = prep.malformed_error {
@@ -2012,6 +2016,7 @@ impl AgentRunner {
                             inherited_policy: &inherited_policy,
                             execution_mode,
                             completion_options: &completion_options,
+                            compaction_threshold,
                         };
                         run_subagent(
                             &emitter,
@@ -2275,36 +2280,24 @@ impl AgentRunner {
             Err(error) => emitter.error(error),
         }
 
-        let mut req_a_messages = messages_with_skill_context(&request_a.messages, &selected_context);
-        if request_a.auto_compaction_enabled {
-            let threshold = request_a.auto_compaction_threshold_tokens.unwrap_or(65_536);
-            let _ = apply_micro_compaction(
-                &mut req_a_messages,
-                &request_a.run_id,
-                &request_a.session_id,
-                threshold,
-            );
-        }
+        let req_a_messages = messages_with_skill_context(&request_a.messages, &selected_context);
         let mut conv_a = Vec::new();
         conv_a.push(serde_json::json!({"role": "system", "content": system_a}));
         for message in &req_a_messages {
             append_history_message(&mut conv_a, message);
         }
-
-        let mut req_b_messages = messages_with_skill_context(&request_b.messages, &selected_context);
-        if request_b.auto_compaction_enabled {
-            let threshold = request_b.auto_compaction_threshold_tokens.unwrap_or(65_536);
-            let _ = apply_micro_compaction(
-                &mut req_b_messages,
-                &request_b.run_id,
-                &request_b.session_id,
-                threshold,
-            );
+        if request_a.auto_compaction_enabled {
+            let _ = apply_micro_compaction(&mut conv_a, &serde_json::json!([]), &request_a.run_id, &request_a.session_id, request_a.auto_compaction_threshold_tokens.unwrap_or(65_536));
         }
+
+        let req_b_messages = messages_with_skill_context(&request_b.messages, &selected_context);
         let mut conv_b = Vec::new();
         conv_b.push(serde_json::json!({"role": "system", "content": system_b}));
         for message in &req_b_messages {
             append_history_message(&mut conv_b, message);
+        }
+        if request_b.auto_compaction_enabled {
+            let _ = apply_micro_compaction(&mut conv_b, &serde_json::json!([]), &request_b.run_id, &request_b.session_id, request_b.auto_compaction_threshold_tokens.unwrap_or(65_536));
         }
 
         let empty_tools_a = serde_json::Value::Array(vec![]);
@@ -2645,120 +2638,95 @@ pub fn completed_review_snapshot(
     ))
 }
 
-pub fn estimate_messages_tokens(messages: &[ChatMessage], system: &str) -> usize {
-    let mut chars = system.len();
+// shortcut: bytes/4 plus a fixed image budget, not a model-specific tokenizer.
+fn estimate_replay_tokens(messages: &[serde_json::Value], tools: &serde_json::Value) -> usize {
+    fn content_cost(value: &serde_json::Value) -> (usize, usize) {
+        match value {
+            serde_json::Value::String(text) => (text.len(), 0),
+            serde_json::Value::Array(items) => items.iter().map(content_cost).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1)),
+            serde_json::Value::Object(fields) => {
+                if matches!(fields.get("type").and_then(|v| v.as_str()), Some("image" | "image_url")) {
+                    return (0, 1600);
+                }
+                fields.iter().filter(|(key, _)| key.as_str() != "type").map(|(_, value)| content_cost(value)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+            }
+            _ => (0, 0),
+        }
+    }
+    let mut bytes = if tools.as_array().is_some_and(Vec::is_empty) { 0 } else { tools.to_string().len() };
     let mut image_tokens = 0;
     for message in messages {
-        // Encoded bytes are not text tokens; budget conservatively per image.
-        image_tokens += message.image_inputs.as_deref().unwrap_or(&[]).len() * 1600;
-        chars += message.content.len();
-        if let Some(reasoning) = &message.reasoning {
-            chars += reasoning.len();
-        }
-        if let Some(tool_calls) = &message.tool_calls {
-            for call in tool_calls {
-                chars += call.name.len();
-                chars += call.args.to_string().len();
-                if let Some(result) = &call.result {
-                    chars += result.len();
-                }
+        let (text, images) = content_cost(&message["content"]);
+        bytes += text;
+        image_tokens += images;
+        for key in ["reasoning_content", "tool_calls"] {
+            if let Some(value) = message.get(key) {
+                bytes += value.as_str().map_or_else(|| value.to_string().len(), str::len);
             }
         }
     }
-    chars.div_ceil(4) + image_tokens
+    bytes.div_ceil(4) + image_tokens
 }
 
-pub fn apply_micro_compaction(
-    messages: &mut [ChatMessage],
+#[cfg(test)]
+fn estimate_messages_tokens(messages: &[ChatMessage], system: &str) -> usize {
+    let mut replay = vec![serde_json::json!({"role":"system","content":system})];
+    for message in messages {
+        append_history_message(&mut replay, message);
+    }
+    estimate_replay_tokens(&replay, &serde_json::json!([]))
+}
+
+fn apply_micro_compaction(
+    messages: &mut [serde_json::Value],
+    tools: &serde_json::Value,
     run_id: &str,
     session_id: &str,
     threshold_tokens: u32,
 ) -> Option<MicroCompactionEvent> {
-    let current_tokens = estimate_messages_tokens(messages, "");
-    if current_tokens <= threshold_tokens as usize {
+    if estimate_replay_tokens(messages, tools) <= threshold_tokens as usize {
         return None;
     }
-
-    let user_indices: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.role == "user")
-        .map(|(i, _)| i)
-        .collect();
-
-    if user_indices.len() < 2 {
-        return None;
-    }
-
-    let cutoff = user_indices[user_indices.len() - 2];
-    let mut pruned_count = 0;
-    let mut saved_chars = 0;
-
-    for msg in &mut messages[..cutoff] {
-        let previous_count = pruned_count;
-        let mut replacements = Vec::new();
-        if msg.role == "assistant" {
-            if let Some(tool_calls) = &mut msg.tool_calls {
-                for call in tool_calls.iter_mut() {
-                    if let Some(res) = &call.result {
-                        let lines = res.lines().count();
-                        let chars = res.len();
-                        if (lines > 35 || chars > 1000) && !res.starts_with("[Output pruned:") {
-                            let replacement = format!(
-                                "[Output pruned: {} lines ({} chars) from '{}'. Full output preserved in session history]",
-                                lines, chars, call.name
-                            );
-                            saved_chars += chars.saturating_sub(replacement.len());
-                            replacements.push((res.clone(), replacement.clone()));
-                            call.result = Some(replacement);
-                            pruned_count += 1;
-                        }
-                    }
-                }
+    // Keep the newest tool batch intact, including during a long single user turn.
+    let cutoff = messages.iter().rposition(|message| {
+        message["role"] == "assistant" && (
+            message["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty())
+            || message["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_use"))
+        )
+    }).or_else(|| messages.iter().rposition(|message| message["role"] == "assistant"))?;
+    let mut names = HashMap::new();
+    for message in messages.iter() {
+        for call in message["tool_calls"].as_array().into_iter().flatten() {
+            if let (Some(id), Some(name)) = (call["id"].as_str(), call["function"]["name"].as_str()) {
+                names.insert(id.to_owned(), name.to_owned());
             }
-            if pruned_count > previous_count {
-                // Canonical segments must reflect the compacted aggregate too.
-                if let (Some(segments), Some(calls)) = (&mut msg.segments, &msg.tool_calls) {
-                    for segment in segments {
-                        if let Some(items) = &mut segment.tool_calls {
-                            for item in items {
-                                if let Some(compacted) =
-                                    calls.iter().find(|call| call.id == item.id)
-                                {
-                                    item.result = compacted.result.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-                // Only tool output is pruned; signed assistant blocks remain
-                // byte-for-byte unchanged across compaction and replay.
-                if let Some(native) = &mut msg.provider_messages {
-                    for message in native
-                        .iter_mut()
-                        .filter(|message| message["role"] == "tool")
-                    {
-                        if let Some((_, replacement)) = replacements.iter().find(|(original, _)| {
-                            message["content"].as_str() == Some(original.as_str())
-                        }) {
-                            message["content"] = serde_json::json!(replacement);
-                        }
-                    }
+        }
+        for block in message["content"].as_array().into_iter().flatten() {
+            if block["type"] == "tool_use" {
+                if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
+                    names.insert(id.to_owned(), name.to_owned());
                 }
             }
         }
     }
-
-    if pruned_count > 0 {
-        Some(MicroCompactionEvent {
-            run_id: run_id.to_string(),
-            session_id: session_id.to_string(),
-            pruned_tool_count: pruned_count,
-            estimated_tokens_saved: saved_chars.div_ceil(4),
-        })
-    } else {
-        None
+    let mut pruned_tool_count = 0;
+    let mut saved_bytes = 0;
+    for message in &mut messages[..cutoff] {
+        if message["role"] != "tool" { continue; }
+        let Some(output) = message["content"].as_str() else { continue; };
+        let lines = output.lines().count();
+        if (lines <= 35 && output.len() <= 1000) || output.starts_with("[Output pruned:") { continue; }
+        let name = message["tool_call_id"].as_str().and_then(|id| names.get(id)).map(String::as_str).unwrap_or("tool");
+        let receipt = format!("[Output pruned: {} lines ({} bytes) from '{}'. Full output preserved in session history]", lines, output.len(), name);
+        if receipt.len() >= output.len() { continue; }
+        saved_bytes += output.len() - receipt.len();
+        message["content"] = serde_json::json!(receipt);
+        pruned_tool_count += 1;
     }
+    (pruned_tool_count > 0).then(|| MicroCompactionEvent {
+        run_id: run_id.to_owned(), session_id: session_id.to_owned(),
+        pruned_tool_count, estimated_tokens_saved: saved_bytes.div_ceil(4),
+    })
 }
 
 fn valid_provider_messages(messages: &[serde_json::Value]) -> bool {
@@ -4488,6 +4456,76 @@ mod tests {
     }
 
     #[test]
+    fn micro_compaction_measures_native_replay_and_compacts_long_active_turn() {
+        let output = "old native tool output\n".repeat(400);
+        let signed = serde_json::json!({"role":"assistant","content":[
+            {"type":"thinking","thinking":"keep exactly","signature":"opaque"},
+            {"type":"tool_use","id":"old","name":"read_file","input":{}}
+        ]});
+        let mut conversation = vec![
+            serde_json::json!({"role":"system","content":"policy".repeat(2000)}),
+            serde_json::json!({"role":"user","content":"one long task"}),
+            signed.clone(),
+            serde_json::json!({"role":"tool","tool_call_id":"old","content":output}),
+            serde_json::json!({"role":"assistant","content":"", "tool_calls":[
+                {"id":"new","type":"function","function":{"name":"read_file","arguments":"{}"}}
+            ]}),
+            serde_json::json!({"role":"tool","tool_call_id":"new","content":output}),
+        ];
+        let original = conversation.clone();
+        let before = estimate_replay_tokens(&conversation, &serde_json::json!([]));
+        let event = apply_micro_compaction(&mut conversation, &serde_json::json!([]), "r", "s", 100).unwrap();
+        assert_eq!(event.pruned_tool_count, 1);
+        assert!(event.estimated_tokens_saved > 0);
+        assert!(estimate_replay_tokens(&conversation, &serde_json::json!([])) < before);
+        assert!(conversation[3]["content"].as_str().unwrap().starts_with("[Output pruned:"));
+        assert_eq!(conversation[2], signed);
+        assert_eq!(conversation[5], original[5], "newest tool batch stays available");
+        assert!(valid_provider_messages(&conversation[2..]));
+        assert!(apply_micro_compaction(&mut conversation, &serde_json::json!([]), "r", "s", 100).is_none());
+        // A later iteration can prune the formerly newest batch without losing the original.
+        conversation.push(serde_json::json!({"role":"assistant","content":"", "tool_calls":[
+            {"id":"next","type":"function","function":{"name":"read_file","arguments":"{}"}}
+        ]}));
+        conversation.push(serde_json::json!({"role":"tool","tool_call_id":"next","content":"latest result"}));
+        assert_eq!(apply_micro_compaction(&mut conversation, &serde_json::json!([]), "r", "s", 100).unwrap().pruned_tool_count, 1);
+        assert_eq!(original[3]["content"], output);
+    }
+
+    #[test]
+    fn micro_compaction_counts_system_tools_preamble_and_native_without_duplicate_mirrors() {
+        let native = serde_json::json!([
+            {"role":"assistant","content":"native text".repeat(200)},
+        ]);
+        let message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"a", "role":"assistant", "content":"duplicate".repeat(20000), "timestamp":1,
+            "providerMessages":native
+        })).unwrap();
+        let estimated = estimate_messages_tokens(&[message], "system");
+        assert!(estimated < 2000, "aggregate mirrors must not count twice");
+        let preamble: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"a", "role":"assistant", "content":"tail", "preamble":"preamble".repeat(2000), "timestamp":1
+        })).unwrap();
+        assert!(estimate_messages_tokens(&[preamble], "") > 3000);
+        let empty = serde_json::json!([]);
+        let large_tools = serde_json::json!([{"description":"schema".repeat(2000)}]);
+        assert!(estimate_replay_tokens(&[], &large_tools) > estimate_replay_tokens(&[], &empty) + 2000);
+        assert!(estimate_replay_tokens(&[serde_json::json!({"role":"system","content":"policy".repeat(2000)})], &empty) > 2000);
+    }
+
+    #[test]
+    fn micro_compaction_never_expands_sparse_outputs() {
+        let mut messages = vec![
+            serde_json::json!({"role":"assistant","tool_calls":[{"id":"old","function":{"name":"read_file"}}]}),
+            serde_json::json!({"role":"tool","tool_call_id":"old","content":"\n".repeat(36)}),
+            serde_json::json!({"role":"assistant","content":"latest"}),
+        ];
+        let original = messages.clone();
+        assert!(apply_micro_compaction(&mut messages, &serde_json::json!([]), "r", "s", 1).is_none());
+        assert_eq!(messages, original);
+    }
+
+    #[test]
     fn micro_compaction_preserves_recent_turns_and_prunes_older_verbose_tools() {
         let long_output = "line\n".repeat(60) + &"a".repeat(2000);
         let mut messages: Vec<ChatMessage> = serde_json::from_value(serde_json::json!([
@@ -4509,43 +4547,25 @@ mod tests {
         messages[1].provider_messages = Some(vec![
             serde_json::json!({"role":"tool","tool_call_id":"native-call","content":long_output}),
         ]);
-        let event = apply_micro_compaction(&mut messages, "r1", "s1", 50);
-        assert!(
-            messages[1].provider_messages.as_ref().unwrap()[0]["content"]
-                .as_str()
-                .unwrap()
-                .starts_with("[Output pruned:")
-        );
-        assert!(messages[1].segments.as_ref().unwrap()[0]
-            .tool_calls
-            .as_ref()
-            .unwrap()[0]
-            .result
-            .as_ref()
-            .unwrap()
-            .starts_with("[Output pruned:"));
+        let originals = serde_json::to_value(&messages).unwrap();
+        let mut replay = Vec::new();
+        for message in &messages { append_history_message(&mut replay, message); }
+        let event = apply_micro_compaction(&mut replay, &serde_json::json!([]), "r1", "s1", 50);
+        assert_eq!(serde_json::to_value(&messages).unwrap(), originals);
+        let tool_results: Vec<_> = replay.iter().filter(|m| m["role"] == "tool").collect();
+        assert!(tool_results[0]["content"].as_str().unwrap().starts_with("[Output pruned:"));
+        assert_eq!(tool_results[1]["content"], long_output);
         assert!(event.is_some());
         let evt = event.unwrap();
         assert_eq!(evt.pruned_tool_count, 1);
         assert!(evt.estimated_tokens_saved > 0);
 
-        let t1_res = messages[1].tool_calls.as_ref().unwrap()[0]
-            .result
-            .as_ref()
-            .unwrap();
-        assert!(t1_res.starts_with("[Output pruned:"));
-        assert!(t1_res.contains("from 'read_file'"));
 
-        let t2_res = messages[3].tool_calls.as_ref().unwrap()[0]
-            .result
-            .as_ref()
-            .unwrap();
-        assert_eq!(t2_res, &long_output);
     }
 
     #[test]
     fn micro_compaction_noop_under_threshold() {
-        let mut messages: Vec<ChatMessage> = serde_json::from_value(serde_json::json!([
+        let messages: Vec<ChatMessage> = serde_json::from_value(serde_json::json!([
             {"id":"u1", "role":"user", "content":"Hi", "timestamp":1},
             {"id":"a1", "role":"assistant", "content":"Hello", "timestamp":2},
             {"id":"u2", "role":"user", "content":"How are you?", "timestamp":3},
@@ -4553,7 +4573,9 @@ mod tests {
         ]))
         .unwrap();
 
-        let event = apply_micro_compaction(&mut messages, "r1", "s1", 100_000);
+        let mut replay = Vec::new();
+        for message in &messages { append_history_message(&mut replay, message); }
+        let event = apply_micro_compaction(&mut replay, &serde_json::json!([]), "r1", "s1", 100_000);
         assert!(event.is_none());
     }
 
@@ -4721,6 +4743,83 @@ mod tests {
             assert_eq!(topic, "agent-event");
             self.0.lock().unwrap().push(payload);
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn micro_compaction_runs_between_provider_iterations_without_pruning_saved_replay() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<serde_json::Value>>>);
+        impl super::super::events::EventSink for Sink {
+            fn emit(&self, topic: &str, payload: serde_json::Value) -> Result<(), String> {
+                if topic == "agent-event" { self.0.lock().unwrap().push(payload); }
+                Ok(())
+            }
+        }
+        for enabled in [false, true] {
+            let root = std::env::temp_dir().join(format!("aether-compaction-loop-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let full_output = "retain original tool output\n".repeat(300);
+            std::fs::write(root.join("old.txt"), &full_output).unwrap();
+            std::fs::write(root.join("latest.txt"), "latest exact result").unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let mut last_body = serde_json::Value::Null;
+                for turn in 0..3 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut raw = Vec::new();
+                    let mut buffer = [0; 8192];
+                    let header_end = loop {
+                        let count = socket.read(&mut buffer).await.unwrap();
+                        assert!(count > 0);
+                        raw.extend_from_slice(&buffer[..count]);
+                        if let Some(offset) = raw.windows(4).position(|w| w == b"\r\n\r\n") { break offset + 4; }
+                    };
+                    let length = String::from_utf8_lossy(&raw[..header_end]).lines().find_map(|line| {
+                        line.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())
+                    }).unwrap();
+                    while raw.len() < header_end + length {
+                        let count = socket.read(&mut buffer).await.unwrap();
+                        assert!(count > 0);
+                        raw.extend_from_slice(&buffer[..count]);
+                    }
+                    last_body = serde_json::from_slice(&raw[header_end..header_end + length]).unwrap();
+                    let delta = if turn < 2 {
+                        let path = if turn == 0 { "old.txt" } else { "latest.txt" };
+                        serde_json::json!({"tool_calls":[{"index":0,"id":format!("call-{turn}"),"type":"function",
+                            "function":{"name":"read_file","arguments":serde_json::json!({"path":path}).to_string()}}]})
+                    } else { serde_json::json!({"content":"Task complete"}) };
+                    let event = serde_json::json!({"choices":[{"delta":delta}]});
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {event}\n\ndata: [DONE]\n\n").as_bytes()).await.unwrap();
+                    socket.shutdown().await.unwrap();
+                }
+                last_body
+            });
+            let sink = Sink::default();
+            let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+                "runId":"compact-loop", "sessionId":format!("fixture-{}", Uuid::new_v4()),
+                "provider":{"baseUrl":format!("http://{address}"),"model":"local-fixture"},
+                "messages":[{"id":"u","role":"user","content":"Read both files","timestamp":1}],
+                "maxTurns":3, "autoCompactionEnabled":enabled, "autoCompactionThresholdTokens":1,
+                "reviewConfig":{"createDir":root.join("skills")}
+            })).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(20), AgentRunner::new().run(
+                AgentHost::new(sink.clone()), root.to_string_lossy().into_owned(), request, CancellationToken::new(),
+            )).await.unwrap();
+            let body = tokio::time::timeout(std::time::Duration::from_secs(5), server).await.unwrap().unwrap();
+            let tools: Vec<_> = body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").collect();
+            assert_eq!(tools.len(), 2);
+            assert_eq!(tools[0]["content"].as_str().unwrap().starts_with("[Output pruned:"), enabled);
+            assert!(tools[1]["content"].as_str().unwrap().contains("latest exact result"));
+            assert!(valid_provider_messages(&body["messages"].as_array().unwrap()[2..]));
+            let events = sink.0.lock().unwrap();
+            assert!(!events.iter().any(|e| e["type"] == "error"), "{events:?}");
+            let replay = &events.iter().rev().find(|e| e["type"] == "provider_state").unwrap()["data"]["providerMessages"];
+            let saved = replay.as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
+            assert!(saved["content"].as_str().unwrap().contains(full_output.trim()));
+            assert!(!saved["content"].as_str().unwrap().starts_with("[Output pruned:"));
         }
     }
 

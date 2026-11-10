@@ -249,7 +249,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
             className="flex items-center gap-1.5 rounded-lg border border-[#f0883e]/50 bg-[#f0883e]/15 px-3 py-1.5 text-xs font-medium text-[#f0883e] hover:bg-[#f0883e]/25 disabled:opacity-40 transition-colors"
           >
             <Archive size={13} />
-            Compact Context (Free Tokens)
+            Compact Context (Save Backup)
           </button>
 
           <div className="flex items-center gap-1.5">
