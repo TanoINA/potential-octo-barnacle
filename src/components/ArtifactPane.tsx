@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Check, Columns2, Copy, FileCode2, GitCompare, Rows, Terminal, TerminalSquare, X } from 'lucide-react';
+import { Check, Code, Columns2, Copy, Eye, FileCode2, GitCompare, Rows, Terminal, TerminalSquare, X } from 'lucide-react';
 import type { Artifact } from '../types/agent';
 import { SideBySideDiff } from './SideBySideDiff';
 import { InteractiveTerminal } from './InteractiveTerminal';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 type ViewerTab = 'code' | 'diff' | 'terminal' | 'shell';
 
@@ -27,6 +28,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
   const initial = artifacts.find((artifact) => artifact.id === activeArtifactId) || artifacts[0];
   const [tab, setTab] = useState<ViewerTab>(initialTab || (artifacts.length === 0 ? 'shell' : (initial?.type === 'diff' || initial?.type === 'terminal' ? initial.type : 'code')));
   const [diffViewMode, setDiffViewMode] = useState<'unified' | 'side-by-side'>('side-by-side');
+  const [codeViewMode, setCodeViewMode] = useState<'preview' | 'raw'>('preview');
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const previousActiveIdRef = useRef(activeArtifactId);
@@ -176,6 +178,34 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               </button>
             </div>
           )}
+          {tab === 'code' && (
+            <div className="flex items-center rounded border border-[#30363d] bg-[#161b22] p-0.5 text-[10px]">
+              <button
+                type="button"
+                onClick={() => setCodeViewMode('preview')}
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
+                  codeViewMode === 'preview' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                }`}
+                title="Rendered preview"
+                aria-label="Preview"
+              >
+                <Eye size={11} />
+                <span>Preview</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCodeViewMode('raw')}
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
+                  codeViewMode === 'raw' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                }`}
+                title="Raw source"
+                aria-label="Raw"
+              >
+                <Code size={11} />
+                <span>Raw</span>
+              </button>
+            </div>
+          )}
           <span className="shrink-0 text-[9px] text-[#6e7681]">{lines.length} lines</span>
         </div>
       )}
@@ -188,6 +218,53 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
         <InteractiveTerminal />
       ) : tab === 'diff' && diffViewMode === 'side-by-side' && active ? (
         <SideBySideDiff diffText={active.content} />
+      ) : tab === 'code' && codeViewMode === 'preview' && active ? (
+        (() => {
+          const contentTrimmed = (active.content || '').trim();
+          const isHtml =
+            active.language === 'html' ||
+            active.filePath?.endsWith('.html') ||
+            contentTrimmed.startsWith('<!DOCTYPE html') ||
+            contentTrimmed.startsWith('<html');
+          const isSvg =
+            active.language === 'svg' ||
+            active.filePath?.endsWith('.svg') ||
+            contentTrimmed.startsWith('<svg');
+
+          if (isHtml) {
+            return (
+              <div className="h-full w-full bg-white">
+                <iframe
+                  title={active.title || 'HTML preview'}
+                  srcDoc={active.content}
+                  className="h-full w-full border-none"
+                  sandbox="allow-scripts allow-modals allow-forms"
+                />
+              </div>
+            );
+          }
+
+          if (isSvg) {
+            return (
+              <div className="flex h-full w-full items-center justify-center overflow-auto p-4 bg-[#0d1117]">
+                <div
+                  dangerouslySetInnerHTML={{ __html: active.content }}
+                  className="max-h-full max-w-full [&>svg]:max-h-full [&>svg]:max-w-full"
+                />
+              </div>
+            );
+          }
+
+          return (
+            <div className="min-h-0 flex-1 select-text overflow-auto bg-[#0d1117] p-4 text-xs leading-relaxed text-[#e6edf3]">
+              {active.type === 'markdown' || active.language === 'markdown' || active.filePath?.endsWith('.md') || !active.language ? (
+                <MarkdownRenderer content={active.content} />
+              ) : (
+                <MarkdownRenderer content={`\`\`\`${active.language}\n${active.content}\n\`\`\``} />
+              )}
+            </div>
+          );
+        })()
       ) : active ? (
         <div
           ref={scrollRef}

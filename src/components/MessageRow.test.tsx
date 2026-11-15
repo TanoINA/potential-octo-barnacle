@@ -182,9 +182,9 @@ describe('MessageRow Action Buttons', () => {
     expect(screen.getByText('Semua pengujian berhasil diselesaikan.')).toBeTruthy();
   });
 
-  it('renders multi-segment Hermes style interleaved flow in chronological order', () => {
-    const hermesMessage: ChatMessage = {
-      id: 'msg-hermes-1',
+  it('renders multi-segment interleaved flow in chronological order', () => {
+    const interleavedMessage: ChatMessage = {
+      id: 'msg-interleaved-1',
       role: 'assistant',
       content: 'Langkah pertama... File ketemu... Semua selesai.',
       timestamp: 1700000020000,
@@ -225,7 +225,7 @@ describe('MessageRow Action Buttons', () => {
 
     render(
       <MessageRow
-        message={hermesMessage}
+        message={interleavedMessage}
         onSelectArtifact={vi.fn()}
       />,
     );
@@ -308,4 +308,36 @@ it('hides council selection actions when no winner callback is provided', () => 
   expect(screen.getByText('Answer A')).toBeTruthy();
   expect(screen.getByText('Answer B')).toBeTruthy();
   expect(screen.queryAllByRole('button', { name: /Use response|Selected/ })).toHaveLength(0);
+});
+
+it('collapses long user prompts and expands on click', () => {
+  const longPrompt = 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n' + 'A'.repeat(300);
+  const longMessage: ChatMessage = {
+    id: 'msg-user-long',
+    role: 'user',
+    content: longPrompt,
+    timestamp: 1700000000000,
+  };
+
+  const { rerender, container } = render(<MessageRow message={longMessage} onSelectArtifact={vi.fn()} />);
+
+  // Should render Show more button
+  const expandBtn = screen.getByRole('button', { name: 'Show more' });
+  expect(expandBtn).toBeTruthy();
+  expect(container.querySelector('.max-h-36')).toBeTruthy();
+
+  // Click expand
+  fireEvent.click(expandBtn);
+  expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+  expect(container.querySelector('.max-h-36')).toBeNull();
+
+  // Short message should not have Show more button
+  const shortMessage: ChatMessage = {
+    id: 'msg-user-short',
+    role: 'user',
+    content: 'Short prompt',
+    timestamp: 1700000001000,
+  };
+  rerender(<MessageRow message={shortMessage} onSelectArtifact={vi.fn()} />);
+  expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
 });

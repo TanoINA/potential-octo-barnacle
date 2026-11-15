@@ -15,9 +15,9 @@ const BROKEN: &str =
 fn legacy_roots(home: &Path) -> [PathBuf; 4] {
     [
         home.join(".aether-agent/skills"),
-        home.join(".gemini/config/skills"),
-        home.join(".hermes/skills"),
-        home.join("hermes-agent/skills"),
+        home.join(".custom/config/skills"),
+        home.join(".legacy/skills"),
+        home.join("legacy-agent/skills"),
     ]
 }
 

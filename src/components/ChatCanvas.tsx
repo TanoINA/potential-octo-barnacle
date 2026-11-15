@@ -1063,9 +1063,12 @@ export function ChatCanvas({
       pendingAnchorRef.current = null;
     } else if (stickToBottomRef.current && messages.length) {
       virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+      visibleAnchorRef.current = { id: messages[messages.length - 1]?.id, offset: 0 };
+      updateActiveMessageIndex(messages.length - 1);
+    } else {
+      visibleAnchorRef.current = captureAnchor();
+      updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
     }
-    visibleAnchorRef.current = captureAnchor();
-    updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
     lastScrollTopRef.current = parentRef.current?.scrollTop ?? 0;
   }, [messages, currentSessionId, isSessionLoading, jumpToMessage]);
 
@@ -1111,6 +1114,14 @@ export function ChatCanvas({
     jumpSettleRef.current?.correct();
     // Preserve an explicit jump's optimistic marker until its bounded settle ends.
     if (isSessionLoading || jumpSettleRef.current) return;
+    const element = parentRef.current;
+    if (element && stickToBottomRef.current && messages.length > 0) {
+      const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+      if (distanceToBottom < 35 || element.scrollHeight <= element.clientHeight + 40) {
+        updateActiveMessageIndex(messages.length - 1);
+        return;
+      }
+    }
     // A scroll event can precede TanStack mounting the newly visible rows. Sample
     // only mounted, intersecting rows after every commit, never a cached fallback.
     const anchor = captureAnchor(false);
@@ -1128,12 +1139,8 @@ export function ChatCanvas({
       .map((skill): SlashItem => ({ id: `skill-${skill.name}`, category: 'SKILLS', command: `/${skill.name}`, description: skill.description, iconType: 'skill' }))];
   }, [availableSkills]);
 
-  const slashQuery = useMemo(() => {
-    if (!input.startsWith('/') || input.includes('\n')) return null;
-    const spaceIdx = input.indexOf(' ');
-    if (spaceIdx !== -1) return null;
-    return input.slice(1).toLowerCase();
-  }, [input]);
+  const slashMatch = useMemo(() => /(?:^|\s)\/([^\s/]*)$/.exec(input.slice(0, cursor)), [input, cursor]);
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null;
 
   const slashMatches = useMemo(() => {
     if (slashQuery === null) return [];
@@ -1165,17 +1172,20 @@ export function ChatCanvas({
     },
   });
 
+  const mentionMatch = useMemo(() => /(?:^|\s)@([^\s@]*)$/.exec(input.slice(0, cursor)), [input, cursor]);
+  const mentionQuery = mentionMatch?.[1] || '';
+  const mentionOpen = !menuDismissed && Boolean(mentionMatch);
+
   // Auto-scroll active item into view during keyboard navigation
   useEffect(() => {
     if (slashOpen) {
       const el = document.querySelector(`[data-slash-item="${activeIndex}"]`);
       el?.scrollIntoView({ block: 'nearest' });
+    } else if (mentionOpen) {
+      const el = document.querySelector(`[data-mention-item="${activeIndex}"]`);
+      el?.scrollIntoView({ block: 'nearest' });
     }
-  }, [activeIndex, slashOpen]);
-
-  const mentionMatch = useMemo(() => /(?:^|\s)@([^\s@]*)$/.exec(input.slice(0, cursor)), [input, cursor]);
-  const mentionQuery = mentionMatch?.[1] || '';
-  const mentionOpen = !menuDismissed && Boolean(mentionMatch);
+  }, [activeIndex, slashOpen, mentionOpen]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -1335,27 +1345,50 @@ export function ChatCanvas({
   };
 
   const handleSelectSlashItem = (item: SlashItem) => {
+    const tokenStart = input.slice(0, cursor).lastIndexOf('/');
+    if (tokenStart < 0) return;
+
     if (item.category === 'SKILLS') {
       const name = item.command.slice(1);
       if (!selectedSkills.includes(name) && selectedSkills.length >= 5) return;
       setSelectedSkills((previous) => previous.includes(name) ? previous : [...previous, name]);
-      setInput(input.replace(/^\/\S+\s*/, ''));
-      setCursor(0);
+      if (tokenStart === 0 && input.slice(tokenStart, cursor).trim() === input.trim()) {
+        setInput('');
+        setCursor(0);
+      } else {
+        const next = `${input.slice(0, tokenStart)}${item.command} ${input.slice(cursor)}`;
+        const nextCursor = tokenStart + item.command.length + 1;
+        setInput(next);
+        setCursor(nextCursor);
+        requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+        });
+      }
       setMenuDismissed(true);
       textareaRef.current?.focus();
       return;
     }
     if (item.needsPrompt) {
-      const nextVal = `${item.command} `;
+      const nextVal = `${input.slice(0, tokenStart)}${item.command} ${input.slice(cursor)}`;
+      const nextCursor = tokenStart + item.command.length + 1;
       setInput(nextVal);
-      setCursor(nextVal.length);
+      setCursor(nextCursor);
       setMenuDismissed(true);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(nextVal.length, nextVal.length);
+        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
       });
     } else {
-      executeSlashCommand(item);
+      if (tokenStart === 0 && input.slice(0, cursor).trim() === input.trim()) {
+        executeSlashCommand(item);
+      } else {
+        const nextVal = `${input.slice(0, tokenStart)}${item.command} ${input.slice(cursor)}`;
+        const nextCursor = tokenStart + item.command.length + 1;
+        setInput(nextVal);
+        setCursor(nextCursor);
+        setMenuDismissed(true);
+      }
     }
   };
 
@@ -1547,6 +1580,14 @@ export function ChatCanvas({
       if (!draftSkills.includes(name)) draftSkills.push(name);
       draft = draft.slice(token[0].length);
     }
+    const inlineSkills = draft.matchAll(/(?:^|\s)\/([a-zA-Z0-9_-]+)(?=\s|$)/g);
+    for (const match of inlineSkills) {
+      const tokenName = match[1].toLowerCase();
+      const matchedSkill = availableSkills.find((s) => s.name.toLowerCase() === tokenName)?.name;
+      if (matchedSkill && !draftSkills.includes(matchedSkill) && draftSkills.length < 5) {
+        draftSkills.push(matchedSkill);
+      }
+    }
     if (draftSkills.length > 5) { setAttachmentError('Select at most five skills for the next message.'); return; }
     const draftAttachments = attachedContexts;
     const reusedImages = draftAttachments.flatMap((attachment) => {
@@ -1620,11 +1661,34 @@ export function ChatCanvas({
     if (!mentionMatch) return;
     const tokenStart = input.slice(0, cursor).lastIndexOf('@');
     if (tokenStart < 0) return;
-    const next = `${input.slice(0, tokenStart)}@${path} ${input.slice(cursor)}`;
-    const nextCursor = tokenStart + path.length + 2;
+    const before = input.slice(0, tokenStart);
+    const after = input.slice(cursor);
+    const next = `${before}${after.startsWith(' ') ? after.slice(1) : after}`;
+    const nextCursor = tokenStart;
     setInput(next);
     setCursor(nextCursor);
     setMenuDismissed(true);
+
+    const origin = beginAttachments();
+    try {
+      const isAbsolute = /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+      const normalized = path.replace(/\\/g, '/');
+      const name = normalized.split('/').filter(Boolean).pop() || normalized;
+      const isDir = path.endsWith('/') || path.endsWith('\\');
+      const fullPath = isAbsolute || !workspaceCwd
+        ? path
+        : `${workspaceCwd.replace(/[\\/]+$/, '')}/${normalized.replace(/^[\\/]+/, '')}`;
+      const newAtt: AttachedContext = {
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        path: fullPath,
+        name,
+        isDir,
+      };
+      appendAttachments(origin, [newAtt]);
+    } finally {
+      finishAttachments(origin);
+    }
+
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
@@ -1643,10 +1707,17 @@ export function ChatCanvas({
       setActiveIndex((index) => (index + direction + itemCount) % itemCount);
       return;
     }
-    if (event.key === 'Tab' && slashOpen && slashMatches[activeIndex]) {
-      event.preventDefault();
-      handleSelectSlashItem(slashMatches[activeIndex]);
-      return;
+    if (event.key === 'Tab') {
+      if (slashOpen && slashMatches[activeIndex]) {
+        event.preventDefault();
+        handleSelectSlashItem(slashMatches[activeIndex]);
+        return;
+      }
+      if (mentionOpen && fileOptions[activeIndex]) {
+        event.preventDefault();
+        selectMention(fileOptions[activeIndex]);
+        return;
+      }
     }
     if (event.key === 'Escape' && (slashOpen || mentionOpen)) {
       event.preventDefault();
@@ -1912,8 +1983,6 @@ export function ChatCanvas({
         }}
         onScroll={(event) => {
           const element = event.currentTarget;
-          visibleAnchorRef.current = captureAnchor();
-          updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
           const upward = element.scrollTop < lastScrollTopRef.current;
           lastScrollTopRef.current = element.scrollTop;
           if (upwardIntentRef.current && upward && element.scrollTop <= 120) {
@@ -1927,9 +1996,13 @@ export function ChatCanvas({
             cancelAnchorCorrection();
             stickToBottomRef.current = true;
             setShowJumpBottom(false);
+            visibleAnchorRef.current = { id: messages[messages.length - 1]?.id, offset: 0 };
+            updateActiveMessageIndex(messages.length - 1);
           } else {
             stickToBottomRef.current = false;
             setShowJumpBottom(hasOverflow);
+            visibleAnchorRef.current = captureAnchor();
+            updateActiveMessageIndex(messages.findIndex((message) => message.id === visibleAnchorRef.current?.id));
           }
         }}
       >
@@ -1986,7 +2059,7 @@ export function ChatCanvas({
       </div>
     </div>
 
-      {/* Antigravity Timeline Scrubber */}
+      {/* Conversation Timeline Scrubber */}
       {!isSessionLoading && <div role="region" aria-label={`Loaded message timeline: ${messages.length} of ${totalMessageCount} messages loaded`}>
       <TimelineScrubber
         messages={messages}
@@ -2099,7 +2172,7 @@ export function ChatCanvas({
 
         {slashOpen && (
           <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-40 mx-auto max-w-3xl overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22]/98 shadow-lg backdrop-blur-md">
-            {/* Active item usage tooltip bubble (Hermes-style) */}
+            {/* Active item usage tooltip bubble */}
             {slashMatches[activeIndex] && (slashMatches[activeIndex].usage || slashMatches[activeIndex].description) && (
               <div className="hidden lg:flex absolute right-3 top-2.5 z-50 max-w-xs flex-col rounded-lg border border-[#30363d] bg-[#0d1117]/95 p-2 text-xs shadow-lg backdrop-blur-md">
                 <span className="font-mono text-[11px] font-bold text-[#8b949e]">
@@ -2167,7 +2240,7 @@ export function ChatCanvas({
             {loadingFiles && <div className="px-3 py-3 text-xs text-[#8b949e]">Searching workspace…</div>}
             {!loadingFiles && fileOptions.length === 0 && <div className="px-3 py-3 text-xs text-[#8b949e]">No matching files</div>}
             {fileOptions.map((path, index) => (
-              <button key={path} type="button" onClick={() => selectMention(path)} onMouseEnter={() => setActiveIndex(index)} className={`flex w-full items-center gap-2 rounded px-3 py-2 text-left font-mono text-[11px] ${index === activeIndex ? 'bg-[#21262d] text-[#e6edf3]' : 'text-[#8b949e]'}`}>
+              <button key={path} type="button" data-mention-item={index} onClick={() => selectMention(path)} onMouseEnter={() => setActiveIndex(index)} className={`flex w-full items-center gap-2 rounded px-3 py-2 text-left font-mono text-[11px] ${index === activeIndex ? 'bg-[#21262d] text-[#e6edf3]' : 'text-[#8b949e]'}`}>
                 <File size={12} className="shrink-0" /><span className="truncate">{path}</span>
               </button>
             ))}
@@ -2322,7 +2395,8 @@ export function ChatCanvas({
               rows={2}
               onChange={(event) => {
                 setInput(event.target.value);
-                setCursor(event.target.selectionStart);
+                const pos = event.target.selectionStart;
+                setCursor(pos !== null && pos !== undefined && pos > 0 ? pos : event.target.value.length);
                 setMenuDismissed(false);
               }}
               onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
@@ -2395,7 +2469,7 @@ export function ChatCanvas({
                   onToggle={toggleSelectedSkill} onClose={() => { setSkillsMenuOpen(false); textareaRef.current?.focus(); }} />}
               </div>
 
-              {/* Model & Thinking pill - directly next to [+] like Antigravity & Hermes */}
+              {/* Model & Thinking pill */}
               <div className="relative" data-thinking-menu>
                 <button
                   type="button"
@@ -2532,7 +2606,7 @@ export function ChatCanvas({
             <div className="flex items-center gap-2">
               {isReviewing && <span role="status" className="flex items-center gap-1.5 text-[11px] text-[#8b949e]"><Brain size={12} /> Reviewing…</span>}
 
-              {/* Antigravity-style Execution Mode Pill & Dropdown */}
+              {/* Execution Mode Pill & Dropdown */}
               <div className="relative" data-execution-menu>
                 <button
                   type="button"

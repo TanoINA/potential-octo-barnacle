@@ -5,6 +5,7 @@ import type { AgentSettings, SkillInfo } from '../types/agent';
 import { SettingsModal } from './SettingsModal';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('../utils/audioChime', () => ({ playTaskCompleteChime: vi.fn() }));
 
 const baseSettings: AgentSettings = {
   providers: [{
@@ -34,7 +35,7 @@ function legacySettings(): AgentSettings {
   return legacy as AgentSettings;
 }
 
-beforeEach(() => { vi.mocked(invoke).mockReset(); });
+beforeEach(() => { vi.mocked(invoke).mockReset().mockResolvedValue([]); });
 
 describe('SettingsModal reflection opt-in', () => {
   it('preserves an explicit false preference when saving from Providers', async () => {
@@ -49,7 +50,7 @@ describe('SettingsModal reflection opt-in', () => {
   it('configures review cadence, approval, destination and auxiliary provider without mutating settings', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
     const interval = screen.getByRole('spinbutton', { name: 'Creation nudge interval' }) as HTMLInputElement;
     expect(interval.value).toBe('10');
     expect((screen.getByRole('checkbox', { name: 'Require approval before writing skills' }) as HTMLInputElement).checked).toBe(false);
@@ -66,7 +67,7 @@ describe('SettingsModal reflection opt-in', () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const settings = structuredClone(baseSettings);
     render(<SettingsModal settings={settings} onSave={onSave} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
     const toggle = screen.getByRole('checkbox', { name: 'Enable automatic self-improvement' }) as HTMLInputElement;
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(true);
@@ -88,7 +89,7 @@ describe('SettingsModal reflection opt-in', () => {
     const onClose = vi.fn();
     const settings = { ...baseSettings, self_improvement_enabled: true };
     render(<SettingsModal settings={settings} onSave={onSave} onClose={onClose} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
     const toggle = screen.getByRole('checkbox', { name: 'Enable automatic self-improvement' }) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
     fireEvent.click(toggle);
@@ -112,7 +113,7 @@ describe('SettingsModal reflection opt-in', () => {
 
   it('discloses the provider request, local writes, and on-demand commands even when disabled', () => {
     render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
 
     const toggle = screen.getByRole('checkbox', { name: 'Enable automatic self-improvement' });
     const descriptionId = toggle.getAttribute('aria-describedby');
@@ -132,7 +133,7 @@ describe('SettingsModal reflection opt-in', () => {
 
   it('shows enabled-by-default automatic reflection for legacy settings in Agent defaults', () => {
     render(<SettingsModal settings={legacySettings()} onSave={vi.fn()} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
 
     expect(screen.getByRole('heading', { name: 'Agent Intelligence / Reflection' })).toBeTruthy();
     const toggle = screen.getByRole('checkbox', { name: 'Enable automatic self-improvement' });
@@ -142,7 +143,7 @@ describe('SettingsModal reflection opt-in', () => {
   it('toggles and configures auto micro-compaction settings', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Agent defaults' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
 
     const toggle = screen.getByRole('checkbox', {
       name: 'Enable automatic micro-compaction of verbose tool outputs',
@@ -172,7 +173,7 @@ describe('SettingsModal skill detection', () => {
     );
 
     render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Skills & MCP' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills & MCP' }));
 
     // First request (initial roots) is in flight.
     await waitFor(() => expect(resolvers.length).toBe(1));
@@ -198,4 +199,38 @@ it('opens About from Settings without saving settings', () => {
   render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} onAbout={onAbout} />);
   fireEvent.click(screen.getByRole('button', { name: 'About AetherAgent' }));
   expect(onAbout).toHaveBeenCalledOnce(); expect(onSave).not.toHaveBeenCalled();
+});
+
+describe('SettingsModal keyboard navigation', () => {
+  it('uses an accessible tab pattern with arrow, Home, and End navigation', async () => {
+    render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
+    const providers = screen.getByRole('tab', { name: 'Providers' });
+    const agent = screen.getByRole('tab', { name: 'Agent defaults' });
+    const integrations = screen.getByRole('tab', { name: 'Skills & MCP' });
+    expect(providers.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('settings-tab-providers');
+    providers.focus();
+    fireEvent.keyDown(providers, { key: 'ArrowRight' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(agent);
+    expect(agent.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('settings-tab-agent');
+    fireEvent.keyDown(agent, { key: 'ArrowRight' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(integrations);
+    fireEvent.keyDown(integrations, { key: 'ArrowRight' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(providers);
+    fireEvent.keyDown(providers, { key: 'End' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(integrations);
+    fireEvent.keyDown(integrations, { key: 'Home' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(providers);
+    fireEvent.keyDown(providers, { key: 'ArrowLeft' });
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+    expect(document.activeElement).toBe(integrations);
+    expect(integrations.getAttribute('tabindex')).toBe('0');
+    expect(providers.getAttribute('tabindex')).toBe('-1');
+  });
 });

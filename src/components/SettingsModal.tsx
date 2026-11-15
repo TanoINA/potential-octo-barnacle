@@ -307,7 +307,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
         </header>
 
-        <div className="flex shrink-0 flex-wrap gap-1 border-b border-[#30363d] px-3 pt-2">
+        <div className="flex shrink-0 flex-wrap gap-1 border-b border-[#30363d] px-3 pt-2" role="tablist" aria-label="Settings sections">
 
           {([
 
@@ -315,7 +315,15 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
           ] as const).map(([id, label, Icon]) => (
 
-            <button key={id} type="button" onClick={() => setTab(id)} className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs ${tab === id ? 'border-[#58a6ff] text-[#58a6ff]' : 'border-transparent text-[#8b949e]'}`}><Icon size={13} />{label}</button>
+            <button key={id} type="button" role="tab" id={`settings-tab-${id}`} aria-selected={tab === id} aria-controls="settings-tabpanel" tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const tabs = ['providers', 'agent', 'integrations'] as const;
+              const index = tabs.indexOf(tab);
+              const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+              setTab(tabs[nextIndex]);
+              requestAnimationFrame(() => document.getElementById(`settings-tab-${tabs[nextIndex]}`)?.focus());
+            }} className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs ${tab === id ? 'border-[#58a6ff] text-[#58a6ff]' : 'border-transparent text-[#8b949e]'}`}><Icon size={13} />{label}</button>
 
           ))}
 
@@ -323,7 +331,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
 
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div id="settings-tabpanel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto">
 
           {tab === 'providers' && (
 
@@ -563,7 +571,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
                 <label className="settings-label">Max tokens<input type="number" min="1" step="1" className="settings-input" value={form.maxTokens ?? ''} onChange={(event) => setForm({ ...form, maxTokens: event.target.value ? Number(event.target.value) : undefined })} placeholder="Provider default" /></label>
 
-                <label className="settings-label">Maximum agent turns<input type="number" min="1" max="100" className="settings-input" value={form.maxTurns} onChange={(event) => setForm({ ...form, maxTurns: Number(event.target.value) })} /></label>
+                <label className="settings-label">Maximum agent turns<input type="number" min="1" max="200" className="settings-input" value={form.maxTurns} onChange={(event) => setForm({ ...form, maxTurns: Number(event.target.value) })} /></label>
 
                 <label className="settings-label">Default reasoning effort<select className="settings-input" value={form.reasoningEffort} onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value as ReasoningEffort })}>{EFFORTS.map((effort) => <option key={effort.value} value={effort.value}>{effort.label}</option>)}</select></label>
 
@@ -703,7 +711,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
                 <h3 className="text-xs font-semibold">Skill roots</h3>
 
-                <p className="mb-2 mt-1 text-[11px] leading-5 text-[#8b949e]">The loader checks the official ~/.aether-agent/skills directory, workspace skills, Antigravity, and Hermes source skills. Add custom directories per line.</p>
+                <p className="mb-2 mt-1 text-[11px] leading-5 text-[#8b949e]">The loader checks the official ~/.aether-agent/skills directory, workspace skills, and system skill directories. Add custom directories per line.</p>
 
                 <textarea className="settings-input min-h-20 resize-y font-mono" value={form.skillPaths.join('\n')} onChange={(event) => setForm({ ...form, skillPaths: event.target.value.split('\n') })} placeholder="D:\path\to\skills" />
 

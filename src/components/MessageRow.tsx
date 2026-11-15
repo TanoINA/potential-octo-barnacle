@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Copy,
   Folder,
   Image as ImageIcon,
@@ -49,11 +50,13 @@ export const MessageRow = memo(function MessageRow({
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message?.content || '');
   const [copied, setCopied] = useState(false);
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
 
   if (!message) return null;
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const isLongPrompt = isUser && ((message.content?.length || 0) > 320 || (message.content?.split('\n').length || 0) > 6);
   const hasRenderableSegments = Boolean(message.segments?.some((segment) => segment.text?.trim() || segment.toolCalls?.length));
 
   const handleCopy = useCallback(() => {
@@ -171,7 +174,7 @@ export const MessageRow = memo(function MessageRow({
         </div>
       )}
 
-      {/* Interleaved Segments (Hermes style per-turn flow: text -> tools -> text -> tools) */}
+      {/* Interleaved Segments (per-turn flow: text -> tools -> text -> tools) */}
       {!isUser && hasRenderableSegments ? (
         <div className="w-full space-y-3">
           {message.segments?.map((seg, idx) => {
@@ -213,7 +216,7 @@ export const MessageRow = memo(function MessageRow({
             </div>
           )}
 
-          {/* Execution Trace (Hermes style progress / status accordion) */}
+          {/* Execution Trace (progress / status accordion) */}
           {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
             <ExecutionTrace
               toolCalls={message.toolCalls}
@@ -275,8 +278,33 @@ export const MessageRow = memo(function MessageRow({
       ) : (
         isUser ? (
           message.content && (
-            <div className="max-w-full select-text break-words rounded-xl px-4 py-3 text-[13px] leading-6 bg-[#1f6feb] text-white whitespace-pre-wrap">
-              {message.content}
+            <div className="max-w-full select-text break-words rounded-xl bg-[#1f6feb] text-white">
+              <div className={`px-4 py-3 text-[13px] leading-6 whitespace-pre-wrap ${isLongPrompt && !isPromptExpanded ? 'max-h-36 overflow-hidden relative' : ''}`}>
+                {message.content}
+                {isLongPrompt && !isPromptExpanded && (
+                  <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-[#1f6feb] to-transparent pointer-events-none" />
+                )}
+              </div>
+              {isLongPrompt && (
+                <button
+                  type="button"
+                  onClick={() => setIsPromptExpanded((prev) => !prev)}
+                  className="flex w-full items-center justify-center gap-1 border-t border-white/15 px-3 py-1.5 text-[11px] font-medium text-white/90 hover:text-white hover:bg-white/10 transition-colors rounded-b-xl"
+                  aria-expanded={isPromptExpanded}
+                >
+                  {isPromptExpanded ? (
+                    <>
+                      <ChevronUp size={12} />
+                      <span>Show less</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown size={12} />
+                      <span>Show more</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           )
         ) : !hasRenderableSegments ? (
@@ -385,7 +413,7 @@ export const MessageRow = memo(function MessageRow({
         <SelfImprovementBadge review={message.selfImprovement} />
       )}
 
-      {/* Files Changed Card (Hermes style bottom diff summary) */}
+      {/* Files Changed Card (bottom diff summary) */}
       {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
         <FilesChangedCard
           toolCalls={message.toolCalls}

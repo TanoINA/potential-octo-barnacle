@@ -508,6 +508,7 @@ struct SubagentParams<'a> {
     role: &'a str,
     task: &'a str,
     subpath: Option<&'a str>,
+    max_turns: Option<usize>,
     skill_paths: &'a [String],
     inherited_policy: &'a str,
     execution_mode: ExecutionMode,
@@ -586,6 +587,7 @@ fn tool_policy_error(
                 | "list_directory"
                 | "search_files"
                 | "fetch_web_page"
+                | "search_web"
                 | "use_skill"
                 | "skills_list"
                 | "skill_view"
@@ -774,7 +776,7 @@ async fn run_subagent(
     let mut final_text = String::new();
     let mut intermediate_findings: Vec<String> = Vec::new();
     let mut completed_cleanly = false;
-    let max_turns = SUBAGENT_MAX_TURNS;
+    let max_turns = params.max_turns.unwrap_or(SUBAGENT_MAX_TURNS).clamp(5, 100);
 
     while turns < max_turns {
         if parent_cancel.is_cancelled() {
@@ -1584,7 +1586,7 @@ impl AgentRunner {
         let mut turns = 0;
         let mut finished = false;
         let mut final_response_nonempty = false;
-        while turns < request.max_turns.clamp(1, 100) {
+        while turns < request.max_turns.clamp(1, 200) {
             if cancel.is_cancelled() {
                 break;
             }
@@ -2008,10 +2010,17 @@ impl AgentRunner {
                             .get("subpath")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
+                        let max_turns = prep
+                            .args
+                            .get("max_turns")
+                            .or_else(|| prep.args.get("maxTurns"))
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize);
                         let params = SubagentParams {
                             role: &role,
                             task: &task,
                             subpath: subpath.as_deref(),
+                            max_turns,
                             skill_paths: &all_skill_paths,
                             inherited_policy: &inherited_policy,
                             execution_mode,
@@ -2100,7 +2109,7 @@ impl AgentRunner {
                 break;
             }
         }
-        if !finished && !cancel.is_cancelled() && turns >= request.max_turns.clamp(1, 100) {
+        if !finished && !cancel.is_cancelled() && turns >= request.max_turns.clamp(1, 200) {
             emitter.error(format!(
                 "Agent reached the configured maximum of {} turns",
                 request.max_turns
@@ -4086,6 +4095,14 @@ mod tests {
     #[test]
     fn subagent_turn_budget_allows_twenty_five_investigation_turns() {
         assert_eq!(SUBAGENT_MAX_TURNS, 25);
+    }
+
+    #[test]
+    fn subagent_custom_turn_budget_clamps_between_five_and_one_hundred() {
+        assert_eq!(None.unwrap_or(SUBAGENT_MAX_TURNS).clamp(5, 100), 25);
+        assert_eq!(Some(50usize).unwrap_or(SUBAGENT_MAX_TURNS).clamp(5, 100), 50);
+        assert_eq!(Some(2usize).unwrap_or(SUBAGENT_MAX_TURNS).clamp(5, 100), 5);
+        assert_eq!(Some(250usize).unwrap_or(SUBAGENT_MAX_TURNS).clamp(5, 100), 100);
     }
 
     #[test]

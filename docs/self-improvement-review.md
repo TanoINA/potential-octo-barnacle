@@ -2,9 +2,9 @@
 
 ## Reference and scope
 
-The reference implementation is the locally installed Hermes Agent at commit `bf0203a794a`, primarily `agent/background_review.py`, `agent/turn_finalizer.py`, and `agent/agent_init.py`. Aether now uses a tool-driven post-turn skill-review agent, not the former one-shot JSON extractor.
+Aether uses a tool-driven post-turn skill-review agent running natively in Rust/Tauri, transitioning away from one-shot JSON extraction into an autonomous multi-step reflection loop.
 
-This ports the skill-review behavior into Aether's Rust/Tauri architecture. It is not a claim of literal parity with every Hermes subsystem. The separate memory-review/USER.md loop, curator, profile router, managed-local idle queue, routed-model context digest, token-usage accounting and focus arguments to `/refine` are not implemented by this change. See the parity table below.
+This architecture implements durable skill reviews, self-improvement proposal staging, and guarded filesystem mutations.
 
 ## Runtime behavior
 
@@ -54,7 +54,7 @@ The parent foreground agent uses the same guarded store for maintenance. Legacy 
 
 ## Approval and durable proposals
 
-`reviewConfig.writeApproval` defaults to false, matching Hermes' default direct-write policy. When enabled, mutations stage durable proposals under `~/.aether-agent/pending/skills/` and do not modify source files or expose staged creations as installed skills.
+`reviewConfig.writeApproval` defaults to false. When enabled, mutations stage durable proposals under `~/.aether-agent/pending/skills/` and do not modify source files or expose staged creations as installed skills.
 
 The review inspector lists changes, displays inert unified diffs, and supports Approve/Reject. Pending records survive restarts. IDs and operations are session-scoped; the native sealed staging snapshot—not client paths—is authority for approval. Approval checks locks and original bytes again; stale source changes leave the proposal pending. Duplicate UI decisions are guarded.
 
@@ -100,7 +100,7 @@ Inspectors authorize reads through stored run/session/change associations, not a
 
 ## Parity boundaries
 
-| Hermes skill-review behavior | Aether status |
+| Reflection & Review Capability | Aether Status |
 |---|---|
 | Default enabled, interval 10 provider iterations across turns | Implemented; existing explicit opt-out retained |
 | Full-conversation, detached, tool-driven reviewer; 16 iterations | Implemented, with an additional 120-second deadline |
@@ -110,7 +110,7 @@ Inspectors authorize reads through stored run/session/change associations, not a
 | Auxiliary provider | Implemented via an existing configured provider |
 | Foreground priority / identity-safe cancellation | Implemented; no managed-local idle/requeue service |
 | `/refine focus text` | Not implemented; only the bare alias is a review command |
-| Memory/USER.md review, curator, profile lifecycle | Outside this skill-review port |
+| Memory review and profile lifecycle | Future roadmap |
 | Routed-model digest, aggregate input-token budget, usage attribution | Not implemented; full snapshot may exceed a selected model's context |
 | Arbitrary skill metadata rewrite, whole-skill delete | Deliberately more restrictive |
 

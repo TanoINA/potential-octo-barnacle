@@ -1,8 +1,9 @@
 use super::types::{Artifact, FileDiffStat};
+use base64::Engine;
 use futures_util::StreamExt;
 use globset::Glob;
 use ignore::WalkBuilder;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use similar::TextDiff;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Component, Path, PathBuf};
@@ -226,6 +227,27 @@ pub fn get_agent_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "search_web",
+                "description": "Performs a web search for a given query keywords. Returns title, snippet, and target URLs of the most relevant search results.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query keywords"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (1-10, default: 5)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "use_skill",
                 "description": "Load and activate a specific skill's instructions from the catalog by its name. Use this whenever the user request matches a known skill capability.",
                 "parameters": {
@@ -259,6 +281,10 @@ pub fn get_agent_tools() -> serde_json::Value {
                         "subpath": {
                             "type": "string",
                             "description": "Optional subfolder in the workspace for the subagent to focus on"
+                        },
+                        "max_turns": {
+                            "type": "integer",
+                            "description": "Optional maximum investigation turns (5-100, default: 25). Set higher (e.g. 40-60) for broad codebase audits, deep refactoring, or multi-file research."
                         }
                     },
                     "required": ["role", "task"]
@@ -331,6 +357,7 @@ pub async fn execute_tool(
         "run_command" => run_command(args, context).await,
         "manage_task" => manage_task(args, context).await,
         "fetch_web_page" => fetch_web_page(args, context).await,
+        "search_web" => search_web(args, context).await,
         "learn_skill" => learn_skill(args, context).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
@@ -1195,11 +1222,13 @@ async fn run_command(
         }
     }
     if (cancelled || timed_out)
-        && tokio::time::timeout(Duration::from_secs(5), child.wait())
+        && tokio::time::timeout(Duration::from_secs(1), child.wait())
             .await
             .is_err()
     {
-        let _ = child.kill().await;
+        // A terminated shell must never hold the agent indefinitely while its
+        // status is reaped. kill_on_drop cleans up if even this wait stalls.
+        let _ = child.start_kill();
     }
     let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     loop {
@@ -1301,7 +1330,8 @@ async fn learn_skill(
 async fn terminate_child(child: &mut Child) {
     #[cfg(windows)]
     if let Some(id) = child.id() {
-        let _ = super::create_hidden_command("taskkill")
+        let killer = super::create_hidden_command("taskkill")
+            .kill_on_drop(true)
             .arg("/PID")
             .arg(id.to_string())
             .arg("/T")
@@ -1309,10 +1339,12 @@ async fn terminate_child(child: &mut Child) {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .await;
+            .status();
+        // taskkill is normally quick, but a broken system utility must not
+        // bypass the command's timeout or cancellation deadline.
+        let _ = tokio::time::timeout(Duration::from_millis(750), killer).await;
     }
-    let _ = child.kill().await;
+    let _ = child.start_kill();
 }
 
 fn append_process_line(
@@ -1571,6 +1603,201 @@ async fn validate_public_url(url: &Url) -> Result<(), String> {
     } else {
         Err("DNS returned no addresses".into())
     }
+}
+
+fn clean_html_text(raw: &str) -> String {
+    let tag_re = match Regex::new(r"<[^>]+>") {
+        Ok(re) => re.replace_all(raw, "").into_owned(),
+        Err(_) => raw.to_string(),
+    };
+    tag_re
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn decode_bing_u(raw_url: &str) -> String {
+    let clean = raw_url.replace("&amp;", "&");
+    if let Some(pos) = clean.find("u=a1") {
+        let rest = &clean[pos + 4..];
+        let token = rest.split('&').next().unwrap_or(rest);
+        let mut normalized = token.replace('-', "+").replace('_', "/");
+        while normalized.len() % 4 != 0 {
+            normalized.push('=');
+        }
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&normalized) {
+            if let Ok(decoded) = String::from_utf8(bytes) {
+                if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                    return decoded;
+                }
+            }
+        }
+    }
+    clean
+}
+
+fn decode_ddg_url(raw_url: &str) -> String {
+    let clean = raw_url.replace("&amp;", "&");
+    if let Some(pos) = clean.find("uddg=") {
+        let rest = &clean[pos + 5..];
+        let token = rest.split('&').next().unwrap_or(rest);
+        for (k, v) in url::form_urlencoded::parse(format!("u={token}").as_bytes()) {
+            if k == "u" && (v.starts_with("http://") || v.starts_with("https://")) {
+                return v.into_owned();
+            }
+        }
+    }
+    if clean.starts_with("//") {
+        format!("https:{clean}")
+    } else {
+        clean
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SearchResultItem {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+pub(super) fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<SearchResultItem> {
+    let mut results = Vec::new();
+    let re = match Regex::new(r#"(?s)<div[^>]*class="[^"]*result[^"]*"[^>]*>.*?<h2[^>]*class="result__title"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>.*?(?:<a[^>]*class="result__snippet"[^>]*>(.*?)</a>|<div[^>]*class="result__snippet"[^>]*>(.*?)</div>)"#) {
+        Ok(r) => r,
+        Err(_) => return results,
+    };
+    for cap in re.captures_iter(html) {
+        if results.len() >= limit {
+            break;
+        }
+        let raw_url = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let raw_title = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let raw_snippet = cap.get(3).or_else(|| cap.get(4)).map(|m| m.as_str()).unwrap_or_default();
+
+        let title = clean_html_text(raw_title);
+        let snippet = clean_html_text(raw_snippet);
+        let url = decode_ddg_url(raw_url);
+
+        if !url.is_empty() && !title.is_empty() {
+            results.push(SearchResultItem { title, url, snippet });
+        }
+    }
+    results
+}
+
+pub(super) fn parse_bing_results(html: &str, limit: usize) -> Vec<SearchResultItem> {
+    let mut results = Vec::new();
+    let re = match Regex::new(r#"(?s)<li[^>]*class="b_algo"[^>]*>.*?<h2>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>.*?(?:<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>|<p[^>]*>(.*?)</p>)"#) {
+        Ok(r) => r,
+        Err(_) => return results,
+    };
+    for cap in re.captures_iter(html) {
+        if results.len() >= limit {
+            break;
+        }
+        let raw_url = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let raw_title = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let raw_snippet = cap.get(3).or_else(|| cap.get(4)).map(|m| m.as_str()).unwrap_or_default();
+
+        let title = clean_html_text(raw_title);
+        let snippet = clean_html_text(raw_snippet);
+        let url = decode_bing_u(raw_url);
+
+        if !url.is_empty() && !title.is_empty() {
+            results.push(SearchResultItem { title, url, snippet });
+        }
+    }
+    results
+}
+
+async fn search_web(
+    args: &serde_json::Value,
+    context: &ToolContext,
+) -> Result<ToolExecutionResult, String> {
+    let query = required_string(args, "query")?.trim();
+    if query.is_empty() {
+        return Err("Search query cannot be empty".into());
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 10) as usize;
+
+    let encoded_query = url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let mut results = Vec::new();
+
+    // 1. Try DuckDuckGo HTML
+    let ddg_url = format!("https://html.duckduckgo.com/html/?q={encoded_query}");
+    let ddg_fetch = tokio::select! {
+        _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+        res = client.get(&ddg_url).send() => res,
+    };
+
+    if let Ok(resp) = ddg_fetch {
+        if resp.status().is_success() {
+            if let Ok(text) = resp.text().await {
+                results = parse_duckduckgo_results(&text, limit);
+            }
+        }
+    }
+
+    // 2. Fallback to Bing Search HTML (essential when DuckDuckGo is blocked or unreachable)
+    if results.is_empty() {
+        let bing_url = format!("https://www.bing.com/search?q={encoded_query}");
+        let bing_fetch = tokio::select! {
+            _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+            res = client.get(&bing_url).send() => res,
+        };
+        if let Ok(resp) = bing_fetch {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text().await {
+                    results = parse_bing_results(&text, limit);
+                }
+            }
+        }
+    }
+
+    if results.is_empty() {
+        return Ok(ToolExecutionResult::success(
+            format!("No web search results found for query: \"{query}\""),
+            None,
+        ));
+    }
+
+    let mut output = format!("Search results for \"{query}\":\n\n");
+    for (idx, item) in results.iter().enumerate() {
+        output.push_str(&format!("{}. [{}]({})\n   {}\n\n", idx + 1, item.title, item.url, item.snippet));
+    }
+
+    let artifact = if results.len() >= 3 {
+        Some(new_artifact(
+            format!("Search: {query}"),
+            "markdown",
+            Some("markdown".into()),
+            output.clone(),
+            Some(format!("search://{encoded_query}")),
+        ))
+    } else {
+        None
+    };
+
+    Ok(ToolExecutionResult::success(output.trim().to_string(), artifact))
 }
 
 fn is_public_ip(ip: IpAddr) -> bool {
@@ -2516,5 +2743,35 @@ mod tests {
         assert!(!is_public_ip("64:ff9b::7f00:1".parse().unwrap()));
         assert!(!is_public_ip("64:ff9b::a00:1".parse().unwrap()));
         assert!(is_public_ip("64:ff9b::808:808".parse().unwrap()));
+    }
+
+    #[test]
+    fn bing_search_results_and_u_decoding_work() {
+        let sample = r#"
+            <li class="b_algo">
+                <h2><a href="https://www.bing.com/ck/a?!&amp;&amp;u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&amp;ntb=1">Rust <b>Lang</b></a></h2>
+                <div class="b_caption"><p>Empowering everyone to build reliable software.</p></div>
+            </li>
+        "#;
+        let results = parse_bing_results(sample, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust Lang");
+        assert_eq!(results[0].url, "https://rust-lang.org/");
+        assert_eq!(results[0].snippet, "Empowering everyone to build reliable software.");
+    }
+
+    #[test]
+    fn duckduckgo_results_and_uddg_decoding_work() {
+        let sample = r##"
+            <div class="result results_links">
+                <h2 class="result__title"><a class="result__url" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&rut=1">Rust &amp; Language</a></h2>
+                <a class="result__snippet" href="#">A language empowering everyone.</a>
+            </div>
+        "##;
+        let results = parse_duckduckgo_results(sample, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust & Language");
+        assert_eq!(results[0].url, "https://www.rust-lang.org/");
+        assert_eq!(results[0].snippet, "A language empowering everyone.");
     }
 }

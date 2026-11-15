@@ -659,4 +659,21 @@ describe('ChatCanvas prompt queueing', () => {
       expect(onSendMessage).toHaveBeenCalledWith('Test prompt', undefined, { executionMode: 'request_review' });
     });
   });
+
+  it('triggers slash command autocomplete inline when slash is preceded by text and whitespace', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const onListSkills = vi.fn(async () => [{ name: 'ponytail', description: 'Lazy senior dev', path: '', source: '' }]);
+    const props = renderCanvas({ onSendMessage, onListSkills });
+
+    await waitFor(() => expect(props.onListSkills).toHaveBeenCalled());
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'tolong kerjain ini pake /pony' } });
+
+    await screen.findByRole('button', { name: /\/ponytail/ });
+
+    fireEvent.keyDown(input, { key: 'Tab' });
+
+    expect(input.value).toBe('tolong kerjain ini pake /ponytail ');
+  });
 });

@@ -279,4 +279,28 @@ describe('TimelineScrubber', () => {
       vi.useRealTimers();
     }
   });
+
+  it('synchronizes the active turn to the final turn when scrolled to bottom even with unequal heights', () => {
+    const scrollElement = document.createElement('div');
+    Object.defineProperties(scrollElement, {
+      scrollTop: { value: 1000, writable: true },
+      scrollHeight: { value: 1100 },
+      clientHeight: { value: 100 },
+    });
+    // Max scroll is 1000, scrollTop is 1000 => scrollRatio = 1.0 (at the bottom)
+    // activeMessageIndex is 1 (assistant message of turn 1, because turn 2 is short and turn 1 top is still visible)
+    render(
+      <TimelineScrubber
+        messages={dummyMessages}
+        sessionTitle="Unequal Heights At Bottom"
+        scrollElement={scrollElement}
+        activeMessageIndex={1}
+        onJumpToMessage={vi.fn()}
+      />,
+    );
+    fireEvent.mouseEnter(screen.getByTestId('timeline-scrubber'));
+    const selected = screen.getByTestId('timeline-popover').querySelector('[class~="bg-[#21262d]"]');
+    // Must select the last user turn (dummyMessages[4]), not turn 1 (dummyMessages[0])
+    expect(selected?.textContent).toContain(dummyMessages[4].content);
+  });
 });

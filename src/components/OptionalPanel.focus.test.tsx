@@ -88,3 +88,31 @@ it('traps focus across the lazy handoff and restores the original opener after c
     vi.unstubAllGlobals();
   }
 });
+
+
+it('wraps Tab past inactive tabs and lets only the top dialog handle Escape', () => {
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function (this: HTMLElement) {
+    return [this.getBoundingClientRect()] as unknown as DOMRectList;
+  });
+  const lowerClose = vi.fn();
+  const upperClose = vi.fn();
+  function Dialog({ name, onClose }: { name: string; onClose: () => void }) {
+    const ref = useModalAccessibility<HTMLDivElement>(true, onClose);
+    return <div role="dialog" aria-label={name} ref={ref} tabIndex={-1}>
+      <button>{name} first</button><button tabIndex={-1}>{name} inactive</button>
+    </div>;
+  }
+  const view = render(<><Dialog name="Lower" onClose={lowerClose} /><Dialog name="Upper" onClose={upperClose} /></>);
+  try {
+    const upperFirst = screen.getByRole('button', { name: 'Upper first' });
+    upperFirst.focus();
+    expect(fireEvent.keyDown(upperFirst, { key: 'Tab', cancelable: true })).toBe(false);
+    expect(document.activeElement).toBe(upperFirst);
+    fireEvent.keyDown(upperFirst, { key: 'Escape' });
+    expect(upperClose).toHaveBeenCalledOnce();
+    expect(lowerClose).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    vi.restoreAllMocks();
+  }
+});

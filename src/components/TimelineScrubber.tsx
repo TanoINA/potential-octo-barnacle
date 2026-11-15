@@ -176,6 +176,19 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     if (turns[index].messageIndex > anchorIndex) break;
     activeTurnIndex = index;
   }
+  // When scrolled near or to the bottom, the active turn is unequivocally the final turn.
+  const isNearBottom = scrollElement
+    ? scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight <= 40
+    : scrollRatio >= 0.95;
+  const isNearTop = scrollElement
+    ? scrollElement.scrollTop <= 10
+    : scrollRatio <= 0.02;
+
+  if (isNearBottom) {
+    activeTurnIndex = turns.length - 1;
+  } else if (isNearTop && (activeMessageIndex === undefined || activeMessageIndex <= (turns[0]?.messageIndex ?? 0))) {
+    activeTurnIndex = 0;
+  }
   return (
     <div
       className="absolute right-2 top-20 bottom-28 z-30 flex flex-col items-center justify-center select-none pointer-events-auto"
@@ -251,15 +264,11 @@ export const TimelineScrubber = memo(function TimelineScrubber({
             >
               {isKeyTurn ? (
                 <div
-                  className={`h-2.5 w-1 rounded-full transition-colors ${
-                    isActive ? 'bg-[#58a6ff] shadow-sm' : 'bg-[#484f58] group-hover:bg-[#8b949e]'
-                  }`}
+                  className="h-2.5 w-1 rounded-full bg-[#484f58] transition-colors group-hover:bg-[#8b949e]"
                 />
               ) : (
                 <div
-                  className={`h-1.5 w-1.5 rounded-full transition-colors ${
-                    isActive ? 'bg-[#58a6ff]' : 'bg-[#30363d] group-hover:bg-[#6e7681]'
-                  }`}
+                  className="h-1.5 w-1.5 rounded-full bg-[#30363d] transition-colors group-hover:bg-[#6e7681]"
                 />
               )}
             </button>
@@ -270,7 +279,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
         <div
           className="pointer-events-none absolute left-1/2 h-3.5 w-1 -translate-x-1/2 rounded-full bg-white shadow-md transition-all duration-75"
           style={{
-            top: `calc(${scrollRatio * 100}% - 7px)`,
+            top: `calc(${scrollRatio * 100}% - ${scrollRatio * 14}px)`,
           }}
         />
       </div>
@@ -291,7 +300,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
         <ChevronDown size={11} strokeWidth={2.5} />
       </button>
 
-      {/* Floating Hover Card (Antigravity Style Popover) */}
+      {/* Floating Hover Card Popover */}
       {isHovered && (
         <div
           className="absolute right-7 top-1/2 -translate-y-1/2 w-80 max-w-[min(90vw,340px)] rounded-2xl border border-[#30363d] bg-[#161b22]/98 p-4 shadow-2xl backdrop-blur-md text-[#e6edf3] animate-fadeIn"

@@ -1708,7 +1708,8 @@ export function useAgent() {
   const loadLatestMessages = preview.clear;
 
   const clearCurrentSession = useCallback(() => {
-    if (preview.isActive() || sessionOperationRef.current) return;
+    if (preview.isActive()) return;
+    sessionOperationRef.current = false;
     navigationRef.current += 1;
     navigationPendingRef.current = false;
     detachCurrentRun();

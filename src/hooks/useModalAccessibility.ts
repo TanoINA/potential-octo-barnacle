@@ -27,7 +27,7 @@ export function useModalAccessibility<T extends HTMLElement>(
 
     const focusableElements = () => Array.from(
       dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) || [],
-    ).filter((element) => element.getClientRects().length > 0);
+    ).filter((element) => element.tabIndex >= 0 && element.getClientRects().length > 0);
 
     const frame = requestAnimationFrame(() => {
       const target = initialFocusRef?.current || focusableElements()[0] || dialogRef.current;
@@ -35,6 +35,8 @@ export function useModalAccessibility<T extends HTMLElement>(
     });
 
     const onKeyDown = (event: KeyboardEvent) => {
+      const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"]');
+      if (dialogs[dialogs.length - 1] !== dialogRef.current) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();

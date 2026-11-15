@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn reflection_defaults_to_hermes_cadence_and_preserves_explicit_opt_out() {
+    fn reflection_defaults_to_standard_cadence_and_preserves_explicit_opt_out() {
         let defaults: AgentSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(
             serde_json::to_value(defaults).unwrap()["self_improvement_enabled"],

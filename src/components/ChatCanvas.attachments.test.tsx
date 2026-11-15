@@ -332,3 +332,37 @@ it('updates the vision indicator when the selected model becomes text-only', asy
   expect(screen.getByRole('button', { name: 'Preview origin.png' })).toBeTruthy();
   expect(native.invoke.mock.calls.filter(([command]) => command === 'prepare_image_attachments')).toHaveLength(0);
 });
+
+it('attaches file as context pill when selected from at-mention dropdown', async () => {
+  const onListFiles = vi.fn(async () => ['src/components/ChatCanvas.tsx', 'src/App.tsx']);
+  setup({ onListFiles });
+  const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+  fireEvent.change(textarea, { target: { value: 'please inspect @Chat', selectionStart: 20, selectionEnd: 20 } });
+  
+  await waitFor(() => expect(screen.getByText('src/components/ChatCanvas.tsx')).toBeTruthy());
+  
+  fireEvent.click(screen.getByText('src/components/ChatCanvas.tsx'));
+
+  await waitFor(() => {
+    expect(screen.getByText('ChatCanvas.tsx')).toBeTruthy();
+  });
+  expect(textarea.value).toBe('please inspect ');
+});
+
+it('supports Tab key to complete at-mention file into context pill', async () => {
+  const onListFiles = vi.fn(async () => ['src/components/ChatCanvas.tsx']);
+  setup({ onListFiles });
+  const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+  fireEvent.change(textarea, { target: { value: '@Chat', selectionStart: 5, selectionEnd: 5 } });
+  
+  await waitFor(() => expect(screen.getByText('src/components/ChatCanvas.tsx')).toBeTruthy());
+  
+  fireEvent.keyDown(textarea, { key: 'Tab' });
+
+  await waitFor(() => {
+    expect(screen.getByText('ChatCanvas.tsx')).toBeTruthy();
+  });
+  expect(textarea.value).toBe('');
+});

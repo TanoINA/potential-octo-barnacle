@@ -159,7 +159,7 @@ pub async fn load_settings() -> Result<AgentSettings, String> {
     {
         settings.active_provider_id = settings.providers[0].id.clone();
     }
-    settings.max_turns = settings.max_turns.clamp(1, 100);
+    settings.max_turns = settings.max_turns.clamp(1, 200);
     if !settings.temperature.is_finite() {
         settings.temperature = 0.7;
     }
@@ -200,15 +200,18 @@ fn migrate_provider_kinds(value: &mut serde_json::Value) {
     }
 }
 
+static SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn save_settings(settings: &AgentSettings) -> Result<(), String> {
+    let _guard = SETTINGS_LOCK.lock().await;
     if settings.providers.is_empty() {
         return Err("At least one provider is required".into());
     }
     if !settings.temperature.is_finite() || !(0.0..=2.0).contains(&settings.temperature) {
         return Err("Temperature must be between 0 and 2".into());
     }
-    if !(1..=100).contains(&settings.max_turns) {
-        return Err("Maximum agent turns must be between 1 and 100".into());
+    if !(1..=200).contains(&settings.max_turns) {
+        return Err("Maximum agent turns must be between 1 and 200".into());
     }
     if settings.max_tokens == Some(0) {
         return Err("Max tokens must be at least 1 or left unset".into());
@@ -662,6 +665,7 @@ pub async fn save_session(data: SessionData) -> Result<(), String> {
 /// hydrated canonical baseline. None is create-only, never an unchecked overwrite.
 /// The returned data is intentionally FULL (including opaque replay bytes), not
 /// a viewport projection: it is the exact committed controller baseline.
+#[allow(dead_code)]
 pub async fn replace_session_checked(
     data: SessionData,
     expected_window: Option<SessionWindow>,
@@ -670,6 +674,8 @@ pub async fn replace_session_checked(
     let path = session_path(&data.session.id)?;
     replace_session_checked_file(&path, data, expected_window).await
 }
+
+#[allow(dead_code)]
 async fn replace_session_checked_file(
     path: &Path,
     data: SessionData,

@@ -25,6 +25,7 @@ pub mod types;
 /// on Windows to prevent console/terminal windows (cmd/PowerShell/conhost/Windows Terminal)
 /// from popping up during tool execution in GUI applications.
 pub fn create_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = tokio::process::Command::new(program);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);

@@ -319,14 +319,14 @@ impl McpClient {
                 let _ = sender.send(Err("MCP transport closed".into()));
             }
         }
-        if let Some(id) = child.id() {
+        if let Some(_id) = child.id() {
             #[cfg(windows)]
             {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(2),
                     super::create_hidden_command("taskkill")
                         .arg("/PID")
-                        .arg(id.to_string())
+                        .arg(_id.to_string())
                         .arg("/T")
                         .arg("/F")
                         .stdin(std::process::Stdio::null())

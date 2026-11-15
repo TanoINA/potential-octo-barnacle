@@ -26,6 +26,7 @@ export const InteractiveTerminal: React.FC = () => {
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +53,7 @@ export const InteractiveTerminal: React.FC = () => {
     setIsRunning(true);
 
     try {
+      // Native bridge failures use the same visible error path as failed commands.
       const res = await invoke<ShellCommandResult>('run_shell_command', { command: cmd });
       const entry: ShellHistoryEntry = {
         id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -107,10 +109,11 @@ export const InteractiveTerminal: React.FC = () => {
   const copyEntry = async (id: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopyError(null);
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 1500);
     } catch {
-      // ignore
+      setCopyError('Could not copy the command output. Select and copy it manually.');
     }
   };
 
@@ -137,11 +140,11 @@ export const InteractiveTerminal: React.FC = () => {
       </div>
 
       {/* Output Log */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 select-text">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 select-text" role="log" aria-label="Shell command history" aria-live="polite" aria-relevant="additions text">
         {history.length === 0 && !isRunning && (
-          <div className="py-8 text-center text-[#6e7681]">
+          <div className="py-8 text-center text-[#8b949e]">
             <p className="text-xs">Type any command below (e.g. <code className="text-[#79c0ff]">dir</code>, <code className="text-[#79c0ff]">git status</code>, <code className="text-[#79c0ff]">npm test</code>)</p>
-            <p className="text-[10px] mt-1 text-[#484f58]">Runs in your active workspace environment</p>
+            <p className="text-[10px] mt-1">Runs non-interactively in your active workspace (120 second limit)</p>
           </div>
         )}
 
@@ -167,8 +170,9 @@ export const InteractiveTerminal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => copyEntry(entry.id, entry.stdout || entry.stderr)}
-                  className="opacity-0 group-hover:opacity-100 text-[#8b949e] hover:text-white transition-opacity"
-                  title="Copy output"
+                  className="rounded p-0.5 text-[#8b949e] opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#58a6ff] group-hover:opacity-100"
+                  title={copiedId === entry.id ? 'Output copied' : 'Copy output'}
+                  aria-label={copiedId === entry.id ? 'Output copied' : `Copy output for ${entry.command}`}
                 >
                   {copiedId === entry.id ? <Check size={11} className="text-[#3fb950]" /> : <Copy size={11} />}
                 </button>
@@ -190,9 +194,15 @@ export const InteractiveTerminal: React.FC = () => {
         ))}
 
         {isRunning && (
-          <div className="flex items-center gap-2 text-xs text-[#58a6ff] animate-pulse py-1">
+          <div role="status" className="flex items-center gap-2 text-xs text-[#58a6ff] animate-pulse py-1">
             <Loader2 size={13} className="animate-spin" />
-            <span>Running command...</span>
+            <span>Running command... The active command stops after two minutes.</span>
+          </div>
+        )}
+        {copyError && (
+          <div role="alert" className="flex items-center justify-between gap-3 rounded border border-[#da3633]/40 bg-[#da3633]/10 p-2 text-[#ff7b72]">
+            <span>{copyError}</span>
+            <button type="button" className="shrink-0 underline" onClick={() => setCopyError(null)}>Dismiss</button>
           </div>
         )}
       </div>
@@ -207,6 +217,8 @@ export const InteractiveTerminal: React.FC = () => {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type command and press Enter..."
+          aria-label="Workspace shell command"
+          title="Runs a non-interactive workspace command (120 second limit)"
           disabled={isRunning}
           className="min-w-0 flex-1 bg-transparent text-xs text-[#e6edf3] outline-none placeholder:text-[#6e7681]"
         />

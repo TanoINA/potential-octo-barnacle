@@ -33,6 +33,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+/capture/
+/inbox/
+/investigation.cany/
+/craft.json
+/feed.json
+/transcript.json
+/usage.json
 
 # OS and editor state
 .DS_Store

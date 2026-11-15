@@ -60,7 +60,7 @@ pub fn default_skill_paths() -> Vec<String> {
             if let Some(config) = skills_config_root() {
                 roots.push(config.join("skills"));
             }
-            // 2. Compatibility with Antigravity if present
+            // 2. Global user skills if present
             roots.push(home.join(".gemini").join("config").join("skills"));
         }
         roots
@@ -71,48 +71,66 @@ pub fn default_skill_paths() -> Vec<String> {
         .collect()
 }
 
+fn write_starter_skill(dir: &Path, name: &str, content: &str) {
+    let skill_dir = dir.join(name);
+    let _ = std::fs::create_dir_all(&skill_dir);
+    let skill_file = skill_dir.join("SKILL.md");
+    if !skill_file.exists() {
+        let _ = std::fs::write(skill_file, content);
+    }
+}
+
 pub fn ensure_starter_skills(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
 
-    let debug_dir = dir.join("systematic-debugging");
-    let _ = std::fs::create_dir_all(&debug_dir);
-    let debug_file = debug_dir.join("SKILL.md");
-    if !debug_file.exists() {
-        let _ = std::fs::write(
-            debug_file,
-            "---\nname: systematic-debugging\ndescription: '4-phase root cause debugging: understand bugs thoroughly before fixing them.'\n---\n# Systematic Debugging\n\n## Phase 1: Reproduce & Isolate\n- Observe exact symptoms, stack traces, and failure messages.\n- Use `run_command` to execute tests or reproduce issues.\n- Use `search_files` and `read_file` to locate the failure origin.\n\n## Phase 2: Root Cause Investigation\n- Formulate a testable hypothesis before editing code.\n- Verify variables, control flow, and data contracts.\n\n## Phase 3: Minimal Fix\n- Apply the most focused, targeted correction using `edit_file`.\n- Preserve existing coding conventions and contracts.\n\n## Phase 4: Verify & Regression Test\n- Run test suites using `run_command` to verify the fix works.\n- Verify that unrelated tests still pass.\n",
-        );
-    }
+    write_starter_skill(
+        dir,
+        "systematic-debugging",
+        "---\nname: systematic-debugging\ndescription: '4-phase root cause debugging: understand bugs thoroughly before fixing them.'\n---\n# Systematic Debugging\n\n## Phase 1: Reproduce & Isolate\n- Observe exact symptoms, stack traces, and failure messages.\n- Use `run_command` to execute tests or reproduce issues.\n- Use `search_files` and `read_file` to locate the failure origin.\n\n## Phase 2: Root Cause Investigation\n- Formulate a testable hypothesis before editing code.\n- Verify variables, control flow, and data contracts.\n\n## Phase 3: Minimal Fix\n- Apply the most focused, targeted correction using `edit_file`.\n- Preserve existing coding conventions and contracts.\n\n## Phase 4: Verify & Regression Test\n- Run test suites using `run_command` to verify the fix works.\n- Verify that unrelated tests still pass.\n",
+    );
 
-    let inspect_dir = dir.join("codebase-inspection");
-    let _ = std::fs::create_dir_all(&inspect_dir);
-    let inspect_file = inspect_dir.join("SKILL.md");
-    if !inspect_file.exists() {
-        let _ = std::fs::write(
-            inspect_file,
-            "---\nname: codebase-inspection\ndescription: 'Inspect project codebases, language distribution, architecture, and directory layout.'\n---\n# Codebase Inspection\n\n- Use `list_directory` to explore directory hierarchy and layout.\n- Use `search_files` to locate configurations, entry points, or specific functions.\n- Use `read_file` to inspect dependency manifests (`package.json`, `Cargo.toml`, etc.).\n- Use `run_command` to run non-destructive inspection tools (e.g. `git status`, test runners).\n",
-        );
-    }
+    write_starter_skill(
+        dir,
+        "codebase-inspection",
+        "---\nname: codebase-inspection\ndescription: 'Inspect project codebases, language distribution, architecture, and directory layout.'\n---\n# Codebase Inspection\n\n- Use `list_directory` to explore directory hierarchy and layout.\n- Use `search_files` to locate configurations, entry points, or specific functions.\n- Use `read_file` to inspect dependency manifests (`package.json`, `Cargo.toml`, etc.).\n- Use `run_command` to run non-destructive inspection tools (e.g. `git status`, test runners).\n",
+    );
 
-    let tdd_dir = dir.join("test-driven-development");
-    let _ = std::fs::create_dir_all(&tdd_dir);
-    let tdd_file = tdd_dir.join("SKILL.md");
-    if !tdd_file.exists() {
-        let _ = std::fs::write(
-            tdd_file,
-            "---\nname: test-driven-development\ndescription: 'Enforce test-driven development: verify tests before and after code changes.'\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
-        );
-    }
+    write_starter_skill(
+        dir,
+        "test-driven-development",
+        "---\nname: test-driven-development\ndescription: 'Enforce test-driven development: verify tests before and after code changes.'\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
+    );
 
-    let ponytail_dir = dir.join("ponytail");
-    let _ = std::fs::create_dir_all(&ponytail_dir);
-    let ponytail_file = ponytail_dir.join("SKILL.md");
-    if !ponytail_file.exists() {
-        let _ = std::fs::write(
-            ponytail_file,
-            "---\nname: ponytail\ndescription: 'Lazy senior dev mode: the smallest change that fully solves the task with minimal code and YAGNI.'\n---\n# Ponytail\n\nYou are a lazy senior developer. The best code is the code never written. You solve the whole problem with the least new code. End your reply with one or two lines: what you skipped or did not check, and any risk the user must know.\n\n## The smallest complete change\n1. Does it need to exist? Skip features, options and flexibility nobody asked for.\n2. Already in this codebase? Use it.\n3. Standard library or platform feature? Use it.\n4. An installed dependency? Use it. Never add a dependency for a few lines.\n5. Can it be one line a reader gets at a glance? One line.\n6. Otherwise: the minimum code that works.\n\nNever cut: validation at trust boundaries, error handling that prevents data loss, security, accessibility, anything the user asked for.\n",
-        );
-    }
+    write_starter_skill(
+        dir,
+        "ponytail",
+        include_str!("../../../.aether/skills/ponytail/SKILL.md"),
+    );
+    write_starter_skill(
+        dir,
+        "ponytail-audit",
+        include_str!("../../../.aether/skills/ponytail-audit/SKILL.md"),
+    );
+    write_starter_skill(
+        dir,
+        "ponytail-debt",
+        include_str!("../../../.aether/skills/ponytail-debt/SKILL.md"),
+    );
+    write_starter_skill(
+        dir,
+        "ponytail-gain",
+        include_str!("../../../.aether/skills/ponytail-gain/SKILL.md"),
+    );
+    write_starter_skill(
+        dir,
+        "ponytail-help",
+        include_str!("../../../.aether/skills/ponytail-help/SKILL.md"),
+    );
+    write_starter_skill(
+        dir,
+        "ponytail-review",
+        include_str!("../../../.aether/skills/ponytail-review/SKILL.md"),
+    );
 }
 
 pub fn init_skills_environment() {
@@ -592,6 +610,12 @@ mod tests {
             "systematic-debugging",
             "codebase-inspection",
             "test-driven-development",
+            "ponytail",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+            "ponytail-help",
+            "ponytail-review",
         ] {
             let path = root.join(name).join("SKILL.md");
             let markdown = std::fs::read_to_string(&path).unwrap();
@@ -608,6 +632,12 @@ mod tests {
             "systematic-debugging",
             "codebase-inspection",
             "test-driven-development",
+            "ponytail",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+            "ponytail-help",
+            "ponytail-review",
         ] {
             let skill = find_skill(&catalog, name).expect("generated starter must be discoverable");
             assert_eq!(Path::new(&skill.source), root);
@@ -1027,6 +1057,11 @@ mod tests {
             .join("SKILL.md")
             .exists());
         assert!(temp.join("ponytail").join("SKILL.md").exists());
+        assert!(temp.join("ponytail-audit").join("SKILL.md").exists());
+        assert!(temp.join("ponytail-debt").join("SKILL.md").exists());
+        assert!(temp.join("ponytail-gain").join("SKILL.md").exists());
+        assert!(temp.join("ponytail-help").join("SKILL.md").exists());
+        assert!(temp.join("ponytail-review").join("SKILL.md").exists());
         let _ = std::fs::remove_dir_all(&temp);
     }
 
@@ -1035,7 +1070,7 @@ mod tests {
         for path in default_skill_paths() {
             let lowered = path.to_ascii_lowercase();
             assert!(
-                !lowered.contains("hermes-agent"),
+                !lowered.contains("developer") && !lowered.contains("machine-specific"),
                 "hardcoded developer path leaked into defaults: {path}"
             );
             assert!(
