@@ -105,6 +105,7 @@ export function App() {
           onSelectSession={selectSession}
           onDeleteSession={agent.deleteSession}
           onRenameSession={agent.renameSession}
+          onAutoTitleSession={agent.generateSessionTitle}
           onTogglePinSession={agent.togglePinSession}
           onDeepSearch={agent.deepSearch}
           onOpenSearchResult={agent.openSearchResult}

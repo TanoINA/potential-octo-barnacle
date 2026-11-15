@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Download, Folder, FolderPlus, GitBranch, GitCommit, Layers, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
+import { Check, Download, Folder, FolderPlus, GitBranch, GitCommit, Layers, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, RefreshCw, Search, Settings, Sparkles, Trash2, X } from 'lucide-react';
 import type { DeepSearchResult, EffectiveRunConfig, Session, SessionActivity } from '../types/agent';
 import { AetherLogo } from './AetherLogo';
 
@@ -12,6 +12,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
+  onAutoTitleSession?: (id: string) => Promise<string | null | void>;
   onTogglePinSession?: (id: string) => void;
   onOpenSearchResult?: (result: DeepSearchResult) => Promise<boolean>;
   onDeepSearch?: (query: string) => Promise<DeepSearchResult[]>;
@@ -75,6 +76,7 @@ export const Sidebar = memo(function Sidebar({
   onSelectSession,
   onDeleteSession,
   onRenameSession,
+  onAutoTitleSession,
   onTogglePinSession,
   onDeepSearch,
   onOpenSearchResult,
@@ -299,6 +301,18 @@ export const Sidebar = memo(function Sidebar({
               </button>
             )}
             <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { setRenamingId(session.id); setRenameValue(session.title); setMenuId(null); }}><Pencil size={12} /> Rename</button>
+            {onAutoTitleSession && (
+              <button
+                type="button"
+                className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]"
+                onClick={() => {
+                  void onAutoTitleSession(session.id);
+                  setMenuId(null);
+                }}
+              >
+                <Sparkles size={12} /> Auto-generate title
+              </button>
+            )}
             <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'html'); setMenuId(null); }}><Download size={12} /> Export HTML (.html)</button>
             <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'markdown'); setMenuId(null); }}><Download size={12} /> Export Markdown</button>
             <button type="button" className="session-action rounded-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#a1a1aa]" onClick={() => { onExportSession(session.id, 'json'); setMenuId(null); }}><Download size={12} /> Export JSON</button>

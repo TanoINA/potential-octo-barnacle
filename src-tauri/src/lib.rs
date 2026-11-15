@@ -520,6 +520,22 @@ async fn read_session_artifact(
 async fn rename_session_summary(session_id: String, title: String) -> Result<Session, String> {
     storage::rename_session_summary(&session_id, &title).await
 }
+
+#[tauri::command]
+async fn generate_session_title(
+    session_id: String,
+    provider: agent::types::ProviderConfig,
+    prompt: String,
+    response_snippet: Option<String>,
+) -> Result<String, String> {
+    let title = agent::runner::generate_title_with_provider(&provider, &prompt, response_snippet.as_deref()).await?;
+    let cleaned = agent::runner::clean_generated_title(&title);
+    if cleaned.is_empty() {
+        return Err("Generated title was empty".into());
+    }
+    let renamed = storage::rename_session_summary(&session_id, &cleaned).await?;
+    Ok(renamed.title)
+}
 #[tauri::command]
 async fn save_session(data: SessionData) -> Result<(), String> {
     storage::save_session(data).await
@@ -1466,6 +1482,7 @@ pub fn run() {
             read_session_artifact,
             read_message_image_inputs,
             rename_session_summary,
+            generate_session_title,
             save_session,
             checkpoint_session,
             checkpoint_session_delta,

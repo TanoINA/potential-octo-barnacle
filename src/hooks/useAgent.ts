@@ -1155,6 +1155,49 @@ export function useAgent() {
           live.messageId = null;
           finishRun(live, outcome);
           void refreshGitStatus();
+
+          // Auto-generate topic title after first completed turn
+          const userMsgs = live.data.messages.filter((m) => m.role === 'user');
+          if (
+            userMsgs.length === 1 &&
+            !payload.data.cancelled &&
+            payload.data.successful !== false &&
+            !live.failed
+          ) {
+            const firstUser = userMsgs[0];
+            const firstAssistant = live.data.messages.find(
+              (m) => m.role === 'assistant' && (m.content || m.preamble || '').trim()
+            );
+            const promptText = (firstUser.content || '').trim();
+            const replySnippet = (firstAssistant?.content || firstAssistant?.preamble || '').trim().slice(0, 300);
+            const currentProvider = resolveEffective(settingsRef.current, live.data.modelOverride)?.provider;
+            const sid = live.data.session.id;
+
+            if (promptText && currentProvider) {
+              void invoke<string>('generate_session_title', {
+                sessionId: sid,
+                provider: currentProvider,
+                prompt: promptText,
+                responseSnippet: replySnippet || undefined,
+              }).then((newTitle) => {
+                if (newTitle && typeof newTitle === 'string' && newTitle.trim()) {
+                  const cleanTitle = newTitle.trim();
+                  mutate((curr) => {
+                    if (curr.session.id === sid) {
+                      return {
+                        ...curr,
+                        session: { ...curr.session, title: cleanTitle },
+                      };
+                    }
+                    return curr;
+                  });
+                  void refreshSessions();
+                }
+              }).catch(() => {
+                // Non-blocking fallback: keeps original prompt snippet
+              });
+            }
+          }
           break;
         }
       }
@@ -1836,6 +1879,45 @@ export function useAgent() {
       if (navigationRef.current === navigation) setLastError('Could not rename session: ' + String(error));
     }
   }, [mutateData, persistData, refreshSessions, refreshNativeWindow, flushPending]);
+
+  const generateSessionTitle = useCallback(async (sessionId?: string) => {
+    const sid = sessionId || sessionIdRef.current;
+    if (!sid) return null;
+    const targetData = sid === sessionIdRef.current ? dataRef.current : liveSessionsRef.current.get(sid)?.data;
+    if (!targetData) return null;
+    const firstUser = targetData.messages.find((m) => m.role === 'user');
+    const firstAssistant = targetData.messages.find(
+      (m) => m.role === 'assistant' && (m.content || m.preamble || '').trim()
+    );
+    if (!firstUser) return null;
+    const promptText = (firstUser.content || '').trim();
+    const replySnippet = (firstAssistant?.content || firstAssistant?.preamble || '').trim().slice(0, 300);
+    const provider = resolveEffective(settingsRef.current, targetData.modelOverride)?.provider;
+    if (!provider || !promptText) return null;
+
+    try {
+      const newTitle = await invoke<string>('generate_session_title', {
+        sessionId: sid,
+        provider,
+        prompt: promptText,
+        responseSnippet: replySnippet || undefined,
+      });
+      if (newTitle && typeof newTitle === 'string' && newTitle.trim()) {
+        const cleanTitle = newTitle.trim();
+        const origin = liveSessionsRef.current.get(sid);
+        if (origin) {
+          mutateData((current) => ({ ...current, session: { ...current.session, title: cleanTitle } }), origin);
+        } else if (sid === sessionIdRef.current) {
+          mutateData((current) => ({ ...current, session: { ...current.session, title: cleanTitle } }));
+        }
+        await refreshSessions();
+        return cleanTitle;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }, [mutateData, refreshSessions]);
 
   const togglePinSession = useCallback(async (sessionId: string) => {
     const navigation = navigationRef.current;
@@ -2550,6 +2632,7 @@ export function useAgent() {
     switchSession,
     deleteSession,
     renameSession,
+    generateSessionTitle,
     togglePinSession,
     exportSession,
     clearCurrentSession,

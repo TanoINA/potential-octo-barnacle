@@ -10,7 +10,7 @@ use super::tools::{execute_tool, get_agent_tools, ToolContext, ToolEvent, ToolEx
 use super::types::{
     AgentEvent, AgentRunRequest, Artifact, ArtifactEventData, ChatMessage, CouncilChunkData,
     CouncilDoneData, DoneEventData, ErrorEventData, ExecutionMode, MicroCompactionEvent,
-    NoticeEventData, ProviderConfig, ReviewConfig, SkillActivatedEventData, SkillInfo,
+    NoticeEventData, ProviderConfig, ReasoningEffort, ReviewConfig, SkillActivatedEventData, SkillInfo,
     StreamEventData, SubagentEventData, SubagentProgress, TerminalEventData, ToolCallItem,
     ToolEventData,
 };
@@ -2977,11 +2977,119 @@ fn redact_provider_error(mut error: String, provider: &ProviderConfig) -> String
     error
 }
 
+pub fn clean_generated_title(raw: &str) -> String {
+    let mut title = raw.trim();
+    if let Some(rest) = title.strip_prefix("Title:") {
+        title = rest.trim();
+    }
+    if let Some(rest) = title.strip_prefix("Topic:") {
+        title = rest.trim();
+    }
+    if let Some(rest) = title.strip_prefix("Judul:") {
+        title = rest.trim();
+    }
+    title = title.trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '*' || c == '#');
+    title = title.trim_end_matches(|c| c == '.' || c == ':' || c == ';').trim();
+    if title.is_empty() {
+        return String::new();
+    }
+    if title.chars().count() > 50 {
+        let mut truncated = title.chars().take(47).collect::<String>();
+        truncated.push_str("...");
+        truncated
+    } else {
+        title.to_string()
+    }
+}
+
+pub async fn generate_title_with_provider(
+    provider: &ProviderConfig,
+    prompt: &str,
+    response_snippet: Option<&str>,
+) -> Result<String, String> {
+    let cancel = CancellationToken::new();
+    let prompt_sample: String = prompt.chars().take(500).collect();
+    let snippet_part = match response_snippet {
+        Some(snip) if !snip.trim().is_empty() => {
+            let s: String = snip.chars().take(300).collect();
+            format!("\nAssistant response: {s}")
+        }
+        _ => String::new(),
+    };
+    let instruction = format!(
+        "Summarize this conversation into a short, descriptive topic title of 2 to 5 words.\n\
+        Rules:\n\
+        - Return ONLY the title text on a single line, nothing else.\n\
+        - Do not use quotes, punctuation, or markdown formatting.\n\
+        - Keep it concise and specific.\n\n\
+        User message: {prompt_sample}{snippet_part}"
+    );
+
+    let messages = serde_json::json!([
+        {"role": "user", "content": instruction}
+    ]);
+    let tools = serde_json::json!([]);
+    let options = CompletionOptions {
+        thinking: false,
+        reasoning_effort: ReasoningEffort::Low,
+        temperature: 0.3,
+        max_tokens: Some(30),
+        stream: false,
+    };
+
+    let mut provider_clean = provider.clone();
+    provider_clean.extra_body.remove("messages");
+    provider_clean.extra_body.remove("tools");
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        stream_chat_completion(
+            &provider_clean,
+            &messages,
+            &tools,
+            &options,
+            |_| {},
+            |_| {},
+            |_| {},
+            cancel,
+        ),
+    )
+    .await
+    .map_err(|_| "Title generation timed out".to_string())?
+    .map_err(|e| format!("Title generation failed: {e}"))?;
+
+    let cleaned = clean_generated_title(&result.content);
+    if cleaned.is_empty() {
+        Err("Model returned an empty title".into())
+    } else {
+        Ok(cleaned)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::skills::workspace_skill_paths;
     use super::super::types::{ProviderKind, ReasoningEffort};
     use super::*;
+
+    #[test]
+    fn clean_generated_title_sanitizes_correctly() {
+        assert_eq!(clean_generated_title("Warhammer 40k Secret Level"), "Warhammer 40k Secret Level");
+        assert_eq!(clean_generated_title("\"Warhammer 40k: Secret Level\""), "Warhammer 40k: Secret Level");
+        assert_eq!(clean_generated_title("Title: Notasi Asimtotik Algoritma."), "Notasi Asimtotik Algoritma");
+        assert_eq!(clean_generated_title("Topic: Dijkstra Shortest Path:"), "Dijkstra Shortest Path");
+        assert_eq!(clean_generated_title("Judul: Analisis Kompleksitas"), "Analisis Kompleksitas");
+        assert_eq!(clean_generated_title("**React Virtualization Performance**"), "React Virtualization Performance");
+        assert_eq!(clean_generated_title("`Database Indexing Optimization`"), "Database Indexing Optimization");
+        assert_eq!(clean_generated_title("   "), "");
+        assert_eq!(clean_generated_title("..."), "");
+        assert_eq!(clean_generated_title(":::"), "");
+        // Length clamping check
+        let long_title = "This is a very long title that exceeds fifty characters and should be clamped properly";
+        let cleaned = clean_generated_title(long_title);
+        assert!(cleaned.len() <= 50);
+        assert!(cleaned.ends_with("..."));
+    }
 
     #[tokio::test]
     async fn selected_skills_reach_latest_provider_user_without_mutating_display_or_images() {

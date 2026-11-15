@@ -131,3 +131,25 @@ it('removes the run surface when the viewed conversation is cleared', async () =
  await act(async () => {hook.result.current.clearCurrentSession();});
  expect(hook.result.current.runStatus).toBeNull();
 });
+
+it('automatically generates a session topic title after the first completed turn', async () => {
+ const hook = renderHook(useAgent);
+ await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ const original = mocks.invoke.getMockImplementation()!;
+ mocks.invoke.mockImplementation(async (name: string, args: any) => {
+  if (name === 'generate_session_title') return 'Dijkstra Shortest Path';
+  return original(name, args);
+ });
+
+ await act(async () => { await hook.result.current.sendMessage('please explain dijkstra algorithm'); });
+ const scope = { sessionId: 'origin', runId: hook.result.current.messages.at(-1)!.runId! };
+
+ act(() => event({ type: 'stream', data: { ...scope, content: 'Dijkstra finds the shortest path.' } }));
+ await act(async () => { event({ type: 'done', data: { ...scope, cancelled: false, successful: true } }); });
+
+ await waitFor(() => expect(hook.result.current.sessionTitle).toBe('Dijkstra Shortest Path'));
+ expect(mocks.invoke).toHaveBeenCalledWith('generate_session_title', expect.objectContaining({
+  sessionId: 'origin',
+  prompt: 'please explain dijkstra algorithm',
+ }));
+});
