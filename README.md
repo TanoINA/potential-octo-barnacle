@@ -1,58 +1,84 @@
 # AetherAgent
 
-A desktop coding agent for Windows and Linux. Work with an AI model on a local codebase: read and edit files, run commands, and review the results in chat.
+A desktop AI coding agent for Windows and Linux. You give it a folder on your machine, pick a model, and talk to it in chat. It can read and edit files, run shell commands, search the web, and render HTML previews in a sandbox pane.
 
-Built with Rust, Tauri 2, React, and TypeScript. Still in development.
+The backend is written in Rust using Tauri 2. The frontend is a React single-page app with TypeScript and Tailwind CSS.
 
 ## Features
 
-- File editing, code search, and command execution in your workspace
-- Image attachments, skills, MCP servers, and subagents
-- Multiple chats with prompt queues and per-chat run status
-- Saved conversations and context compaction
+- Local workspace tools: read, patch, create files, grep code, and execute terminal commands.
+- Live sandboxed preview: renders HTML and SVG artifacts in an isolated iframe.
+- Web search: searches the web and pulls page text directly into context when you need docs or external fixes.
+- Context mentions: type `@` in the composer to drop workspace files into context pills.
+- Auto-titling: automatically names new chat sessions after the first response.
+- Multiple providers: works with Anthropic, OpenAI, Ollama, Groq, OpenRouter, or any OpenAI-compatible API.
+- Extensibility: supports Model Context Protocol (MCP) servers, background subagents, and modular skills.
+- Local storage: conversations, prompt queues, and compaction summaries stay on your disk.
 
-## Getting started
+## Requirements
 
-Install Node.js 22.12+, Rust stable, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+- Node.js 22.12 or newer
+- Rust stable
+- [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/) for your operating system
+
+## Quick start
+
+Clone the repo and install dependencies:
 
 ```sh
 git clone https://github.com/TanoINA/potential-octo-barnacle.git
 cd potential-octo-barnacle
 npm ci
+```
+
+Run the desktop app in development mode:
+
+```sh
 npm run tauri -- dev
 ```
 
-Open Settings to configure your model provider, then choose a workspace.
+Open Settings, choose an LLM provider (or point to local Ollama), pick a workspace folder, and start chatting.
 
-## Build
+## Packaging
 
 ```sh
-# Windows: EXE and MSI installers
+# Windows: NSIS setup and MSI installers
 npm run tauri -- build --bundles nsis,msi -- --locked
 
 # Linux: DEB, RPM, and AppImage packages
 npm run tauri -- build --bundles deb,rpm,appimage -- --locked
 ```
 
-Build on the target OS. The executable is in `src-tauri/target/release/`; installers are under `src-tauri/target/release/bundle/`. Linux compatibility depends on the build distro.
+Binaries are placed in `src-tauri/target/release/`, and installer packages in `src-tauri/target/release/bundle/`. Local builds are unsigned. Details on signing and updates are in [docs/release.md](docs/release.md).
 
-Local builds are unsigned by default. Signing and in-app update setup are covered in the [release guide](docs/release.md).
-
-## Development
-
-- `src/` — React UI and frontend tests
-- `src-tauri/` — Rust agent runtime, tools, and storage
-- `scripts/` — development and release scripts
-- `rune/` — experimental native UI, separate from the Tauri app
+## Development and testing
 
 ```sh
+# Frontend unit tests
 npm test
+
+# Frontend build check
 npm run build
+
+# Backend unit tests
 cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
 ```
 
-Local app data lives in `~/.aether-agent/`. Attachments can also use `.aether-agent/` inside a workspace. These folders and the build archives in `.local/` are excluded from Git.
+### Directory layout
+
+- `src/`: React UI, hooks, and test suites
+- `src-tauri/`: Rust runtime, Tauri commands, agent loop, tools, and SQLite storage
+- `scripts/`: Dev scripts and release checks
+- `docs/`: Architecture, conversation flow, and release guides
+
+## Data and privacy
+
+App configuration, keys, and session databases are stored in `~/.aether-agent/`. Workspace attachments stay inside `.aether-agent/` in the opened project folder. None of these folders or `.local/` build files are tracked by Git.
 
 ## Documentation
 
-[Architecture](docs/ARCHITECTURE.md) · [Chat and workflow](docs/conversation-ux.md) · [Releases](docs/release.md) · [All docs](docs/README.md) · [Changelog](CHANGELOG.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Conversation UX](docs/conversation-ux.md)
+- [Release guide](docs/release.md)
+- [Documentation index](docs/README.md)
+- [Changelog](CHANGELOG.md)
