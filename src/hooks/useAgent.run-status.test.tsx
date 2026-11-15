@@ -144,7 +144,7 @@ it('automatically generates a session topic title after the first completed turn
  await act(async () => { await hook.result.current.sendMessage('please explain dijkstra algorithm'); });
  const scope = { sessionId: 'origin', runId: hook.result.current.messages.at(-1)!.runId! };
 
- act(() => event({ type: 'stream', data: { ...scope, content: 'Dijkstra finds the shortest path.' } }));
+ act(() => event({ type: 'chunk', data: { ...scope, text: 'Dijkstra finds the shortest path.' } }));
  await act(async () => { event({ type: 'done', data: { ...scope, cancelled: false, successful: true } }); });
 
  await waitFor(() => expect(hook.result.current.sessionTitle).toBe('Dijkstra Shortest Path'));
