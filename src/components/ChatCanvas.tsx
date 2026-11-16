@@ -317,32 +317,42 @@ interface QueuedPrompt {
 const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
 type QueueSessionId = QueuedPrompt['sessionId'];
 
+function getModelContextWindow(modelName?: string): number {
+  if (!modelName) return 128_000;
+  const m = modelName.toLowerCase();
+  if (m.includes('gemini-1.5') || m.includes('gemini-2.0') || m.includes('gemini-exp')) return 1_000_000;
+  if (m.includes('claude-3') || m.includes('claude-sonnet') || m.includes('claude-opus')) return 200_000;
+  if (m.includes('o1') || m.includes('o3') || m.includes('gpt-4o')) return 128_000;
+  if (m.includes('deepseek')) return 128_000;
+  if (m.includes('qwen')) return 32_768;
+  if (m.includes('llama-3.1') || m.includes('llama-3.2') || m.includes('llama-3.3')) return 128_000;
+  if (m.includes('llama-3') || m.includes('llama-2')) return 8_192;
+  return 128_000;
+}
+
 function estimateSessionTokens(messages: ChatMessage[]): number {
   let charCount = 0;
   let imageTokens = 0;
   for (const msg of messages) {
-    if (msg.content) charCount += msg.content.length;
+    if (msg.content) {
+      charCount += msg.content.length;
+    } else if (msg.segments) {
+      for (const seg of msg.segments) {
+        if (seg.text) charCount += seg.text.length;
+      }
+    }
     if (msg.reasoning) charCount += msg.reasoning.length;
     if (msg.preamble) charCount += msg.preamble.length;
     if (msg.imageInputs) imageTokens += msg.imageInputs.length * 1600;
-    if (msg.toolCalls) {
-      for (const tc of msg.toolCalls) {
-        if (tc.result) charCount += tc.result.length;
-        if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
-        else if (tc.args) charCount += JSON.stringify(tc.args).length;
-      }
-    }
-    if (msg.segments) {
-      for (const seg of msg.segments) {
-        if (seg.text) charCount += seg.text.length;
-        if (seg.toolCalls) {
-          for (const tc of seg.toolCalls) {
-            if (tc.result) charCount += tc.result.length;
-            if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
-            else if (tc.args) charCount += JSON.stringify(tc.args).length;
-          }
-        }
-      }
+
+    const toolCalls = msg.toolCalls?.length
+      ? msg.toolCalls
+      : msg.segments?.flatMap((s) => s.toolCalls ?? []) ?? [];
+
+    for (const tc of toolCalls) {
+      if (tc.result) charCount += tc.result.length;
+      if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
+      else if (tc.args) charCount += JSON.stringify(tc.args).length;
     }
   }
   return Math.ceil(charCount / 4) + imageTokens;
@@ -1199,9 +1209,9 @@ export function ChatCanvas({
   const contextUsage = useMemo(() => {
     if (!messages || messages.length === 0) return null;
     const usedTokens = estimateSessionTokens(messages);
-    const maxTokens = 128_000;
+    const maxTokens = getModelContextWindow(effectiveConfig?.provider?.model);
     return { usedTokens, maxTokens };
-  }, [messages]);
+  }, [messages, effectiveConfig?.provider?.model]);
 
   useLayoutEffect(() => {
     jumpSettleRef.current?.correct();
@@ -2330,6 +2340,7 @@ export function ChatCanvas({
           status={isHistoryPreview ? null : runStatus}
           onCancelPreparation={onStop}
           contextUsage={contextUsage}
+          onCompact={onCompactSession}
         />
         <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
           {selectedSkills.length > 0 && (

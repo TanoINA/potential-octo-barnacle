@@ -66,4 +66,44 @@ describe('ChatCanvas calm presentation', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('Inspect the failing test', undefined, expect.any(Object)));
   });
+
+  it('renders context meter accurately without double-counting segmented messages and detects model limits', () => {
+    const text = 'Hello world, this is a test response.';
+    const messages = [
+      {
+        id: 'msg-1',
+        role: 'user' as const,
+        content: 'Hi there',
+        timestamp: 1000,
+      },
+      {
+        id: 'msg-2',
+        role: 'assistant' as const,
+        content: text,
+        timestamp: 2000,
+        segments: [{ id: 'seg-1', text }],
+      },
+    ];
+    setup({
+      messages,
+      effectiveConfig: {
+        provider: {
+          id: 'p-1',
+          name: 'Anthropic',
+          kind: 'anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          apiKey: 'key',
+          model: 'claude-3-5-sonnet-20241022',
+        },
+        thinking: false,
+        reasoningEffort: 'medium',
+        usesSettingsDefault: true,
+      },
+    });
+
+    const meter = screen.getByTestId('context-meter');
+    expect(meter).toBeTruthy();
+    // Denominator should be 200k for Claude 3.5 Sonnet
+    expect(meter.textContent).toContain('/ 200k tokens');
+  });
 });

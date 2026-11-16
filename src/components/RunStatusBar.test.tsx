@@ -38,4 +38,15 @@ it('renders context meter accurately with token counts and percentage', () => {
  render(<RunStatusBar contextUsage={{ usedTokens: 18400, maxTokens: 128000 }} />);
  expect(screen.getByTestId('context-meter')).toBeTruthy();
  expect(screen.getByText('18.4k / 128k tokens (14%)')).toBeTruthy();
+ expect(screen.queryByRole('button', { name: 'Compact' })).toBeNull();
+});
+
+it('renders context meter over 100% without clamping percentage and offers compact button', () => {
+ const compact = vi.fn();
+ render(<RunStatusBar contextUsage={{ usedTokens: 210500, maxTokens: 128000 }} onCompact={compact} />);
+ expect(screen.getByText('210.5k / 128k tokens (164%)')).toBeTruthy();
+ const compactBtn = screen.getByRole('button', { name: 'Compact' });
+ expect(compactBtn).toBeTruthy();
+ compactBtn.click();
+ expect(compact).toHaveBeenCalledOnce();
 });

@@ -24,10 +24,12 @@ export const RunStatusBar = memo(function RunStatusBar({
   status,
   onCancelPreparation,
   contextUsage,
+  onCompact,
 }: {
   status?: RunStatus | null;
   onCancelPreparation?: () => void;
   contextUsage?: ContextUsageInfo | null;
+  onCompact?: () => void | Promise<void>;
 }) {
   const [now, setNow] = useState(Date.now);
   const active = Boolean(status && !status.endedAt);
@@ -93,26 +95,37 @@ export const RunStatusBar = memo(function RunStatusBar({
 
       {hasContextMeter && contextUsage && (() => {
         const { usedTokens, maxTokens } = contextUsage;
-        const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+        const rawPct = Math.round((usedTokens / maxTokens) * 100);
+        const barPct = Math.min(100, rawPct);
         const formatK = (n: number) => {
           if (n >= 1000000) return n % 1000000 === 0 ? `${n / 1000000}m` : `${(n / 1000000).toFixed(1)}m`;
           if (n >= 1000) return n % 1000 === 0 ? `${n / 1000}k` : `${(n / 1000).toFixed(1)}k`;
           return `${n}`;
         };
-        const color = pct >= 80 ? 'text-[#f85149] font-medium' : pct >= 60 ? 'text-[#d29922]' : 'text-[#8b949e]';
-        const barColor = pct >= 80 ? 'bg-[#f85149]' : pct >= 60 ? 'bg-[#d29922]' : 'bg-[#58a6ff]';
-        const meterText = `${formatK(usedTokens)} / ${formatK(maxTokens)} tokens (${pct}%)`;
+        const color = rawPct >= 80 ? 'text-[#f85149] font-medium' : rawPct >= 60 ? 'text-[#d29922]' : 'text-[#8b949e]';
+        const barColor = rawPct >= 80 ? 'bg-[#f85149]' : rawPct >= 60 ? 'bg-[#d29922]' : 'bg-[#58a6ff]';
+        const meterText = `${formatK(usedTokens)} / ${formatK(maxTokens)} tokens (${rawPct}%)`;
 
         return (
           <div
             className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-[#8b949e]"
-            title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${pct}%)${pct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
+            title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${rawPct}%)${rawPct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
             data-testid="context-meter"
           >
             <span className="w-12 h-1.5 rounded-full bg-[#21262d] overflow-hidden inline-flex border border-[#30363d]/50">
-              <span className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+              <span className={`h-full ${barColor}`} style={{ width: `${barPct}%` }} />
             </span>
             <span className={color}>{meterText}</span>
+            {rawPct >= 80 && onCompact && (
+              <button
+                type="button"
+                onClick={onCompact}
+                className="ml-0.5 text-[10px] px-1.5 py-0.5 rounded border border-[#f85149]/40 bg-[#f85149]/10 text-[#f85149] hover:bg-[#f85149]/20 transition-colors"
+                title="Compact session context"
+              >
+                Compact
+              </button>
+            )}
           </div>
         );
       })()}
