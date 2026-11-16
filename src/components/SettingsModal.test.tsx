@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { AgentSettings, SkillInfo } from '../types/agent';
 import { SettingsModal } from './SettingsModal';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../utils/audioChime', () => ({ playTaskCompleteChime: vi.fn() }));
 
 const baseSettings: AgentSettings = {
@@ -232,5 +234,124 @@ describe('SettingsModal keyboard navigation', () => {
     expect(document.activeElement).toBe(integrations);
     expect(integrations.getAttribute('tabindex')).toBe('0');
     expect(providers.getAttribute('tabindex')).toBe('-1');
+  });
+});
+
+describe('SettingsModal enhanced features', () => {
+  it('toggles API key visibility between password and text', () => {
+    render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
+    const apiKeyInput = screen.getByPlaceholderText('Leave empty for local providers') as HTMLInputElement;
+    expect(apiKeyInput.type).toBe('password');
+
+    const toggleButton = screen.getByRole('button', { name: 'Show API key' });
+    fireEvent.click(toggleButton);
+    expect(apiKeyInput.type).toBe('text');
+
+    const hideButton = screen.getByRole('button', { name: 'Hide API key' });
+    fireEvent.click(hideButton);
+    expect(apiKeyInput.type).toBe('password');
+  });
+
+  it('tests provider connection and displays discovery result', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'fetch_provider_models') return ['gpt-4o', 'gpt-4o-mini'];
+      return [];
+    });
+
+    render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
+    const testButton = screen.getByRole('button', { name: 'Test connection' });
+    fireEvent.click(testButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Connection successful: 2 model\(s\) discovered/i)).toBeTruthy();
+    });
+  });
+
+  it('loads provider presets into the current form', () => {
+    render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
+    const presetSelect = screen.getByRole('combobox', { name: 'Load provider preset' }) as HTMLSelectElement;
+    fireEvent.change(presetSelect, { target: { value: 'anthropic' } });
+
+    const baseUrlInput = screen.getByDisplayValue('https://api.anthropic.com') as HTMLInputElement;
+    expect(baseUrlInput).toBeTruthy();
+  });
+
+  it('configures default execution mode and resets agent defaults', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
+
+    const modeSelect = screen.getByRole('combobox', { name: 'Default execution mode' }) as HTMLSelectElement;
+    expect(modeSelect.value).toBe('turbo');
+
+    fireEvent.change(modeSelect, { target: { value: 'auto' } });
+    expect(modeSelect.value).toBe('auto');
+
+    const resetButton = screen.getByRole('button', { name: 'Reset to defaults' });
+    fireEvent.click(resetButton);
+    expect(modeSelect.value).toBe('turbo');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].executionMode).toBe('turbo');
+  });
+
+  it('browses folder to add a new skill root path', async () => {
+    vi.mocked(open).mockResolvedValue('D:/custom/my-skills');
+
+    render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills & MCP' }));
+
+    const browseBtn = screen.getByRole('button', { name: 'Browse folder' });
+    fireEvent.click(browseBtn);
+
+    await waitFor(() => {
+      const textarea = screen.getByPlaceholderText('D:\\path\\to\\skills') as HTMLTextAreaElement;
+      expect(textarea.value).toContain('D:/custom/my-skills');
+    });
+  });
+
+  it('tests MCP server and reports discovered tools', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'list_mcp_tools') return [{ name: 'tool_one' }, { name: 'tool_two' }];
+      return [];
+    });
+
+    const settingsWithMcp: AgentSettings = {
+      ...baseSettings,
+      mcpServers: [{
+        id: 'test-mcp',
+        name: 'Mock MCP',
+        command: 'node',
+        args: ['server.js'],
+        env: {},
+        enabled: true,
+      }],
+    };
+
+    render(<SettingsModal settings={settingsWithMcp} onSave={vi.fn()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills & MCP' }));
+
+    const testServerBtn = screen.getByRole('button', { name: 'Test server' });
+    fireEvent.click(testServerBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Ready: 2 tool\(s\) discovered/i)).toBeTruthy();
+    });
+  });
+
+  it('guards against accidental backdrop click when dirty', () => {
+    const onClose = vi.fn();
+    const { container } = render(<SettingsModal settings={baseSettings} onSave={vi.fn()} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
+
+    const tempInput = screen.getByDisplayValue('0.7');
+    fireEvent.change(tempInput, { target: { value: '1.2' } });
+
+    const backdrop = container.firstChild as HTMLElement;
+    fireEvent.mouseDown(backdrop);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText('You have unsaved changes. Click Save changes or Cancel.')).toBeTruthy();
   });
 });
