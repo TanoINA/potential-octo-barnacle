@@ -1,36 +1,40 @@
 # Changelog
 
-## Unreleased
+All notable changes to AetherAgent are documented here.
 
-- Structured skill picker and per-turn skill context, preserved through queue, Undo, Retry, and Council runs.
-- Queued prompt send-now/edit/remove controls and per-chat Running/Saving/Completed/Stopped/Failed indicators.
-- Main/subagent activity grouping, separate failure counts, and proportionate execution guidance.
-- Safe reveal-in-file-manager fallback for blocked local executable links, with visible failures.
-- Repository cleanup: local builds/evidence under ignored `.local/`, historical reports under `docs/archive/`, and binaries removed from the source tree without rewriting Git history.
-- Windows release-pipeline fixtures resolve the real TEMP path before strict alias checks.
+## [Unreleased]
 
-## 0.3.0
+### Added
+- **Web search improvements**: Domain scoping (`site:...`), direct page text extraction via `fetch_content`, instant-answer fallbacks, source chips in chat, and a `/search` slash command.
+- **Interactive questions**: An `ask_question` tool that renders multi-choice prompt cards directly in chat when the agent needs clarification.
+- **Auto-titling**: Sessions are automatically named after the first model response, with manual renames protected and `/title` available on demand.
+- **Context meter**: A visual gauge in the composer showing estimated context window usage.
+- **In-chat search**: In-session search (`Ctrl+F`) with match highlighting and keyboard navigation.
+- **Sidebar pinning**: Pin important chat sessions to the top of the sidebar.
+- **New slash commands**: Added `/goal` for unattended task runs and `/grill-me` for design alignment interviews.
+- **Settings enhancements**: Provider setup improvements, agent defaults, live MCP server connection testing, and dirty guards for unsaved changes.
 
-### Desktop and conversation UX
-- Simplified static Aether logo, empty state, sidebar hierarchy, composer, menus, plans and modal surfaces; finite motion with reduced-motion support.
-- Lazy optional panels with local error boundaries, accessible focus management and non-blocking chat startup.
-- Screenshot/paste/drop image attachment previews, native image validation, provider-specific multimodal payloads and actionable text-only model errors.
-- Academic Markdown mathematics using remark-math/rehype-katex and local KaTeX assets, with prose/currency/code regressions covered.
-- Scoped search/navigation, context-menu and task/status affordance fixes; regression tests for command, council and plan interactions.
+### Fixed & Improved
+- **Concurrent MCP startup**: MCP servers now initialize concurrently at launch rather than sequentially.
+- **SQLite WAL mode**: Enabled Write-Ahead Logging and busy timeouts for smoother database read and write concurrency.
+- **Session cleanup**: Deleting a session now cancels its active background tasks and cleans up task tracking.
+- **Session titles**: Manually edited session names are flagged so auto-titling will not overwrite them.
+- **Environment file parsing**: Improved `.env` parser to cleanly handle Windows CRLF line endings and escaped characters.
+- **Search performance**: Added limits and pagination to SQLite full-text search queries.
+- **Codebase cleanup**: Modularized the chat header into a dedicated component and cached compiled regexes in tools.
+- **Documentation**: Refined and simplified guides across the repository for clearer developer onboarding and release procedures.
 
-### History, performance and persistence
-- Indexed bounded session pages, older-message loading and virtualized scroll anchors without truncating persisted history or provider context.
-- Immutable committed baselines, native revision acknowledgement/rebinding, run-scoped delta checkpoints and append journals protect history from stale and competing saves.
-- Bounded byte-aware session caching, idle index maintenance and local-only session load samples.
-- Reduced streaming publication and Markdown reparsing on unrelated updates; preserved task/artifact navigation without forcing panes open.
+## [0.3.0] - 2026-11-09
 
-### Agent safety and skill maintenance
-- Phase-scoped self-improvement review with configurable cadence, provider, destination and approval flow; exact linked-file inspection and staged proposal diffs.
-- Update-first skill maintenance with scoped discovery, conflict checks and preserved metadata; no synthetic write success or escalation from review into unrestricted tools.
-- Native workspace/path, task lifecycle, provider, image and persistence hardening plus isolated diagnostic/smoke-test foundations.
+### Added
+- **Session history pagination**: Large sessions load lazily with virtualized scroll anchors, keeping initial load times fast without truncating disk history or context.
+- **Self-improvement reviews**: Native Rust review loop that inspects completed sessions and patches or creates local skills, with optional user approval.
+- **Multimodal attachments**: Native image pickers, drag-and-drop, clipboard paste, and image previews with provider-specific payload formatting.
+- **LaTeX math support**: Clean math rendering using remark-math and KaTeX for inline and block formulas.
+- **Queue and controls**: Prompt queue with immediate send, editing, and removal controls, plus per-session status indicators.
+- **Offline release verification**: Tools to verify Windows Authenticode signatures, minisign updater signatures, and SHA-256 hashes before installation.
 
-### Release foundation
-- Synchronized exact product version 0.3.0 and compile-time UTC/git/dirty build identity; About displays platform, architecture, genuine task-log location and bounded local load diagnostics.
-- Native official Tauri signed updater integration, public HTTPS/no-credential URL policy, strict newer-version gating, signed artifact-version binding, signature checks and explicit install confirmation.
-- Automatic updates remain disabled unless a valid build-time endpoint and Ed25519 public key are configured. Installer signing is reported as unknown unless genuinely verified; no invented publisher or signing identity.
-- Opt-in signed release script, SHA-256 plus pinned trusted Authenticode offline verifier, retained artifact records and explicit manual rollback procedure. No automatic downgrade, URL-based installer execution or claimed public deployment.
+### Changed
+- Refined the UI layout: simplified header hierarchy, cleaner composer footer, and reduced motion options.
+- Switched session persistence to atomic replacement writes with recovery checkpoint sidecars.
+- Hardened tool execution against directory traversal and symlink escapes.
