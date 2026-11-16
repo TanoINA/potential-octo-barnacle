@@ -1,81 +1,78 @@
 # Self-Improvement Review
 
-## Reference and scope
-
-Aether uses a tool-driven post-turn skill-review agent running natively in Rust/Tauri, transitioning away from one-shot JSON extraction into an autonomous multi-step reflection loop.
-
-This architecture implements durable skill reviews, self-improvement proposal staging, and guarded filesystem mutations.
+After a conversation turn finishes, Aether can review what happened and refine local skills. The reviewer runs as a native agent loop in Rust, inspecting the session history and using dedicated tools to patch, update, or create skills.
 
 ## Runtime behavior
 
-- Automatic skill review defaults to enabled for fresh or missing-field settings. An existing explicit `self_improvement_enabled: false` is preserved.
-- `reviewConfig.creationNudgeInterval` defaults to **10 provider iterations**, accumulated across foreground turns in the same session—not ten tool calls or ten successful runs. Zero disables automatic cadence.
-- Iterations count once per outer provider loop, not per retry or individual tool. Attempted skill mutations reset cadence. Reaching the interval consumes/resets the counter before checking eligibility.
-- Eligible reviews start after delivery of a finished, uncancelled, nonempty final response. Runs that already produced foreground skill changes report those changes without launching another review of the same run.
-- `/review`, `/reflect`, and bare `/refine` explicitly review the full completed conversation even when automatic review is disabled. They do not insert a user message or restart the original task. A workspace is not required.
-- Review runs are independent from chat history and bounded to **16 iterations and 120 seconds**. They cannot recursively trigger reviews. Partial applied/staged changes are reported even if a later request fails or the review is cancelled.
-- New foreground work cancels a same-session review. Identity-scoped registry cleanup prevents an old review from removing a successor. There is one review per session, at most four concurrently.
+- Automatic review is enabled by default for fresh installations. If you previously set `self_improvement_enabled: false` in settings, that choice is preserved.
+- `reviewConfig.creationNudgeInterval` defaults to **10 provider iterations** across foreground turns in the same session (not ten individual tool calls or separate messages). Setting this to `0` disables automatic reviews.
+- Iterations count once per outer provider loop. Attempting a skill mutation resets the counter. When the count hits the interval, the counter resets before checking eligibility.
+- Reviews trigger only after a complete, uncancelled response. If a run already made foreground skill changes, it reports them directly and skips the background review.
+- You can run `/review`, `/reflect`, or `/refine` manually to inspect the full conversation, even if automatic reviews are disabled. Manual reviews do not add user messages or restart your task, and they do not require an active workspace.
+- Review runs are isolated from chat history and limited to **16 iterations and 120 seconds**. They cannot spawn recursive reviews. Any changes applied or staged before a cancellation or error are preserved and reported.
+- Starting new foreground work cancels an active review in the same session. A session can have at most one active review at a time, and the app allows up to four concurrent reviews across different sessions.
 
 ## What the reviewer learns
 
-The reviewer receives the full available conversation snapshot and prioritizes durable user corrections and preferences:
+The reviewer receives a snapshot of the conversation and looks for reusable patterns:
 
-1. Inspect and patch a skill loaded during the original task.
-2. Update an existing relevant class-level skill.
-3. Add or update topical `references/`, reusable `templates/`, or `scripts/` support files.
-4. Create a new class-level skill only when no existing skill fits.
+1. Inspect and patch skills that were loaded during the original task.
+2. Update existing class-level skills when relevant.
+3. Add or update topical files in `references/`, `templates/`, or `scripts/`.
+4. Create a new skill only when no existing skill fits the problem.
 
-Capture procedures, verified techniques and task-governing preferences—not incident logs, temporary failures, credentials, unresolved attempts presented as successes, or per-session skill proliferation. `Nothing to save` remains valid.
+Focus on durable procedures, verified patterns, and user preferences. The reviewer should ignore transient errors, session-specific tokens, credentials, and failed experiments. If nothing generalizable happened, leaving skills unchanged is the expected outcome.
 
-Same-provider automatic reviews inherit the parent's system/history prefix, tool schemas and completion options. Active provider credentials are redacted, and provider body overrides cannot replace review messages or tools. Explicit reviews reconstruct history; routed reviews use the selected provider with their own options. No provider-cache hit is claimed or measured.
+Automatic reviews using the same provider reuse the system prompt prefix, tool schemas, and model options from the parent run. Active API keys are redacted, and request overrides cannot replace review prompts or tools. Routed reviews use the selected auxiliary provider with their own options.
 
 ## Restricted tools and mutations
 
-Advertised schemas are not authorization. Dispatch permits only `skills_list`, `skill_view`/`use_skill`, restricted `read_file`/`search_files`, and `skill_manage`. Shell, network, generic writes, delegation and legacy learning shortcuts cannot execute in a review.
+Tool dispatch in review mode is strictly limited to `skills_list`, `skill_view`/`use_skill`, restricted `read_file`/`search_files`, and `skill_manage`. Terminal commands, network requests, arbitrary file writes, delegation, and legacy learning shortcuts are completely blocked.
 
-`skill_manage` supports:
+`skill_manage` supports four operations:
+- `create`: requires name, description, and initial content.
+- `patch`: requires name, old text, and new text; old text must match exactly once.
+- `edit`: replaces the entire file content.
+- `write_file` / `remove_file`: manages relative support files inside the skill directory.
 
-- `create`: name, description, content.
-- `patch`: name, old_string, new_string; old text must match exactly once.
-- `edit`: name, content containing the complete file.
-- `write_file` / `remove_file`: name and relative support-file path; content for writes.
+Before modifying an existing file, the reviewer must read that exact file during the review run. Quoting text from chat or search snippets is not enough to authorize a write. Reads preserve exact raw bytes (including CRLF), and each successful mutation consumes its read authorization. Frontmatter metadata is preserved byte-for-byte. Deleting an entire skill is not allowed during background reviews.
 
-Before mutating an existing file, the reviewer must freshly read that exact file during the review. Transcript quotations and search snippets do not authorize writes. Reads retain raw bytes, including CRLF, rather than normalized activation text. Successful mutations consume read authorization. Existing metadata/frontmatter is preserved byte-for-byte. Whole-skill deletion is denied in background review.
+The reviewer can update both built-in and manually created skills. Adding a `.locked` file to a skill directory or setting `metadata.aether.locked: true` prevents changes. File paths are checked against directory traversal, Windows device names, alternate data streams, and symlinks. Direct file writes, approval handlers, and legacy writers share an in-process mutex to avoid write races.
 
-Manual and global discovered skills can be updated, not only reflection-generated skills. A `.locked` marker in the skill directory or `metadata.aether.locked: true` prevents mutation. Filename validation rejects traversal, ADS/device names, symlink/reparse paths and oversized or unsafe content. Exact raw-content CAS is rechecked after staging immediately before commit. In-process direct, approval and legacy writers share a mutation mutex. This is not handle-relative protection from hostile concurrent OS filesystem swaps.
+## Skill locations and discovery
 
-## Skill destinations and discovery
+New skills are stored in `~/.aether-agent/skills/` by default. You can change this path with `reviewConfig.createDir`, using an absolute path, `~/...`, or a path relative to `~/.aether-agent`.
 
-New skills default to `~/.aether-agent/skills/`. `reviewConfig.createDir` can select an absolute path, `~/...`, or a path relative to `~/.aether-agent`.
+Discovery follows this order:
+1. Workspace directory (`.aether/skills`)
+2. Configured skill roots
+3. Custom creation root (`reviewConfig.createDir`)
+4. Default global roots (`~/.aether-agent/skills`)
 
-Effective discovery precedence is workspace `.aether/skills`, configured skill roots, selected creation root, then default global roots. The custom destination participates in normal catalogs, activation, delegated catalog paths and UI listing without a second configuration entry. Existing skills are updated where discovered.
+Skills are updated in place wherever they were found. Foreground runs use the same guarded storage, so legacy `learn_skill` calls route through it. Subagents suggest maintenance tasks to the parent agent instead of writing to disk directly.
 
-The parent foreground agent uses the same guarded store for maintenance. Legacy `learn_skill` creation is routed through it; overwrite requests must use fresh-read patch/edit instead. Subagents report proposed maintenance to the parent rather than bypassing approval through legacy writes.
+## Approval and staging
 
-## Approval and durable proposals
+`reviewConfig.writeApproval` defaults to `false`. When turned on, proposed changes are staged under `~/.aether-agent/pending/skills/` instead of directly modifying files. Staged skills are not loaded into the active skill catalog until approved.
 
-`reviewConfig.writeApproval` defaults to false. When enabled, mutations stage durable proposals under `~/.aether-agent/pending/skills/` and do not modify source files or expose staged creations as installed skills.
+The review inspector displays unified diffs and provides Approve and Reject actions. Pending proposals persist across app restarts. The native snapshot on disk acts as the authoritative source for approval, and approving a change rechecks file locks and raw bytes. If the underlying file changed while a proposal was pending, the proposal remains pending to prevent accidental overwrites.
 
-The review inspector lists changes, displays inert unified diffs, and supports Approve/Reject. Pending records survive restarts. IDs and operations are session-scoped; the native sealed staging snapshot—not client paths—is authority for approval. Approval checks locks and original bytes again; stale source changes leave the proposal pending. Duplicate UI decisions are guarded.
-
-Foreground proposals are associated with their origin run as well. Approval/rejection updates native session history and emits the complete authoritative review event to refresh live state and caches. Native stale-save merging, event merging and restored-cache guards prevent a late staged event from reverting a resolved proposal.
-
-A skill write, pending cleanup and session-history update are not a single cross-file transaction. Partial-success failures are surfaced explicitly. If the origin assistant has not yet been persisted, decision APIs ask the user to wait and retry.
+Approving or rejecting a proposal updates session history and emits an event to refresh UI state. File writes, pending file cleanup, and history updates happen sequentially. If an error occurs midway, the failure is reported clearly. If the original assistant message is still saving when you click Approve, the UI will ask you to wait a moment and retry.
 
 ## Settings and events
 
-Settings → Agent defaults → Agent Intelligence / Reflection exposes automatic enablement, iteration interval, approval, creation destination and auxiliary provider selection.
+Configure review behavior in **Settings → Agent defaults → Agent Intelligence / Reflection**:
 
 ```typescript
 interface ReviewConfig {
   creationNudgeInterval?: number; // default 10; 0 disables automatic review
-  writeApproval?: boolean;       // default false
+  writeApproval?: boolean;        // default false
   createDir?: string;
-  auxiliaryProviderId?: string;  // absent: current session provider/model
+  auxiliaryProviderId?: string;   // absent: uses current session provider/model
 }
 ```
 
-`agent:self-improvement` retains legacy fields and adds a list of changes:
+The review event carries the list of proposed or applied changes:
 
 ```typescript
 {
@@ -96,29 +93,29 @@ interface ReviewConfig {
 }
 ```
 
-Inspectors authorize reads through stored run/session/change associations, not arbitrary client-supplied paths. Legacy badges and workspace-generated skill reads remain supported. The former JSON extractor is retained only for regression tests, not used by the live runner.
+Inspectors read skill content using stored run and session IDs rather than accepting arbitrary client file paths. The legacy JSON extractor is kept for test backwards-compatibility, but the live runtime uses this agent loop.
 
-## Parity boundaries
+## Parity summary
 
-| Reflection & Review Capability | Aether Status |
+| Reflection & Review Capability | Status in Aether |
 |---|---|
-| Default enabled, interval 10 provider iterations across turns | Implemented; existing explicit opt-out retained |
-| Full-conversation, detached, tool-driven reviewer; 16 iterations | Implemented, with an additional 120-second deadline |
-| Update-first learning, user corrections, support files, multiple changes | Implemented |
-| Fresh-read mutation guard, lock, global/custom destination, approval | Implemented with Aether-native paths and stricter immutable frontmatter |
-| Same-provider parent tool/options/history snapshot | Implemented; credentials redacted; no measured cache guarantee |
-| Auxiliary provider | Implemented via an existing configured provider |
-| Foreground priority / identity-safe cancellation | Implemented; no managed-local idle/requeue service |
-| `/refine focus text` | Not implemented; only the bare alias is a review command |
-| Memory review and profile lifecycle | Future roadmap |
-| Routed-model digest, aggregate input-token budget, usage attribution | Not implemented; full snapshot may exceed a selected model's context |
-| Arbitrary skill metadata rewrite, whole-skill delete | Deliberately more restrictive |
+| Default enabled, interval of 10 provider iterations | Supported; existing explicit opt-outs are kept |
+| Detached tool-driven review with up to 16 iterations | Supported, with a 120-second timeout limit |
+| Update-first learning, user preferences, and support files | Supported |
+| Fresh-read mutation guard, locks, custom destinations, and approval | Supported with strict frontmatter preservation |
+| Same-provider parent tool and options snapshot | Supported; credentials redacted |
+| Auxiliary provider configuration | Supported via any configured provider |
+| Foreground priority with cancellation | Supported |
+| `/refine focus text` with custom focus prompts | Not implemented; bare `/refine` runs standard review |
+| Memory review and profile lifecycle | Planned for future releases |
+| Routed-model token budgeting | Not implemented; full conversation snapshot is passed directly |
+| Arbitrary skill metadata rewrites and skill deletion | Intentionally restricted |
 
 ## Verification
 
-Tests use deterministic local HTTP providers and disposable filesystem fixtures, not paid credentials. Coverage includes provider tool cycles, exact prefix inheritance, denial of bypasses, cancellation, timeout/budget, partial results, raw-file reads/patches/edits, support files, locks, CAS conflicts, shared writer serialization, durable proposals, foreign session denial, native attachment, late-event ordering, cache restoration, command routing, settings and inspector decisions.
+Tests use local mock HTTP endpoints and temporary test directories instead of live paid APIs. Test coverage includes provider tool loops, prefix inheritance, tool security boundaries, cancellation, timeouts, raw file reads and patches, support files, locks, conflict detection, durable proposals, UI events, and inspector approval actions.
 
-Required final commands:
+To run the verification suite:
 
 ```sh
 npm test -- --fileParallelism=false
@@ -128,4 +125,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
-No literal power-loss, live paid-provider, cache-hit, packaged desktop or long-running managed-local scheduling test is implied by these unit/integration suites.
+These suites run on local fixtures and do not call external providers.

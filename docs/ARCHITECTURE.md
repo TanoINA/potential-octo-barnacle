@@ -34,9 +34,9 @@ Configuration and sessions use version-tolerant Serde structures and atomic repl
 
 ## Rendering discipline
 
-Chat rows and large artifact line collections are windowed. Event payloads are scoped and streaming text should be coalesced to animation-frame updates rather than forcing one React commit per network token. No continuous canvas or GPU-animation loop is used.
+Chat rows and large artifact line collections are windowed. Event payloads are scoped, and streaming text is coalesced to animation frames rather than triggering a React commit for every individual token. The app avoids continuous canvas or GPU-animation loops.
 
-A virtualized DOM bounds mounted nodes; it is not a guarantee of total WebView2 memory or frame rate. Those metrics must be measured on the shipping Windows configuration.
+Virtualizing the DOM keeps mounted nodes under control, but overall WebView2 memory and frame rates still depend on host hardware and should be tested on target Windows machines.
 
 ## Cancellation and cleanup
 
