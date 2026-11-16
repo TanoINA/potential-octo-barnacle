@@ -1431,6 +1431,9 @@ export function useAgent() {
     } else if (/^\/grill-me(\s+.*)?$/i.test(prompt)) {
       const topic = prompt.replace(/^\/grill-me\s*/i, '').trim();
       activePrompt = `You are running in reverse-interview mode (/grill-me). Topic: ${topic || 'the upcoming task and architecture'}.\n\nRules for this mode:\n1. Do not start writing code or implementing yet.\n2. Proactively grill and interview me with sharp, critical questions about requirements, edge cases, error modes, dependencies, and constraints.\n3. Ask 1-3 targeted questions at a time using the ask_question tool (or clear numbered options) so I can decide directly.\n4. Challenge unstated assumptions and probe potential failure modes.\n5. Once all edge cases and requirements are clarified and agreed upon, provide a bulleted summary of our consensus.`;
+    } else if (/^\/(search|web)(\s+.*)?$/i.test(prompt)) {
+      const query = prompt.replace(/^\/(search|web)\s*/i, '').trim();
+      activePrompt = `Please search the web for "${query || 'latest documentation and updates'}", extract and analyze the top authoritative results using the search_web and fetch_web_page tools, and provide a clear, comprehensive answer with cited source links.`;
     }
 
     let formattedPrompt = activePrompt;

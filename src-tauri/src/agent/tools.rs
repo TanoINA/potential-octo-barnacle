@@ -236,6 +236,14 @@ pub fn get_agent_tools() -> serde_json::Value {
                             "type": "string",
                             "description": "The search query keywords"
                         },
+                        "domain": {
+                            "type": "string",
+                            "description": "Optional domain to restrict results to, e.g. 'github.com' or 'docs.rs'"
+                        },
+                        "fetch_content": {
+                            "type": "boolean",
+                            "description": "When true, automatically fetches and includes concise full-text content extracts from the top search results to save roundtrips"
+                        },
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return (1-10, default: 5)"
@@ -1563,18 +1571,24 @@ async fn fetch_web_page(
         bytes.extend_from_slice(&chunk);
     }
     let raw = String::from_utf8_lossy(&bytes).to_string();
+    let raw_for_html = raw.clone();
     let extracted = if content_type.contains("text/html")
         || raw.trim_start().starts_with("<!DOCTYPE")
         || raw.trim_start().starts_with("<html")
     {
-        tokio::task::spawn_blocking(move || html2text::from_read(raw.as_bytes(), 100))
+        tokio::task::spawn_blocking(move || html2text::from_read(raw_for_html.as_bytes(), 100))
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?
     } else {
-        raw
+        raw.clone()
     };
-    let (extracted, truncated) = bounded_chars(extracted.trim(), max_chars);
+    let (mut extracted, truncated) = bounded_chars(extracted.trim(), max_chars);
+    if extracted.trim().len() < 120 || extracted.contains("You need to enable JavaScript") {
+        if let Some(meta_summary) = extract_meta_summary(&raw) {
+            extracted = format!("{}\n\n[Page Metadata Summary]:\n{}", extracted.trim(), meta_summary);
+        }
+    }
     let artifact = if extracted.lines().count() > 25 {
         Some(new_artifact(
             format!("Web: {}", current.host_str().unwrap_or("page")),
@@ -1658,6 +1672,39 @@ fn clean_html_text(raw: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(super) fn extract_meta_summary(raw_html: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Ok(re_title) = Regex::new(r#"(?is)<title[^>]*>(.*?)</title>"#) {
+        if let Some(cap) = re_title.captures(raw_html) {
+            let title = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+            if !title.is_empty() {
+                parts.push(format!("Title: {title}"));
+            }
+        }
+    }
+    if let Ok(re_meta) = Regex::new(r#"(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["'](.*?)["']"#) {
+        if let Some(cap) = re_meta.captures(raw_html) {
+            let desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+            if !desc.is_empty() {
+                parts.push(format!("Description: {desc}"));
+            }
+        }
+    }
+    if let Ok(re_og) = Regex::new(r#"(?is)<meta\s+[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']"#) {
+        if let Some(cap) = re_og.captures(raw_html) {
+            let og_desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+            if !og_desc.is_empty() && !parts.iter().any(|p| p.contains(&og_desc)) {
+                parts.push(format!("OG Description: {og_desc}"));
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
 }
 
 fn decode_bing_u(raw_url: &str) -> String {
@@ -1755,6 +1802,69 @@ pub(super) fn parse_bing_results(html: &str, limit: usize) -> Vec<SearchResultIt
     results
 }
 
+pub(super) fn parse_duckduckgo_api_results(json: &serde_json::Value, limit: usize) -> Vec<SearchResultItem> {
+    let mut results = Vec::new();
+    if let (Some(text), Some(url)) = (
+        json.get("AbstractText").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+        json.get("AbstractURL").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+    ) {
+        let heading = json.get("Heading").and_then(|v| v.as_str()).unwrap_or("Abstract");
+        results.push(SearchResultItem {
+            title: heading.to_string(),
+            url: url.to_string(),
+            snippet: text.to_string(),
+        });
+    }
+    if let Some(topics) = json.get("RelatedTopics").and_then(|v| v.as_array()) {
+        for topic in topics {
+            if results.len() >= limit {
+                break;
+            }
+            if let (Some(text), Some(url)) = (
+                topic.get("Text").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+                topic.get("FirstURL").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+            ) {
+                let title = text.split(" - ").next().unwrap_or(text);
+                results.push(SearchResultItem {
+                    title: title.to_string(),
+                    url: url.to_string(),
+                    snippet: text.to_string(),
+                });
+            }
+        }
+    }
+    results
+}
+
+async fn quick_fetch_snippet(
+    client: &reqwest::Client,
+    url_str: &str,
+    context: &ToolContext,
+) -> Result<String, String> {
+    let Ok(url) = Url::parse(url_str) else {
+        return Ok(String::new());
+    };
+    if validate_public_url(&url).await.is_err() {
+        return Ok(String::new());
+    }
+    let resp = match tokio::select! {
+        _ = context.cancel.cancelled() => return Ok(String::new()),
+        res = client.get(url_str).timeout(Duration::from_secs(4)).send() => res,
+    } {
+        Ok(r) => r,
+        Err(_) => return Ok(String::new()),
+    };
+    if !resp.status().is_success() {
+        return Ok(String::new());
+    }
+    let Ok(raw) = resp.text().await else {
+        return Ok(String::new());
+    };
+    let clean = clean_html_text(&raw);
+    let trimmed = clean.chars().take(300).collect::<String>();
+    Ok(trimmed)
+}
+
 async fn search_web(
     args: &serde_json::Value,
     context: &ToolContext,
@@ -1769,7 +1879,24 @@ async fn search_web(
         .unwrap_or(5)
         .clamp(1, 10) as usize;
 
-    let encoded_query = url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+    let domain = args
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let effective_query = if let Some(dom) = domain {
+        format!("{query} site:{dom}")
+    } else {
+        query.to_string()
+    };
+
+    let fetch_content = args
+        .get("fetch_content")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let encoded_query = url::form_urlencoded::byte_serialize(effective_query.as_bytes()).collect::<String>();
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(15))
@@ -1810,21 +1937,45 @@ async fn search_web(
         }
     }
 
+    // 3. Fallback to DuckDuckGo Instant Answer API (JSON API, non-blocked)
+    if results.is_empty() {
+        let ddg_api_url = format!("https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1");
+        if let Ok(resp) = client.get(&ddg_api_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    results = parse_duckduckgo_api_results(&json, limit);
+                }
+            }
+        }
+    }
+
     if results.is_empty() {
         return Ok(ToolExecutionResult::success(
-            format!("No web search results found for query: \"{query}\""),
+            format!("No web search results found for query: \"{effective_query}\""),
             None,
         ));
     }
 
-    let mut output = format!("Search results for \"{query}\":\n\n");
+    // Optional quick fetch snippet for top results if fetch_content is enabled
+    if fetch_content && !results.is_empty() {
+        let top_count = results.len().min(2);
+        for i in 0..top_count {
+            if let Ok(content) = quick_fetch_snippet(&client, &results[i].url, context).await {
+                if !content.is_empty() {
+                    results[i].snippet = format!("{}\n   Content extract: {}", results[i].snippet, content);
+                }
+            }
+        }
+    }
+
+    let mut output = format!("Search results for \"{effective_query}\":\n\n");
     for (idx, item) in results.iter().enumerate() {
         output.push_str(&format!("{}. [{}]({})\n   {}\n\n", idx + 1, item.title, item.url, item.snippet));
     }
 
     let artifact = if results.len() >= 3 {
         Some(new_artifact(
-            format!("Search: {query}"),
+            format!("Search: {effective_query}"),
             "markdown",
             Some("markdown".into()),
             output.clone(),
@@ -2884,5 +3035,45 @@ mod tests {
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
         assert!(names.contains(&"ask_question"));
+    }
+
+    #[test]
+    fn duckduckgo_api_results_parse_properly() {
+        let json = serde_json::json!({
+            "Heading": "Rust (programming language)",
+            "AbstractText": "Rust is a general-purpose programming language emphasizing performance, type safety, and concurrency.",
+            "AbstractURL": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            "RelatedTopics": [
+                {
+                    "Text": "Cargo - The Rust package manager",
+                    "FirstURL": "https://doc.rust-lang.org/cargo/"
+                }
+            ]
+        });
+        let results = parse_duckduckgo_api_results(&json, 5);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Rust (programming language)");
+        assert_eq!(results[0].url, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        assert_eq!(results[1].title, "Cargo");
+        assert_eq!(results[1].url, "https://doc.rust-lang.org/cargo/");
+    }
+
+    #[test]
+    fn extract_meta_summary_reads_title_and_descriptions() {
+        let sample = r#"
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Tauri 2.0 Documentation</title>
+                <meta name="description" content="Build smaller, faster, and more secure desktop applications.">
+                <meta property="og:description" content="Official guides for Tauri v2 framework.">
+            </head>
+            <body><div id="root">You need to enable JavaScript to run this app.</div></body>
+            </html>
+        "#;
+        let summary = extract_meta_summary(sample).expect("meta summary");
+        assert!(summary.contains("Title: Tauri 2.0 Documentation"));
+        assert!(summary.contains("Description: Build smaller, faster, and more secure desktop applications."));
+        assert!(summary.contains("OG Description: Official guides for Tauri v2 framework."));
     }
 }

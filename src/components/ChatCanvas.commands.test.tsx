@@ -248,6 +248,26 @@ describe('ChatCanvas goal and grill-me commands', () => {
       '/grill-me database migration', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
     ));
   });
+
+  it('sends /search with its query as a message run', async () => {
+    const props = renderCanvas();
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/search rust tauri 2' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(
+      '/search rust tauri 2', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
+    ));
+  });
+
+  it('sends /web with its query as a message run', async () => {
+    const props = renderCanvas();
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/web latest documentation' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(
+      '/web latest documentation', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
+    ));
+  });
 });
 
 describe('ChatCanvas streaming commands', () => {

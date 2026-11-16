@@ -331,4 +331,39 @@ describe('ExecutionTrace truthful details', () => {
     fireEvent.click(screen.getByRole('button', { name: '1 main action' }));
     expect(screen.getByRole('button', { name: 'Read README.md' })).toBeTruthy();
   });
+
+  it('formats search_web with dedicated label and renders clickable source chips', () => {
+    const searchResult = `Search results for "rust async":
+
+1. [Asynchronous Programming in Rust](https://rust-lang.github.io/async-book/)
+   An introduction to async in Rust.
+
+2. [Tokio Tutorial](https://tokio.rs/tokio/tutorial)
+   Get started with Tokio.`;
+
+    render(
+      <ExecutionTrace
+        toolCalls={[
+          tool({
+            name: 'search_web',
+            args: { query: 'rust async' },
+            status: 'done',
+            result: searchResult,
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '1 main action' }));
+    const row = screen.getByRole('button', { name: 'Searched web for "rust async"' });
+    expect(row).toBeTruthy();
+
+    fireEvent.click(row);
+    expect(screen.getByText('Discovered Web Sources (2)')).toBeTruthy();
+    expect(screen.getByText('Asynchronous Programming in Rust')).toBeTruthy();
+    expect(screen.getByText('Tokio Tutorial')).toBeTruthy();
+
+    const link = screen.getByTitle(/Asynchronous Programming in Rust/);
+    expect(link.getAttribute('href')).toBe('https://rust-lang.github.io/async-book/');
+  });
 });

@@ -5,6 +5,7 @@ import {
   Bot,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FileCode2,
   FileText,
   Globe,
@@ -22,6 +23,16 @@ interface ExecutionTraceProps {
   toolCalls: ToolCallItem[];
   isStreaming?: boolean;
   onSelectArtifact?: (id: string) => void;
+}
+
+export function parseSearchLinks(text?: string): { title: string; url: string; snippet?: string }[] {
+  if (!text) return [];
+  const matches = [...text.matchAll(/\d+\.\s*\[(.*?)\]\((.*?)\)(?:\s*\n\s*(.*?)(?=\n\n|\n\d+\.|$))?/gs)];
+  return matches.map((m) => ({
+    title: m[1],
+    url: m[2],
+    snippet: m[3]?.trim(),
+  }));
 }
 
 function formatDuration(ms?: number): string {
@@ -188,6 +199,17 @@ function getToolDisplayInfo(tool: ToolCallItem): {
     return {
       icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <HelpCircle size={13} className="text-[#58a6ff] shrink-0" />,
       label: isRunning ? 'Asking question...' : 'Asked clarifying question',
+      isTerminal: false,
+      isRunning,
+    };
+  }
+
+  if (name === 'search_web') {
+    const query = extractArg(tool, 'query');
+    const displayQuery = query.length > 35 ? `${query.slice(0, 32)}...` : query;
+    return {
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <Search size={13} className="text-[#58a6ff] shrink-0" />,
+      label: isRunning ? (displayQuery ? `Searching web for "${displayQuery}"...` : 'Searching web...') : (displayQuery ? `Searched web for "${displayQuery}"` : 'Searched web'),
       isTerminal: false,
       isRunning,
     };
@@ -396,6 +418,37 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
               />
             ) : (
               <>
+                {tool.name === 'search_web' && (() => {
+                  const links = parseSearchLinks(tool.result);
+                  if (links.length === 0) return null;
+                  return (
+                    <div className="mt-2 mb-2">
+                      <div className="text-[10px] font-semibold text-[#8b949e] mb-1.5 flex items-center gap-1">
+                        <Globe size={11} /> Discovered Web Sources ({links.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {links.map((link, idx) => {
+                          let host = link.url;
+                          try { host = new URL(link.url).hostname.replace(/^www\./, ''); } catch {}
+                          return (
+                            <a
+                              key={idx}
+                              href={link.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[10px] text-[#58a6ff] hover:bg-[#1f242c] hover:border-[#58a6ff]/50 transition-colors"
+                              title={`${link.title}\n${link.url}`}
+                            >
+                              <ExternalLink size={10} className="shrink-0 text-[#8b949e]" />
+                              <span className="font-semibold text-[#c9d1d9]">{host}:</span>
+                              <span className="max-w-[160px] truncate">{link.title}</span>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="mt-2 text-[10px] text-[#8b949e]">Result</div>
                 <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
                   {tool.result || tool.terminalOutput || (info.isRunning ? 'Waiting for result...' : '(no result)')}

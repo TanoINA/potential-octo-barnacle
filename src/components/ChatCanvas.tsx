@@ -163,6 +163,8 @@ export interface SlashItem {
 }
 
 const COMMAND_ITEMS: SlashItem[] = [
+  { id: 'cmd_search', category: 'COMMANDS', command: '/search', description: 'Search the web for up-to-date documentation, news, or solutions', usage: 'Search web\n/search <query>', iconType: 'terminal', needsPrompt: true },
+  { id: 'cmd_web', category: 'COMMANDS', command: '/web', description: 'Search the web for up-to-date documentation, news, or solutions', usage: 'Search web\n/web <query>', iconType: 'terminal', needsPrompt: true },
   { id: 'cmd_plan', category: 'COMMANDS', command: '/plan', description: 'Formulate an interactive step-by-step execution plan', usage: 'Formulate execution plan\n/plan <task goal>', iconType: 'terminal', needsPrompt: true },
   { id: 'cmd_goal', category: 'COMMANDS', command: '/goal', description: 'Autonomous goal execution loop until build/test target passes', usage: 'Autonomous goal mode\n/goal <verification target>', iconType: 'terminal', needsPrompt: true },
   { id: 'cmd_grill_me', category: 'COMMANDS', command: '/grill-me', description: 'Reverse-interview mode: proactively grill on edge cases and requirements', usage: 'Reverse-interview mode\n/grill-me [topic]', iconType: 'terminal' },
@@ -1643,7 +1645,7 @@ export function ChatCanvas({
       let accepted = false;
       try {
         const clean = next.prompt.trim();
-        const localCommand = next.options.selectedSkills?.length ? undefined : allSlashItems.find((item) => item.category !== 'SKILLS' && item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && item.command !== '/goal' && item.command !== '/grill-me' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
+        const localCommand = next.options.selectedSkills?.length ? undefined : allSlashItems.find((item) => item.category !== 'SKILLS' && item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && item.command !== '/goal' && item.command !== '/grill-me' && item.command !== '/search' && item.command !== '/web' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
         if (localCommand) {
           executeSlashCommand(localCommand, clean.split(/\s+/).slice(1).join(' '), false);
           accepted = true;
@@ -1739,8 +1741,8 @@ export function ChatCanvas({
       setCursor(0);
     };
 
-    // /plan, /goal, and /grill-me are transformed by useAgent; they are runs, not local commands.
-    if (slashItem && slashItem.command !== '/plan' && slashItem.command !== '/goal' && slashItem.command !== '/grill-me') {
+    // /plan, /goal, /grill-me, /search, and /web are transformed by useAgent; they are runs, not local commands.
+    if (slashItem && slashItem.command !== '/plan' && slashItem.command !== '/goal' && slashItem.command !== '/grill-me' && slashItem.command !== '/search' && slashItem.command !== '/web') {
       const args = clean.split(/\s+/).slice(1).join(' ').trim();
       executeSlashCommand(slashItem, args);
       setAttachedContexts([]);
