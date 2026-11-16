@@ -661,9 +661,12 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
                       step="1024"
                       className="settings-input font-mono text-xs"
                       value={selectedProvider.contextWindow ?? ''}
-                      onChange={(event) => updateProvider(selectedProvider.id, {
-                        contextWindow: event.target.value ? Number(event.target.value) : undefined
-                      })}
+                      onChange={(event) => {
+                        const parsed = Number(event.target.value);
+                        updateProvider(selectedProvider.id, {
+                          contextWindow: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined
+                        });
+                      }}
                       placeholder="Auto-detect from model (e.g. 1000000 for 1M, 256000 for 256k)"
                     />
                     <p className="text-[10px] text-[#8b949e]">Leave blank to auto-detect from model name. Useful for custom proxies or models with 1M+ context.</p>

@@ -326,8 +326,9 @@ export function getModelContextWindow(modelName?: string, customLimit?: number):
   const tagMatch = m.match(/(?:^|[-_./:])(\d+)(k|m)(?:[-_./:]|$)/);
   if (tagMatch) {
     const val = Number(tagMatch[1]);
-    if (tagMatch[2] === 'm') return val * 1_000_000;
-    if (val >= 8) return val * 1_000;
+    // Unit 'm' is context window only if <= 10 (1m, 2m, 4m). Values > 10 (e.g. 135m, 350m) represent model parameter count
+    if (tagMatch[2] === 'm' && val <= 10) return val * 1_000_000;
+    if (tagMatch[2] === 'k' && val >= 1 && val <= 4096) return val * 1_000;
   }
 
   // 2. 1M frontier era generations (Gemini, GPT-5/6+, Claude 4/5+, DeepSeek V4+, Kimi K3+, GLM-5+, Qwen 3+, MiniMax M3+, MiMo, Hy4)
@@ -1230,8 +1231,8 @@ export function ChatCanvas({
       effectiveConfig?.provider?.model,
       effectiveConfig?.provider?.contextWindow,
     );
-    return { usedTokens, maxTokens };
-  }, [messages, effectiveConfig?.provider?.model, effectiveConfig?.provider?.contextWindow]);
+    return { usedTokens, maxTokens, isPartial: hasOlderMessages };
+  }, [messages, effectiveConfig?.provider?.model, effectiveConfig?.provider?.contextWindow, hasOlderMessages]);
 
   useLayoutEffect(() => {
     jumpSettleRef.current?.correct();

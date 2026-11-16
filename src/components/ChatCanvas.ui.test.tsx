@@ -134,8 +134,13 @@ describe('ChatCanvas calm presentation', () => {
     expect(getModelContextWindow('custom-proxy/meta-llama-256k')).toBe(256_000);
     expect(getModelContextWindow('my-provider/model-1m')).toBe(1_000_000);
     expect(getModelContextWindow('moonshot-v1-32k')).toBe(32_000);
+    expect(getModelContextWindow('gpt-3.5-turbo-4k')).toBe(4_000);
     expect(getModelContextWindow('any-engine-1024k')).toBe(1_024_000);
     expect(getModelContextWindow('big-model-2m')).toBe(2_000_000);
+
+    // Parameter count in 'm' (>10m) should NOT be treated as context tokens
+    expect(getModelContextWindow('facebook/opt-350m')).toBe(128_000);
+    expect(getModelContextWindow('smollm-135m')).toBe(128_000);
 
     // Baseline 128k modern standard
     expect(getModelContextWindow('gpt-4o')).toBe(128_000);

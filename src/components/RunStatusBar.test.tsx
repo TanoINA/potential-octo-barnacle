@@ -50,3 +50,9 @@ it('renders context meter over 100% without clamping percentage and offers compa
  compactBtn.click();
  expect(compact).toHaveBeenCalledOnce();
 });
+
+it('renders approximate prefix and loaded slice note when session is partial', () => {
+ render(<RunStatusBar contextUsage={{ usedTokens: 18400, maxTokens: 128000, isPartial: true }} />);
+ expect(screen.getByText('~18.4k / 128k tokens (14%)')).toBeTruthy();
+ expect(screen.getByTestId('context-meter').getAttribute('title')).toContain('loaded slice of session');
+});

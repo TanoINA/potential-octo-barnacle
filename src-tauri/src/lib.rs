@@ -1523,8 +1523,13 @@ pub fn run() {
             kill_background_task,
             get_background_task_output
         ])
-        .run(context)
-        .expect("error while running AetherAgent application");
+        .build(context)
+        .expect("error while building AetherAgent application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                agent::tasks::get_task_manager().cancel_all();
+            }
+        });
 }
 
 #[cfg(test)]

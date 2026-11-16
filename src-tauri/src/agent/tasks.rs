@@ -660,6 +660,18 @@ impl TaskManager {
             }
         }
     }
+
+    pub fn cancel_all(&self) {
+        if let Ok(guard) = self.tasks.try_read() {
+            for entry in guard.values() {
+                if let Ok(entry_guard) = entry.try_read() {
+                    if entry_guard.info.completed_at.is_none() {
+                        entry_guard.cancel.cancel();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
