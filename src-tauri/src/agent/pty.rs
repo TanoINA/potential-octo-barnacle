@@ -1,3 +1,4 @@
+// shortcut: headless command runner without pseudo-terminal allocation; upgrade to portable-pty or conpty when full ANSI interactive shell emulation is required
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 

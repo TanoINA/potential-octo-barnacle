@@ -1657,10 +1657,9 @@ async fn validate_public_url(url: &Url) -> Result<(), String> {
 }
 
 fn clean_html_text(raw: &str) -> String {
-    let tag_re = match Regex::new(r"<[^>]+>") {
-        Ok(re) => re.replace_all(raw, "").into_owned(),
-        Err(_) => raw.to_string(),
-    };
+    static TAG_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = TAG_RE.get_or_init(|| Regex::new(r"<[^>]+>").expect("valid tag regex"));
+    let tag_re = re.replace_all(raw, "").into_owned();
     tag_re
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -1675,29 +1674,30 @@ fn clean_html_text(raw: &str) -> String {
 }
 
 pub(super) fn extract_meta_summary(raw_html: &str) -> Option<String> {
+    static TITLE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static META_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static OG_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
     let mut parts = Vec::new();
-    if let Ok(re_title) = Regex::new(r#"(?is)<title[^>]*>(.*?)</title>"#) {
-        if let Some(cap) = re_title.captures(raw_html) {
-            let title = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
-            if !title.is_empty() {
-                parts.push(format!("Title: {title}"));
-            }
+    let re_title = TITLE_RE.get_or_init(|| Regex::new(r#"(?is)<title[^>]*>(.*?)</title>"#).expect("valid title regex"));
+    if let Some(cap) = re_title.captures(raw_html) {
+        let title = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+        if !title.is_empty() {
+            parts.push(format!("Title: {title}"));
         }
     }
-    if let Ok(re_meta) = Regex::new(r#"(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["'](.*?)["']"#) {
-        if let Some(cap) = re_meta.captures(raw_html) {
-            let desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
-            if !desc.is_empty() {
-                parts.push(format!("Description: {desc}"));
-            }
+    let re_meta = META_RE.get_or_init(|| Regex::new(r#"(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["'](.*?)["']"#).expect("valid meta regex"));
+    if let Some(cap) = re_meta.captures(raw_html) {
+        let desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+        if !desc.is_empty() {
+            parts.push(format!("Description: {desc}"));
         }
     }
-    if let Ok(re_og) = Regex::new(r#"(?is)<meta\s+[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']"#) {
-        if let Some(cap) = re_og.captures(raw_html) {
-            let og_desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
-            if !og_desc.is_empty() && !parts.iter().any(|p| p.contains(&og_desc)) {
-                parts.push(format!("OG Description: {og_desc}"));
-            }
+    let re_og = OG_RE.get_or_init(|| Regex::new(r#"(?is)<meta\s+[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']"#).expect("valid og regex"));
+    if let Some(cap) = re_og.captures(raw_html) {
+        let og_desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
+        if !og_desc.is_empty() && !parts.iter().any(|p| p.contains(&og_desc)) {
+            parts.push(format!("OG Description: {og_desc}"));
         }
     }
     if parts.is_empty() {

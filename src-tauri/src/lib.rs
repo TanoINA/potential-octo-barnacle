@@ -579,6 +579,7 @@ async fn deep_search(
 
 #[tauri::command]
 async fn delete_session(session_id: String) -> Result<(), String> {
+    agent::tasks::get_task_manager().kill_session_tasks(&session_id).await;
     storage::delete_session(&session_id).await
 }
 

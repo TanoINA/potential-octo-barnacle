@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { AgentSettings, SkillInfo } from '../types/agent';
-import { SettingsModal } from './SettingsModal';
+import { SettingsModal, parseEnv } from './SettingsModal';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
@@ -353,5 +353,16 @@ describe('SettingsModal enhanced features', () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByText('You have unsaved changes. Click Save changes or Cancel.')).toBeTruthy();
+  });
+
+  it('strips Windows CRLF trailing carriage returns when parsing MCP env', () => {
+    const raw = 'API_KEY=sk-test1234\r\nENDPOINT=https://api.example.com\r\nEMPTY=\r\nSPACES=val with spaces\r\n';
+    const parsed = parseEnv(raw);
+    expect(parsed).toEqual({
+      API_KEY: 'sk-test1234',
+      ENDPOINT: 'https://api.example.com',
+      EMPTY: '',
+      SPACES: 'val with spaces',
+    });
   });
 });

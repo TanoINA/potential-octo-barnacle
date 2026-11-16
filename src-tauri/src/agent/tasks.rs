@@ -651,11 +651,62 @@ impl TaskManager {
         .await
         .map_err(|_| format!("Task '{task_id}' termination was not confirmed before timeout"))?
     }
+
+    pub async fn kill_session_tasks(&self, session_id: &str) {
+        let tasks = self.list_tasks(session_id).await;
+        for task in tasks {
+            if task.completed_at.is_none() {
+                let _ = self.kill_task(session_id, &task.id).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn kill_session_tasks_terminates_only_tasks_for_matching_session() {
+        let manager = TaskManager::new();
+        let target_session = "target-session";
+        let other_session = "other-session";
+
+        for (sid, tid) in [(target_session, "t1"), (other_session, "t2")] {
+            manager.tasks.write().await.insert(
+                tid.to_string(),
+                Arc::new(RwLock::new(TaskEntry {
+                    info: TaskInfo {
+                        id: tid.to_string(),
+                        session_id: sid.to_string(),
+                        command: "test".into(),
+                        tool_summary: None,
+                        is_daemon: false,
+                        status: "running".into(),
+                        pid: None,
+                        started_at: 0,
+                        completed_at: None,
+                        exit_code: None,
+                        log_path: String::new(),
+                        recent_output: String::new(),
+                    },
+                    cancel: CancellationToken::new(),
+                    output_lines: VecDeque::new(),
+                    stdin_tx: None,
+                    monitor_error: None,
+                    output_closed: false,
+                })),
+            );
+        }
+
+        manager.kill_session_tasks(target_session).await;
+
+        let t1 = manager.tasks.read().await.get("t1").unwrap().clone();
+        assert!(t1.read().await.cancel.is_cancelled());
+
+        let t2 = manager.tasks.read().await.get("t2").unwrap().clone();
+        assert!(!t2.read().await.cancel.is_cancelled());
+    }
 
     #[tokio::test]
     async fn update_gate_running_tasks_scans_all_sessions_and_task_kinds() {

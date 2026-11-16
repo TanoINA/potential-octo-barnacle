@@ -153,3 +153,24 @@ it('automatically generates a session topic title after the first completed turn
   prompt: 'please explain dijkstra algorithm',
  }));
 });
+
+it('does not overwrite manual rename with auto-generated session title', async () => {
+ const hook = renderHook(useAgent);
+ await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ const original = mocks.invoke.getMockImplementation()!;
+ mocks.invoke.mockImplementation(async (name: string, args: any) => {
+  if (name === 'rename_session_summary') return { id: args.sessionId, title: args.title };
+  if (name === 'generate_session_title') return 'Dijkstra Shortest Path';
+  return original(name, args);
+ });
+
+ await act(async () => { await hook.result.current.sendMessage('please explain dijkstra algorithm'); });
+ await act(async () => { await hook.result.current.renameSession('origin', 'Custom Named Auth'); });
+
+ const scope = { sessionId: 'origin', runId: hook.result.current.messages.at(-1)!.runId! };
+ act(() => event({ type: 'chunk', data: { ...scope, text: 'Dijkstra finds the shortest path.' } }));
+ await act(async () => { event({ type: 'done', data: { ...scope, cancelled: false, successful: true } }); });
+
+ expect(hook.result.current.sessionTitle).toBe('Custom Named Auth');
+ expect(mocks.invoke).not.toHaveBeenCalledWith('generate_session_title', expect.anything());
+});

@@ -189,6 +189,7 @@ pub(crate) fn search_query_with(
     }
 
     let fts_query = safe_words.join(" AND ");
+    let fetch_limit = (limit.saturating_mul(25)).clamp(100, 1000) as i64;
 
     let mut stmt = conn
         .prepare(
@@ -198,7 +199,7 @@ pub(crate) fn search_query_with(
              FROM fts_content
              WHERE fts_content MATCH ?1
              ORDER BY score ASC, rowid ASC
-             LIMIT 10000",
+             LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
 
@@ -212,7 +213,7 @@ pub(crate) fn search_query_with(
     }
 
     let rows = stmt
-        .query_map(params![fts_query], |row| {
+        .query_map(params![fts_query, fetch_limit], |row| {
             Ok(RawMatch {
                 session_id: row.get(0)?,
                 session_title: row.get(1)?,

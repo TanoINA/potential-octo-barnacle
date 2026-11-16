@@ -357,55 +357,65 @@ impl McpManager {
             tools: Vec::new(),
             warnings: Vec::new(),
         };
-        for config in configs.iter().filter(|config| config.enabled) {
-            match McpClient::connect(config, cwd).await {
-                Ok(client) => match client.list_tools().await {
-                    Ok(tools) => {
-                        for tool in tools {
-                            let Some(original_name) =
-                                tool.get("name").and_then(|value| value.as_str())
-                            else {
-                                continue;
-                            };
-                            let base_alias = build_alias(&config.id, original_name, None);
-                            let mut alias = base_alias.clone();
-                            let mut suffix = 2;
-                            while manager.calls.contains_key(&alias) {
-                                alias = build_alias(&config.id, original_name, Some(suffix));
-                                suffix += 1;
-                            }
-                            let description = tool
-                                .get("description")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("External MCP tool");
-                            let parameters = tool
-                                .get("inputSchema")
-                                .or_else(|| tool.get("input_schema"))
-                                .cloned()
-                                .unwrap_or_else(
-                                    || serde_json::json!({"type":"object","properties":{}}),
-                                );
-                            manager.tools.push(serde_json::json!({
-                                "type": "function",
-                                "function": {
-                                    "name": alias,
-                                    "description": format!("[MCP: {}] {}", config.name, description),
-                                    "parameters": parameters,
-                                }
-                            }));
-                            manager
-                                .calls
-                                .insert(alias, (client.clone(), original_name.to_string()));
+        let enabled_configs: Vec<_> = configs.iter().filter(|c| c.enabled).cloned().collect();
+        let connect_futures = enabled_configs.iter().map(|config| {
+            let cwd = cwd.to_string();
+            async move {
+                match McpClient::connect(config, &cwd).await {
+                    Ok(client) => match client.list_tools().await {
+                        Ok(tools) => (config, Ok((client, tools))),
+                        Err(error) => {
+                            let _ = client.shutdown().await;
+                            (config, Err(format!("MCP '{}': {error}", config.name)))
                         }
-                        manager.clients.push(client);
-                    }
-                    Err(error) => {
-                        let _ = client.shutdown().await;
+                    },
+                    Err(error) => (config, Err(error)),
+                }
+            }
+        });
+        let results = futures_util::future::join_all(connect_futures).await;
+
+        for (config, res) in results {
+            match res {
+                Ok((client, tools)) => {
+                    for tool in tools {
+                        let Some(original_name) =
+                            tool.get("name").and_then(|value| value.as_str())
+                        else {
+                            continue;
+                        };
+                        let base_alias = build_alias(&config.id, original_name, None);
+                        let mut alias = base_alias.clone();
+                        let mut suffix = 2;
+                        while manager.calls.contains_key(&alias) {
+                            alias = build_alias(&config.id, original_name, Some(suffix));
+                            suffix += 1;
+                        }
+                        let description = tool
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("External MCP tool");
+                        let parameters = tool
+                            .get("inputSchema")
+                            .or_else(|| tool.get("input_schema"))
+                            .cloned()
+                            .unwrap_or_else(
+                                || serde_json::json!({"type":"object","properties":{}}),
+                            );
+                        manager.tools.push(serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": alias,
+                                "description": format!("[MCP: {}] {}", config.name, description),
+                                "parameters": parameters,
+                            }
+                        }));
                         manager
-                            .warnings
-                            .push(format!("MCP '{}': {error}", config.name));
+                            .calls
+                            .insert(alias, (client.clone(), original_name.to_string()));
                     }
-                },
+                    manager.clients.push(client);
+                }
                 Err(error) => manager.warnings.push(error),
             }
         }

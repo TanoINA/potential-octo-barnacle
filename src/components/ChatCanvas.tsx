@@ -11,7 +11,6 @@ import {
   Brain,
   ChevronUp,
   Clock,
-  Download,
   File,
   FileCode2,
   Folder,
@@ -19,20 +18,14 @@ import {
   Image as ImageIcon,
   Mic,
   MicOff,
-  MoreHorizontal,
-  PanelLeft,
-  PanelRight,
   Paperclip,
   Play,
   Plus,
   Search,
   Send,
-  Settings,
   SlidersHorizontal,
   Square,
-  Terminal,
   Trash2,
-  Users,
   X,
   Eye,
   Lock,
@@ -48,6 +41,7 @@ import { AttachmentPreview } from './AttachmentPreview';
 import { ActivityTray } from './ActivityTray';
 import { SkillPicker } from './SkillPicker';
 import { TimelineScrubber } from './TimelineScrubber';
+import { ChatHeader } from './ChatHeader';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 
 const EXECUTION_MODES: Array<{
@@ -419,7 +413,6 @@ export function ChatCanvas({
   const [councilMode, setCouncilMode] = useState(false);
   const [councilModelA, setCouncilModelA] = useState<{ providerId: string; model: string } | null>(null);
   const [councilModelB, setCouncilModelB] = useState<{ providerId: string; model: string } | null>(null);
-  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [sessionQueues, setSessionQueues] = useState(() => new Map<QueueSessionId, QueuedPrompt[]>());
   const [pausedQueues, setPausedQueues] = useState(() => new Set<QueueSessionId>());
   const queuedPrompts = sessionQueues.get(currentSessionId) ?? EMPTY_QUEUED_PROMPTS;
@@ -1331,9 +1324,6 @@ export function ChatCanvas({
       if (!target.closest('[data-thinking-menu]')) {
         setThinkingMenuOpen(false);
       }
-      if (!target.closest('[data-more-menu]')) {
-        setMoreMenuOpen(false);
-      }
       if (!target.closest('[data-execution-menu]')) {
         setExecutionMenuOpen(false);
       }
@@ -1858,207 +1848,34 @@ export function ChatCanvas({
           <p className="text-xs text-[#8b949e] mt-1">Automatically attach as context to your prompt</p>
         </div>
       )}
-      <header className="z-20 flex h-11 shrink-0 items-center justify-between border-b border-[#30363d] bg-[#0d1117] px-2 sm:px-3">
-        <div className="flex items-center gap-1.5 min-w-0 mr-1.5">
-          {onToggleSidebar && (
-            <button
-              type="button"
-              onClick={onToggleSidebar}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3] transition-colors shrink-0"
-              title={sidebarOpen ? "Hide sidebar (Ctrl+B)" : "Show sidebar (Ctrl+B)"}
-            >
-              <PanelLeft size={13} />
-            </button>
-          )}
-          <div className="min-w-0 max-w-[56px] sm:max-w-[180px] truncate">
-            <h1 className="truncate text-xs font-semibold text-[#e6edf3]">{sessionTitle || 'New Chat'}</h1>
-            <span className="text-[10px] text-[#6e7681] whitespace-nowrap block">{totalMessageCount} messages</span>
-          </div>
-        </div>
-
-        {/* Action toolbar - compact, responsive, strictly non-overlapping */}
-        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          {/* Live Shell button (icon only) */}
-          {onOpenLiveShell && (
-            <button
-              type="button"
-              onClick={onOpenLiveShell}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:border-[#8b949e] hover:text-[#e6edf3] transition-colors shrink-0"
-              title="Open Live Shell terminal"
-            >
-              <Terminal size={13} />
-            </button>
-          )}
-
-          {/* Council Mode Toggle */}
-          <button
-            type="button"
-            onClick={() => setCouncilMode((v) => !v)}
-            disabled={!councilSecondCandidate}
-            className={`flex h-8 items-center gap-1 rounded-lg border px-2 text-xs transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 ${
-              councilMode
-                ? 'border-[#8b949e] bg-[#21262d] text-[#e6edf3] font-medium'
-                : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
-            }`}
-            title={councilSecondCandidate ? 'Council Mode (Dual Model A/B Test)' : 'Council Mode needs at least two configured models'}
-          >
-            <Users size={13} />
-            <span className="hidden md:inline text-xs">Council</span>
-          </button>
-
-          {/* Model Picker */}
-          <button
-            type="button"
-            onClick={onOpenModelPicker}
-            className="flex h-8 max-w-[58px] sm:max-w-[145px] items-center gap-1 rounded-lg border border-[#30363d] bg-[#161b22] px-2 text-xs text-[#58a6ff] hover:bg-[#21262d] transition-colors shrink-0"
-            title="Choose model and reasoning"
-          >
-            <span className="truncate font-mono text-[11px]">{effectiveConfig?.provider.model || 'Select model'}</span>
-            {effectiveConfig?.thinking && <Brain size={12} className="shrink-0 text-[#8b949e]" />}
-          </button>
-
-          {/* Task / Artifacts Bubble Button */}
-          {(() => {
-            const runningTasks = subagents?.filter((s) => s.status === 'running').length || 0;
-            return (
-              <button
-                type="button"
-                onClick={onToggleArtifacts}
-                disabled={artifactCount === 0 && runningTasks === 0}
-                className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors shrink-0 ${
-                  isArtifactOpen
-                    ? 'border-[#8b949e] bg-[#21262d] text-[#e6edf3] font-medium'
-                    : runningTasks > 0
-                    ? 'border-[#30363d] bg-[#161b22] text-[#d29922] font-medium hover:bg-[#21262d]'
-                    : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
-                } disabled:cursor-not-allowed disabled:opacity-40 hover:disabled:text-[#8b949e]`}
-                title={
-                  isArtifactOpen
-                    ? 'Close task inspector / artifacts panel'
-                    : runningTasks > 0
-                    ? `${runningTasks} task(s) active - click to inspect`
-                    : 'Show task inspector / artifacts panel'
-                }
-              >
-                {runningTasks > 0 ? (
-                  <>
-                    <span className="relative flex h-2 w-2">
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-[#f0883e]" />
-                    </span>
-                    <span className="text-[11px] font-mono font-semibold text-[#d29922]">{runningTasks} Active</span>
-                  </>
-                ) : (
-                  <>
-                    <PanelRight size={13} />
-                    {artifactCount > 0 && (
-                      <span className="rounded bg-[#30363d] px-1 font-mono text-[10px] font-medium text-[#e6edf3]">
-                        {artifactCount}
-                      </span>
-                    )}
-                  </>
-                )}
-              </button>
-            );
-          })()}
-
-          {/* More Actions Dropdown Menu (...) */}
-          <div className="relative shrink-0" data-more-menu>
-            <button
-              type="button"
-              onClick={() => setMoreMenuOpen((v) => !v)}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg border text-xs transition-colors ${
-                moreMenuOpen
-                  ? 'border-[#8b949e] bg-[#161b22] text-[#e6edf3]'
-                  : 'border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[#e6edf3]'
-              }`}
-              title="More actions (Search, Export, Settings)"
-            >
-              <MoreHorizontal size={14} />
-            </button>
-            {moreMenuOpen && (
-              <div className="ui-menu absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-lg">
-                {onOpenSpotlight && (
-                  <button
-                    type="button"
-                    onClick={() => { setMoreMenuOpen(false); onOpenSpotlight(); }}
-                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Search size={13} className="text-[#8b949e]" />
-                      Search
-                    </span>
-                    <kbd className="rounded border border-[#30363d] bg-[#0d1117] px-1 text-[9px] text-[#6e7681]">Alt+Space</kbd>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    setIsInChatSearchOpen(true);
-                    window.setTimeout(() => inChatSearchInputRef.current?.focus(), 50);
-                  }}
-                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                >
-                  <span className="flex items-center gap-2">
-                    <Search size={13} className="text-[#8b949e]" />
-                    Find in chat
-                  </span>
-                  <kbd className="rounded border border-[#30363d] bg-[#0d1117] px-1 text-[9px] text-[#6e7681]">Ctrl+F</kbd>
-                </button>
-                {onExportSession && (
-                  <>
-                    <div className="my-1 border-t border-[#30363d]/60 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[#6e7681]">Export</div>
-                    <button
-                      type="button"
-                      onClick={() => { setMoreMenuOpen(false); onExportSession('html'); }}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                    >
-                      <Download size={13} className="text-[#8b949e]" />
-                      <span>HTML (PDF-ready)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setMoreMenuOpen(false); onExportSession('markdown'); }}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                    >
-                      <Download size={13} className="text-[#8b949e]" />
-                      <span>Markdown (.md)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setMoreMenuOpen(false); onExportSession('json'); }}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                    >
-                      <Download size={13} className="text-[#8b949e]" />
-                      <span>JSON transcript</span>
-                    </button>
-                  </>
-                )}
-                <div className="my-1 border-t border-[#30363d]/60" />
-                <button
-                  type="button"
-                  onClick={() => { setMoreMenuOpen(false); onOpenSettings(); }}
-                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
-                >
-                  <span className="flex items-center gap-2">
-                    <Settings size={13} className="text-[#8b949e]" />
-                    Settings
-                  </span>
-                  <kbd className="rounded border border-[#30363d] bg-[#0d1117] px-1 text-[9px] text-[#6e7681]">Ctrl+,</kbd>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setMoreMenuOpen(false); invalidateAttachments(); setAttachedContexts([]); onClearSession(); }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[#f85149] hover:bg-[#f85149]/15"
-                >
-                  <Trash2 size={13} />
-                  <span>Clear conversation</span>
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
+      <ChatHeader
+        onToggleSidebar={onToggleSidebar}
+        sidebarOpen={sidebarOpen}
+        sessionTitle={sessionTitle}
+        totalMessageCount={totalMessageCount}
+        onOpenLiveShell={onOpenLiveShell}
+        councilMode={councilMode}
+        setCouncilMode={setCouncilMode}
+        councilSecondCandidate={councilSecondCandidate}
+        onOpenModelPicker={onOpenModelPicker}
+        effectiveConfig={effectiveConfig}
+        subagents={subagents}
+        onToggleArtifacts={onToggleArtifacts}
+        artifactCount={artifactCount}
+        isArtifactOpen={isArtifactOpen}
+        onOpenSpotlight={onOpenSpotlight}
+        onOpenInChatSearch={() => {
+          setIsInChatSearchOpen(true);
+          window.setTimeout(() => inChatSearchInputRef.current?.focus(), 50);
+        }}
+        onExportSession={onExportSession}
+        onOpenSettings={onOpenSettings}
+        onClearConversation={() => {
+          invalidateAttachments();
+          setAttachedContexts([]);
+          onClearSession();
+        }}
+      />
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {isInChatSearchOpen && (

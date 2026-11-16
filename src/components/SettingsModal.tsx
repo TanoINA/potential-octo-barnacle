@@ -59,11 +59,11 @@ function envText(server: McpServerConfig): string {
   return Object.entries(server.env).map(([key, value]) => `${key}=${value}`).join('\n');
 }
 
-function parseEnv(value: string): Record<string, string> {
+export function parseEnv(value: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const line of value.split('\n')) {
     const separator = line.indexOf('=');
-    if (separator > 0) env[line.slice(0, separator).trim()] = line.slice(separator + 1);
+    if (separator > 0) env[line.slice(0, separator).trim()] = line.slice(separator + 1).replace(/\r$/, '');
   }
   return env;
 }

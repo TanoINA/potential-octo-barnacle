@@ -54,6 +54,8 @@ fn with_db<T>(
         connection
             .busy_timeout(Duration::from_secs(2))
             .map_err(db_error)?;
+        let _ = connection.pragma_update(None, "journal_mode", "WAL");
+        let _ = connection.pragma_update(None, "synchronous", "NORMAL");
         connection
             .execute_batch(
                 "PRAGMA foreign_keys = ON;

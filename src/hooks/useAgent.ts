@@ -263,6 +263,7 @@ export function useAgent() {
   const initializingRef = useRef(true);
   const navigationPendingRef = useRef(false);
   const reviewResultsRef = useRef(new Map<string, SelfImprovementEvent>());
+  const manualRenamesRef = useRef(new Set<string>());
   const liveSessionsRef = useRef(new Map<string, LiveSession>());
   const viewedLive = useCallback(() => {
     let live = liveSessionsRef.current.get(sessionIdRef.current);
@@ -1156,22 +1157,23 @@ export function useAgent() {
           finishRun(live, outcome);
           void refreshGitStatus();
 
-          // Auto-generate topic title after first completed turn
+          // Auto-generate topic title after first completed turn (only if title has not been manually renamed)
           const userMsgs = live.data.messages.filter((m) => m.role === 'user');
+          const sid = live.data.session.id;
           if (
+            !manualRenamesRef.current.has(sid) &&
             userMsgs.length === 1 &&
             !payload.data.cancelled &&
             payload.data.successful !== false &&
             !live.failed
           ) {
             const firstUser = userMsgs[0];
+            const promptText = (firstUser.content || '').trim();
             const firstAssistant = live.data.messages.find(
               (m) => m.role === 'assistant' && (m.content || m.preamble || '').trim()
             );
-            const promptText = (firstUser.content || '').trim();
             const replySnippet = (firstAssistant?.content || firstAssistant?.preamble || '').trim().slice(0, 300);
             const currentProvider = resolveEffective(settingsRef.current, live.data.modelOverride)?.provider;
-            const sid = live.data.session.id;
 
             if (promptText && currentProvider) {
               void invoke<string>('generate_session_title', {
@@ -1183,7 +1185,7 @@ export function useAgent() {
                 if (newTitle && typeof newTitle === 'string' && newTitle.trim()) {
                   const cleanTitle = newTitle.trim();
                   mutate((curr) => {
-                    if (curr.session.id === sid) {
+                    if (curr.session.id === sid && !manualRenamesRef.current.has(sid)) {
                       return {
                         ...curr,
                         session: { ...curr.session, title: cleanTitle },
@@ -1456,7 +1458,7 @@ export function useAgent() {
       ...current,
       session: {
         ...current.session,
-        title: firstMessage
+        title: (firstMessage && !manualRenamesRef.current.has(current.session.id))
           ? (prompt.split(/\s+/).join(' ').slice(0, 70) || (attachments?.[0]?.name ? `Context: ${attachments[0].name}` : 'New Chat'))
           : current.session.title,
         updatedAt: Date.now(),
@@ -1869,6 +1871,7 @@ export function useAgent() {
   }, [updateSettings]);
 
   const renameSession = useCallback(async (sessionId: string, title: string) => {
+    manualRenamesRef.current.add(sessionId);
     const navigation = navigationRef.current;
     try {
       const live = liveSessionsRef.current.get(sessionId);
