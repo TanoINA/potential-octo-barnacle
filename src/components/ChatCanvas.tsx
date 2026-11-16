@@ -322,30 +322,28 @@ export function getModelContextWindow(modelName?: string, customLimit?: number):
   if (!modelName) return 128_000;
   const m = modelName.toLowerCase();
 
-  // Explicit token size markers in model identifier (e.g. "my-model-1m", "kimi-256k", "deepseek-v4-1m")
-  if (/(?:^|[-_./])2m(?:[-_./]|$)/.test(m)) return 2_000_000;
-  if (/(?:^|[-_./])1m(?:[-_./]|$)/.test(m) || /(?:^|[-_./])1000k(?:[-_./]|$)/.test(m)) return 1_000_000;
-  if (/(?:^|[-_./])512k(?:[-_./]|$)/.test(m)) return 512_000;
-  if (/(?:^|[-_./])256k(?:[-_./]|$)/.test(m)) return 256_000;
-  if (/(?:^|[-_./])128k(?:[-_./]|$)/.test(m)) return 128_000;
-  if (/(?:^|[-_./])64k(?:[-_./]|$)/.test(m)) return 64_000;
-  if (/(?:^|[-_./])32k(?:[-_./]|$)/.test(m)) return 32_768;
-  if (/(?:^|[-_./])16k(?:[-_./]|$)/.test(m)) return 16_384;
-  if (/(?:^|[-_./])8k(?:[-_./]|$)/.test(m)) return 8_192;
+  // 1. Explicit numeric size tag anywhere in model name (e.g. -1m, -256k, -32k, -1024k)
+  const tagMatch = m.match(/(?:^|[-_./:])(\d+)(k|m)(?:[-_./:]|$)/);
+  if (tagMatch) {
+    const val = Number(tagMatch[1]);
+    if (tagMatch[2] === 'm') return val * 1_000_000;
+    if (val >= 8) return val * 1_000;
+  }
 
-  // Specific model families and known context windows
-  if (m.includes('kimi-k3') || m.includes('minimax') || m.includes('moonshot-v1-128k')) return 1_000_000;
-  if (m.includes('kimi-k2')) return 256_000;
-  if (m.includes('kimi') || m.includes('moonshot')) return 1_000_000;
-  if (m.includes('deepseek-v4') || m.includes('deepseek_v4')) return 1_000_000;
-  if (m.includes('gemini')) return 1_000_000;
-  if (m.includes('claude-3') || m.includes('claude-sonnet') || m.includes('claude-opus')) return 200_000;
-  if (m.includes('codestral')) return 256_000;
-  if (m.includes('deepseek') || m.includes('o1') || m.includes('o3') || m.includes('gpt-4o') || m.includes('glm-4')) return 128_000;
-  if (m.includes('qwen-2.5') || m.includes('qwen2.5')) return 128_000;
-  if (m.includes('qwen')) return 32_768;
-  if (m.includes('llama-3.1') || m.includes('llama-3.2') || m.includes('llama-3.3')) return 128_000;
-  if (m.includes('llama-3') || m.includes('llama-2')) return 8_192;
+  // 2. 1M frontier era generations (Gemini, GPT-5/6+, Claude 4/5+, DeepSeek V4+, Kimi K3+, GLM-5+, Qwen 3+, MiniMax M3+, MiMo, Hy4)
+  if (/gemini|gpt-[5-9]|claude-(?:fable|.*-[4-9])|deepseek[-_]v[4-9]|kimi-k[3-9]|glm-[5-9]|qwen-?[3-9]|minimax[-_]m[3-9]|mimo|hy[4-9]/i.test(m)) {
+    return 1_000_000;
+  }
+
+  // 3. Known 200k - 256k generations
+  if (/claude-3|claude-(?:sonnet|opus|haiku)|minimax/i.test(m)) return 200_000;
+  if (/kimi-k2|codestral|hy3|nemotron-3\.5/i.test(m)) return 256_000;
+
+  // 4. Known 8k / 32k legacy models
+  if (/llama-3\b|llama-2/i.test(m) && !/llama-3\.[123]/i.test(m)) return 8_192;
+  if (/qwen/i.test(m) && !/qwen-?2\.5/i.test(m)) return 32_768;
+
+  // 5. Standard baseline for modern LLMs (GPT-4o, o1, o3, DeepSeek V3/R1, Qwen 2.5, Llama 3.1+, GLM-4, etc.)
   return 128_000;
 }
 

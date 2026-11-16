@@ -108,22 +108,40 @@ describe('ChatCanvas calm presentation', () => {
   });
 
   it('accurately resolves dynamic context window sizes and custom overrides', () => {
-    // Kimi models
-    expect(getModelContextWindow('kimi-k3.1-pro')).toBe(1_000_000);
-    expect(getModelContextWindow('kimi-k3')).toBe(1_000_000);
-    expect(getModelContextWindow('kimi-k2.6')).toBe(256_000);
-    expect(getModelContextWindow('kimi-k2.7-code')).toBe(256_000);
-
-    // DeepSeek models
+    // Frontier era 1M generations (Claude 5, GPT-6, DeepSeek v4, Kimi k3, GLM-5, Qwen 3, etc.)
+    expect(getModelContextWindow('claude-sonnet-5.5')).toBe(1_000_000);
+    expect(getModelContextWindow('claude-haiku-5.5')).toBe(1_000_000);
+    expect(getModelContextWindow('claude-fable-5.1')).toBe(1_000_000);
+    expect(getModelContextWindow('gpt-6-astra')).toBe(1_000_000);
+    expect(getModelContextWindow('gpt-5.6-sol')).toBe(1_000_000);
     expect(getModelContextWindow('deepseek-v4-flash')).toBe(1_000_000);
     expect(getModelContextWindow('deepseek-v4.1-flash')).toBe(1_000_000);
-    expect(getModelContextWindow('deepseek-v4-pro')).toBe(1_000_000);
-    expect(getModelContextWindow('deepseek-chat')).toBe(128_000);
-    expect(getModelContextWindow('deepseek-reasoner')).toBe(128_000);
+    expect(getModelContextWindow('kimi-k3.1-pro')).toBe(1_000_000);
+    expect(getModelContextWindow('glm-5.3-flash')).toBe(1_000_000);
+    expect(getModelContextWindow('qwen-3.8-max')).toBe(1_000_000);
+    expect(getModelContextWindow('mimo-v2.6-flash')).toBe(1_000_000);
+    expect(getModelContextWindow('hy4-preview')).toBe(1_000_000);
+    expect(getModelContextWindow('minimax-m3')).toBe(1_000_000);
 
-    // Tagged model names
+    // 200k - 256k generations
+    expect(getModelContextWindow('claude-3-5-sonnet')).toBe(200_000);
+    expect(getModelContextWindow('minimax-m2.7')).toBe(200_000);
+    expect(getModelContextWindow('kimi-k2.6')).toBe(256_000);
+    expect(getModelContextWindow('hy3-preview')).toBe(256_000);
+    expect(getModelContextWindow('nemotron-3.5-lightning')).toBe(256_000);
+
+    // Universal explicit token size tags
     expect(getModelContextWindow('custom-proxy/meta-llama-256k')).toBe(256_000);
     expect(getModelContextWindow('my-provider/model-1m')).toBe(1_000_000);
+    expect(getModelContextWindow('moonshot-v1-32k')).toBe(32_000);
+    expect(getModelContextWindow('any-engine-1024k')).toBe(1_024_000);
+    expect(getModelContextWindow('big-model-2m')).toBe(2_000_000);
+
+    // Baseline 128k modern standard
+    expect(getModelContextWindow('gpt-4o')).toBe(128_000);
+    expect(getModelContextWindow('deepseek-chat')).toBe(128_000);
+    expect(getModelContextWindow('deepseek-reasoner')).toBe(128_000);
+    expect(getModelContextWindow('qwen-2.5-72b-instruct')).toBe(128_000);
 
     // Custom limit override
     expect(getModelContextWindow('kimi-k3.1-pro', 32_000)).toBe(32_000);
