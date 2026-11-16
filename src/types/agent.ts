@@ -149,6 +149,7 @@ export interface ProviderConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindow?: number;
   models?: string[];
   customModels?: string[];
   extraHeaders?: Record<string, string>;

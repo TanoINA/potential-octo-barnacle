@@ -62,6 +62,8 @@ pub struct ProviderConfig {
     #[serde(rename = "apiKey")]
     pub api_key: String,
     pub model: String,
+    #[serde(rename = "contextWindow", skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     pub models: Vec<String>,
     #[serde(rename = "customModels")]
     pub custom_models: Vec<String>,
@@ -80,6 +82,7 @@ impl Default for ProviderConfig {
             base_url: String::new(),
             api_key: String::new(),
             model: String::new(),
+            context_window: None,
             models: Vec::new(),
             custom_models: Vec::new(),
             extra_headers: HashMap::new(),

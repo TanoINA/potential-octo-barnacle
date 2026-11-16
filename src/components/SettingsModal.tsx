@@ -653,6 +653,22 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
                   </div>
 
+                  <div className="space-y-1">
+                    <label className="settings-label mb-0">Context window limit (tokens)</label>
+                    <input
+                      type="number"
+                      min="1024"
+                      step="1024"
+                      className="settings-input font-mono text-xs"
+                      value={selectedProvider.contextWindow ?? ''}
+                      onChange={(event) => updateProvider(selectedProvider.id, {
+                        contextWindow: event.target.value ? Number(event.target.value) : undefined
+                      })}
+                      placeholder="Auto-detect from model (e.g. 1000000 for 1M, 256000 for 256k)"
+                    />
+                    <p className="text-[10px] text-[#8b949e]">Leave blank to auto-detect from model name. Useful for custom proxies or models with 1M+ context.</p>
+                  </div>
+
                   <div className="flex items-center justify-between border-t border-[#30363d] pt-3">
 
                     <button type="button" className="danger-button" onClick={() => deleteProvider(selectedProvider.id)}><Trash2 size={13} /> Delete provider</button>

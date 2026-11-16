@@ -1,7 +1,7 @@
 ﻿import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { ChatCanvas } from './ChatCanvas';
+import { ChatCanvas, getModelContextWindow } from './ChatCanvas';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('./MessageRow', () => ({ MessageRow: () => null }));
@@ -105,5 +105,28 @@ describe('ChatCanvas calm presentation', () => {
     expect(meter).toBeTruthy();
     // Denominator should be 200k for Claude 3.5 Sonnet
     expect(meter.textContent).toContain('/ 200k tokens');
+  });
+
+  it('accurately resolves dynamic context window sizes and custom overrides', () => {
+    // Kimi models
+    expect(getModelContextWindow('kimi-k3.1-pro')).toBe(1_000_000);
+    expect(getModelContextWindow('kimi-k3')).toBe(1_000_000);
+    expect(getModelContextWindow('kimi-k2.6')).toBe(256_000);
+    expect(getModelContextWindow('kimi-k2.7-code')).toBe(256_000);
+
+    // DeepSeek models
+    expect(getModelContextWindow('deepseek-v4-flash')).toBe(1_000_000);
+    expect(getModelContextWindow('deepseek-v4.1-flash')).toBe(1_000_000);
+    expect(getModelContextWindow('deepseek-v4-pro')).toBe(1_000_000);
+    expect(getModelContextWindow('deepseek-chat')).toBe(128_000);
+    expect(getModelContextWindow('deepseek-reasoner')).toBe(128_000);
+
+    // Tagged model names
+    expect(getModelContextWindow('custom-proxy/meta-llama-256k')).toBe(256_000);
+    expect(getModelContextWindow('my-provider/model-1m')).toBe(1_000_000);
+
+    // Custom limit override
+    expect(getModelContextWindow('kimi-k3.1-pro', 32_000)).toBe(32_000);
+    expect(getModelContextWindow('unknown-model', 512_000)).toBe(512_000);
   });
 });

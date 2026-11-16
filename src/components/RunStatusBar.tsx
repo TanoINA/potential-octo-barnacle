@@ -104,12 +104,13 @@ export const RunStatusBar = memo(function RunStatusBar({
         };
         const color = rawPct >= 80 ? 'text-[#f85149] font-medium' : rawPct >= 60 ? 'text-[#d29922]' : 'text-[#8b949e]';
         const barColor = rawPct >= 80 ? 'bg-[#f85149]' : rawPct >= 60 ? 'bg-[#d29922]' : 'bg-[#58a6ff]';
+        const remainingTokens = Math.max(0, maxTokens - usedTokens);
         const meterText = `${formatK(usedTokens)} / ${formatK(maxTokens)} tokens (${rawPct}%)`;
 
         return (
           <div
             className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-[#8b949e]"
-            title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${rawPct}%)${rawPct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
+            title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${rawPct}% · ${remainingTokens.toLocaleString()} remaining)${rawPct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
             data-testid="context-meter"
           >
             <span className="w-12 h-1.5 rounded-full bg-[#21262d] overflow-hidden inline-flex border border-[#30363d]/50">

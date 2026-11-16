@@ -317,13 +317,32 @@ interface QueuedPrompt {
 const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
 type QueueSessionId = QueuedPrompt['sessionId'];
 
-function getModelContextWindow(modelName?: string): number {
+export function getModelContextWindow(modelName?: string, customLimit?: number): number {
+  if (customLimit && customLimit > 0) return customLimit;
   if (!modelName) return 128_000;
   const m = modelName.toLowerCase();
-  if (m.includes('gemini-1.5') || m.includes('gemini-2.0') || m.includes('gemini-exp')) return 1_000_000;
+
+  // Explicit token size markers in model identifier (e.g. "my-model-1m", "kimi-256k", "deepseek-v4-1m")
+  if (/(?:^|[-_./])2m(?:[-_./]|$)/.test(m)) return 2_000_000;
+  if (/(?:^|[-_./])1m(?:[-_./]|$)/.test(m) || /(?:^|[-_./])1000k(?:[-_./]|$)/.test(m)) return 1_000_000;
+  if (/(?:^|[-_./])512k(?:[-_./]|$)/.test(m)) return 512_000;
+  if (/(?:^|[-_./])256k(?:[-_./]|$)/.test(m)) return 256_000;
+  if (/(?:^|[-_./])128k(?:[-_./]|$)/.test(m)) return 128_000;
+  if (/(?:^|[-_./])64k(?:[-_./]|$)/.test(m)) return 64_000;
+  if (/(?:^|[-_./])32k(?:[-_./]|$)/.test(m)) return 32_768;
+  if (/(?:^|[-_./])16k(?:[-_./]|$)/.test(m)) return 16_384;
+  if (/(?:^|[-_./])8k(?:[-_./]|$)/.test(m)) return 8_192;
+
+  // Specific model families and known context windows
+  if (m.includes('kimi-k3') || m.includes('minimax') || m.includes('moonshot-v1-128k')) return 1_000_000;
+  if (m.includes('kimi-k2')) return 256_000;
+  if (m.includes('kimi') || m.includes('moonshot')) return 1_000_000;
+  if (m.includes('deepseek-v4') || m.includes('deepseek_v4')) return 1_000_000;
+  if (m.includes('gemini')) return 1_000_000;
   if (m.includes('claude-3') || m.includes('claude-sonnet') || m.includes('claude-opus')) return 200_000;
-  if (m.includes('o1') || m.includes('o3') || m.includes('gpt-4o')) return 128_000;
-  if (m.includes('deepseek')) return 128_000;
+  if (m.includes('codestral')) return 256_000;
+  if (m.includes('deepseek') || m.includes('o1') || m.includes('o3') || m.includes('gpt-4o') || m.includes('glm-4')) return 128_000;
+  if (m.includes('qwen-2.5') || m.includes('qwen2.5')) return 128_000;
   if (m.includes('qwen')) return 32_768;
   if (m.includes('llama-3.1') || m.includes('llama-3.2') || m.includes('llama-3.3')) return 128_000;
   if (m.includes('llama-3') || m.includes('llama-2')) return 8_192;
@@ -1209,9 +1228,12 @@ export function ChatCanvas({
   const contextUsage = useMemo(() => {
     if (!messages || messages.length === 0) return null;
     const usedTokens = estimateSessionTokens(messages);
-    const maxTokens = getModelContextWindow(effectiveConfig?.provider?.model);
+    const maxTokens = getModelContextWindow(
+      effectiveConfig?.provider?.model,
+      effectiveConfig?.provider?.contextWindow,
+    );
     return { usedTokens, maxTokens };
-  }, [messages, effectiveConfig?.provider?.model]);
+  }, [messages, effectiveConfig?.provider?.model, effectiveConfig?.provider?.contextWindow]);
 
   useLayoutEffect(() => {
     jumpSettleRef.current?.correct();
