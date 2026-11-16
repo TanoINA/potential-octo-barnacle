@@ -1,28 +1,23 @@
-# release (26 files, 1925 lines, 17 tests)
+# Release and CI Automation Files
 
-.github/workflows/promote-release.yml | 76L
-.github/workflows/release-quality.yml | 43L
-.github/workflows/signed-release.yml | 141L
-scripts/build-signed-release.ps1 | 108L
-scripts/build-signed-release.sh | 26L
-scripts/project-index.mjs | 170L
-scripts/release-archive-policy.ps1 | 44L
-scripts/release-build-config.ps1 | 12L
-scripts/release-native-command.ps1 | 22L
-scripts/release-pipeline.mjs | 297L | sha256 validateKey publicUrl preflight verifySignature expectedArtifacts inspectLinux createCandidate prepareRelease verifyPrepared promoteLocal
-scripts/release-policy-tests/Cargo.toml | 14L
-scripts/release-policy-tests/README.md | 45L
-scripts/release-policy-tests/src/main.rs | 50L
-scripts/release-policy-tests/src/signature_tests.rs | 40L | 2T
-scripts/release-signature-check.ps1 | 15L
-scripts/run-aether.ps1 | 11L
-scripts/run-dev.bat | 9L
-scripts/test-release-archive.ps1 | 45L
-scripts/test-release-linux.sh | 68L
-scripts/test-release-pipeline.mjs | 332L | 15T
-scripts/test-release-powershell.ps1 | 29L
-scripts/test-release-preflight.ps1 | 158L
-scripts/test-release-signature.ps1 | 37L
-scripts/test-release.ps1 | 24L
-scripts/test-rpm-dependency-semantics.mjs | 90L
-scripts/verify-installer.ps1 | 19L
+This index lists the scripts, workflows, and test harnesses supporting packaging, signing, and verification.
+
+## GitHub Actions Workflows (`.github/workflows/`)
+
+- **`release-quality.yml`**: Runs linting, type checks, frontend tests, and Rust tests on PRs and commits.
+- **`signed-release.yml`**: Builds and packages signed candidates for Windows and Linux in protected environments.
+- **`promote-release.yml`**: Verified promotion workflow that publishes update manifests to the hosting server.
+
+## Release and Build Scripts (`scripts/`)
+
+- **`build-signed-release.ps1` & `.sh`**: Builds production installers (NSIS, MSI, AppImage, DEB, RPM) with Authenticode and minisign updater signatures.
+- **`release-pipeline.mjs`**: Pipeline orchestration script for preflight validation, checksum creation, signature checks, and manifest generation.
+- **`verify-installer.ps1`**: Offline Windows utility to verify an installer's SHA-256 hash and Authenticode certificate thumbprint.
+- **`release-signature-check.ps1`**: Verifies Tauri minisign signatures and version comments against public keys.
+
+## Release Test Suites (`scripts/`)
+
+- **`release-policy-tests/`**: Rust test harness verifying signature policies, version tokens, and URL safety.
+- **`test-release.ps1` & `test-release-powershell.ps1`**: Verifies release script behavior against unsigned or tampered fixtures.
+- **`test-release-pipeline.mjs`**: End-to-end unit tests for the Node.js release pipeline logic.
+- **`test-release-linux.sh`**: Linux candidate package validation and GLIBC dependency verification.

@@ -1,78 +1,25 @@
-# Module map: `src-tauri/src/agent/tools.rs`
+# Module Guide: `src-tauri/src/agent/tools.rs`
 
-**2526 lines total = 1793 authored + 733 test** (29% tests)
+The `tools` module defines and executes all native operating-system capabilities available to the model during an agent run.
 
-40 authored top-level items · 30 functions · 5 test block(s)
+## Core Responsibilities
 
-**Public surface:** 5 `pub fn`, of which **5 are referenced outside this file**.
+1. **Tool Definitions (`get_agent_tools`)**:
+   - Publishes OpenAI/Anthropic-compatible JSON schemas for all native tools (`read_file`, `edit_file`, `write_file`, `list_directory`, `search_files`, `run_command`, `fetch_web_page`, `ask_question`, etc.).
+2. **Filesystem Tools & Safety Boundary**:
+   - `read_file`, `write_file`, `edit_file`: Reads line ranges, applies exact search-and-replace patches, and manages atomic file creation.
+   - `resolve_workspace_path`: Validates that requested paths remain bounded within the active workspace root, rejecting directory traversal (`..`), device paths, and symlink escapes.
+3. **Command Execution (`run_command`)**:
+   - Executes shell commands in the background or synchronously with configurable timeouts.
+   - Streams terminal output deltas via `terminal` events and integrates with `tasks.rs` for long-running process lifecycle management.
+4. **Web Content Retrieval (`fetch_web_page`)**:
+   - Validates target URLs (`validate_public_url`) and prevents internal network probing (`is_public_ip`).
+   - Extracts clean page text and converts HTML structures into Markdown for model consumption.
+5. **Interactive Tools (`ask_question`)**:
+   - Emits structured clarification prompts to the chat UI and blocks execution until the user selects or inputs an answer.
 
-Internal-only functions (0 external refs): **25**.
+## Key Types and Functions
 
-**Reconciliation:** item spans sum to 1771 lines vs 1793 authored lines → `OK`
-
-## Test-only spans
-
-`#[cfg(test)]` / `mod tests` spans (excluded from all clusters below):
-
-- line **637** — `cfg(test)`
-- line **1022** — `cfg(test)`
-- line **1029** — `cfg(test)`
-- line **1808** — `cfg(test)`
-- line **1809** — `mod tests`
-
-## Clusters by domain keyword
-
-| domain | fns | ~LOC | fns used externally | ext hits | sample |
-| --- | --- | --- | --- | --- | --- |
-| `core` | 18 | 1022 | 3 | 11 | get_agent_tools, execute_tool, required_string, optional_string, bounded_chars |
-| `file` | 5 | 378 | 0 | 0 | read_file, lock_file_mutation, write_file, edit_file, search_files |
-| `workspace` | 2 | 109 | 2 | 15 | resolve_workspace_path, list_workspace_files |
-| `dir` | 1 | 97 | 0 | 0 | list_directory |
-| `path` | 1 | 43 | 0 | 0 | validate_relative_path |
-| `atomic` | 1 | 31 | 0 | 0 | guarded_atomic_write |
-| `artifact` | 1 | 19 | 0 | 0 | new_artifact |
-| `review` | 1 | 8 | 0 | 0 | review_tool_definitions |
-
-## Largest single functions
-
-| line | fn | ~LOC | ext refs |
-| --- | --- | --- | --- |
-| 1034 | `run_command` | 235 | 0 |
-| 86 | `get_agent_tools` | 222 | 5 |
-| 833 | `search_files` | 122 | 0 |
-| 1431 | `fetch_web_page` | 105 | 0 |
-| 385 | `read_file` | 100 | 0 |
-| 736 | `list_directory` | 97 | 0 |
-| 643 | `edit_file` | 93 | 0 |
-| 1581 | `is_public_ip` | 75 | 0 |
-| 1358 | `manage_task` | 73 | 0 |
-| 1749 | `list_workspace_files` | 59 | 2 |
-| 1656 | `resolve_workspace_path` | 50 | 13 |
-| 977 | `spawn_process_reader` | 45 | 0 |
-| 1536 | `validate_public_url` | 45 | 0 |
-| 1706 | `validate_relative_path` | 43 | 0 |
-| 583 | `write_file` | 36 | 0 |
-
-## External surface (functions referenced from other files)
-
-| line | fn | hits | referenced in |
-| --- | --- | --- | --- |
-| 1656 | `resolve_workspace_path` | 13 | git.rs, reflection.rs, runner.rs, skills.rs |
-| 86 | `get_agent_tools` | 5 | review.rs, runner.rs, lib.rs |
-| 308 | `execute_tool` | 4 | pty.rs, runner.rs |
-| 1303 | `terminate_child` | 2 | tasks.rs |
-| 1749 | `list_workspace_files` | 2 | lib.rs |
-
-## Types declared
-
-```
-19  const MAX_FILE_BYTES
-20  const MAX_TOOL_CHARS
-21  const MAX_COMMAND_BYTES
-22  const MAX_WEB_BYTES
-25  pub enum ToolEvent
-34  pub type ToolEventSink
-37  pub struct ToolContext
-45  pub struct ToolExecutionResult
-955  struct ProcessLine
-```
+- `ToolExecutionResult`: Returns standard execution status, output payload, and artifact metadata.
+- `execute_tool`: Main router that receives a tool call name and arguments, executes the corresponding handler, and formats the output.
+- `resolve_workspace_path`: Security boundary ensuring file operations stay inside the active workspace.

@@ -1,98 +1,38 @@
-# Project Index (generated)
+# Codebase Index and Architecture Map
 
-root: `D:/AetherAgent`
+A guide to the structure, subsystems, and module boundaries across the AetherAgent repository.
 
-**268 authored files · 90866 lines · 1114 test cases**
+## Subsystem breakdown
 
-tauri commands: 65 · frontend invokes: 53 · event topics: 9
+| Area | Description | Primary Location | Index |
+| --- | --- | --- | --- |
+| **Backend** | Native Rust runtime, Tauri commands, agent loop, tools, SQLite storage, and MCP management. | `src-tauri/src/agent/` | [files-backend.md](index/files-backend.md) |
+| **Frontend** | React single-page app, virtualized chat list, composer, settings modal, and hooks. | `src/` | [files-frontend.md](index/files-frontend.md) |
+| **Rune** | Experimental native GPU-rendered desktop interface written in pure Rust (winit/wgpu). | `rune/` | [files-rune.md](index/files-rune.md) |
+| **Release & CI** | Packaging scripts, Authenticode and updater verifiers, and GitHub Actions workflows. | `scripts/`, `.github/` | [files-release.md](index/files-release.md) |
+| **Documentation** | Architectural specifications, UX guides, and release procedures. | `docs/` | [files-docs.md](index/files-docs.md) |
+| **Configuration** | Root project manifests, Vite, Tailwind, TypeScript, and Cargo workspace configs. | Root directory | [files-config.md](index/files-config.md) |
 
-Excluded from indexing: `.local/` (QA evidence, vendored `rune-upstream`, snapshot `working-files`), `src-tauri/gen/`, `docs/archive/`, `node_modules/`, `target/`, `dist/`, lockfiles.
+## Core Backend Module Maps
 
-## Areas
+Detailed architecture and function guides for primary backend components:
 
-| area | files | lines | tests | file |
-| --- | --- | --- | --- | --- |
-| backend | 32 | 35796 | 452 | `docs/index/files-backend.md` (4700B) |
-| config | 14 | 378 | 0 | `docs/index/files-config.md` (318B) |
-| docs | 9 | 652 | 0 | `docs/index/files-docs.md` (338B) |
-| frontend | 114 | 27551 | 428 | `docs/index/files-frontend.md` (6511B) |
-| other | 11 | 625 | 0 | `docs/index/files-other.md` (468B) |
-| release | 26 | 1925 | 17 | `docs/index/files-release.md` (1249B) |
-| rune | 62 | 23939 | 217 | `docs/index/files-rune.md` (5568B) |
+- **[Runner (runner.rs)](index/map-runner.md)**: Main agent execution loop, prompt hydration, tool dispatch, and subagent orchestration.
+- **[Provider (provider.rs)](index/map-provider.md)**: Adapter translations for Anthropic and OpenAI-compatible endpoints, SSE streaming, and model discovery.
+- **[Storage (storage.rs)](index/map-storage.md)**: Session history persistence, atomic saves, checkpoint sidecars, and profile settings.
+- **[Session Journal (session_journal.rs)](index/map-session_journal.md)**: Append-only transaction logging, delta tracking, and crash recovery.
+- **[Tools (tools.rs)](index/map-tools.md)**: File reading/writing, shell command execution, workspace resolution, and web search integration.
 
-## Directory rollup
+## Inter-process communication
 
-```
-    378 L   14 files  .
-     53 L    1 files  .aether/skills/ponytail
-    104 L    1 files  .aether/skills/ponytail-audit
-     45 L    1 files  .aether/skills/ponytail-debt
-     53 L    1 files  .aether/skills/ponytail-gain
-     77 L    1 files  .aether/skills/ponytail-help
-    102 L    1 files  .aether/skills/ponytail-review
-    260 L    3 files  .github/workflows
-    652 L    9 files  docs
-   2788 L    3 files  rune
-      3 L    1 files  rune/.cargo
-     39 L    1 files  rune/crates/aether-core
-   2105 L    4 files  rune/crates/aether-core/src
-    780 L    2 files  rune/crates/aether-core/tests
-    140 L    4 files  rune/crates/aether-rune
-   7953 L   18 files  rune/crates/aether-rune/src
-    808 L    3 files  rune/crates/aether-rune/src/panels
-   2298 L    9 files  rune/crates/aether-rune/tests
-    111 L    2 files  rune/crates/aether-state
-   5260 L    8 files  rune/crates/aether-state/src
-   1360 L    6 files  rune/crates/aether-state/tests
-    294 L    1 files  rune/docs
-   1516 L   19 files  scripts
-     59 L    2 files  scripts/release-policy-tests
-     90 L    2 files  scripts/release-policy-tests/src
-    984 L    6 files  src
-    177 L    4 files  src-tauri
-     14 L    1 files  src-tauri/capabilities
-   1811 L    2 files  src-tauri/src
-  33985 L   30 files  src-tauri/src/agent
-  17846 L   74 files  src/components
-   7954 L   26 files  src/hooks
-     89 L    2 files  src/test
-    357 L    1 files  src/types
-    321 L    5 files  src/utils
-```
+The frontend communicates with the Tauri core via asynchronous IPC commands and listens for streamed events:
 
-## Event topics
+### Primary Event Topics
 
-```
-agent-event
-agent:micro-compaction
-agent:self-improvement
-agent:self-improvement-error
-controller:result
-irrelevant
-release:update-progress
-terminal
-toggle-spotlight
-```
-
-## IPC cross-check
-
-**Rust commands never invoked by frontend (12)**
-```
-approve_review_proposal
-call_mcp_tool
-checkpoint_session
-checkpoint_session_page
-get_background_task_output
-get_workspace_cwd
-git_fetch
-reject_review_proposal
-rename_session
-save_session
-save_session_page
-save_skill
-```
-
-**Frontend invokes with no Rust command (0)**
-```
-(none)
-```
+- `agent-event`: Streamed token deltas, reasoning chunks, and tool execution status updates.
+- `agent:micro-compaction`: Notification when background context truncation occurs for long turns.
+- `agent:self-improvement`: Post-turn reflection proposals, skill creations, or updates.
+- `agent:self-improvement-error`: Failure notifications during background reflection passes.
+- `release:update-progress`: Download and verification progress during application updates.
+- `terminal`: Streaming stdout and stderr output from background shell tasks.
+- `toggle-spotlight`: Global shortcut signal to summon or focus the quick command bar.

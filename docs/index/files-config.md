@@ -1,16 +1,14 @@
-# config (14 files, 378 lines, 0 tests)
+# Configuration and Root Files
 
-CHANGELOG.md | 37L
-craft.json | 77L
-feed.json | 1L
-index.html | 16L
-package.json | 51L
-postcss.config.js | 7L
-README.md | 59L
-tailwind.config.js | 25L
-transcript.json | 1L
-tsconfig.json | 26L
-tsconfig.node.json | 12L
-usage.json | 9L
-vite.config.ts | 43L
-vitest.config.ts | 14L
+This directory index covers root-level configuration files and project manifests.
+
+## Files
+
+- **`package.json`**: Node.js dependencies, npm scripts, and desktop app metadata.
+- **`vite.config.ts`**: Vite development server and production build configuration.
+- **`vitest.config.ts`**: Unit test runner configuration and isolation settings.
+- **`tsconfig.json` & `tsconfig.node.json`**: TypeScript compiler options for the application and build scripts.
+- **`tailwind.config.js` & `postcss.config.js`**: Tailwind CSS utility styling and PostCSS pipeline settings.
+- **`index.html`**: Root HTML entry point for the single-page application.
+- **`README.md`**: Project overview, feature summary, and setup instructions.
+- **`CHANGELOG.md`**: Version history and detailed changelog entries.
