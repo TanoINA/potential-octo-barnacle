@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import {
   Check,
   BookOpen,
@@ -20,6 +20,8 @@ import { ExecutionTrace } from './ExecutionTrace';
 import { FilesChangedCard } from './FilesChangedCard';
 import { CouncilView } from './CouncilView';
 import { SelfImprovementBadge } from './SelfImprovementBadge';
+import { InteractiveQuestionCard, type QuestionItem } from './InteractiveQuestionCard';
+import type { ToolCallItem } from '../types/agent';
 
 interface MessageRowProps {
   message: ChatMessage;
@@ -31,6 +33,7 @@ interface MessageRowProps {
   onRetryMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string, newContent: string) => void;
   onRollbackMessage?: (messageId: string) => void;
+  onAnswerQuestion?: (answer: string) => void;
   isStreaming?: boolean;
 }
 
@@ -44,6 +47,7 @@ export const MessageRow = memo(function MessageRow({
   onRetryMessage,
   onEditMessage,
   onRollbackMessage,
+  onAnswerQuestion,
   isStreaming = false,
 }: MessageRowProps) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
@@ -52,9 +56,29 @@ export const MessageRow = memo(function MessageRow({
   const [copied, setCopied] = useState(false);
   const [isPromptExpanded, setIsPromptExpanded] = useState(false);
 
-  if (!message) return null;
+  const isUser = message?.role === 'user';
 
-  const isUser = message.role === 'user';
+  const questionToolCalls = useMemo(() => {
+    if (isUser || !message) return [];
+    const calls: { id?: string; questions: QuestionItem[] }[] = [];
+    const checkTool = (tc: ToolCallItem) => {
+      if (tc.name === 'ask_question') {
+        const rawQuestions = tc.args?.questions || [];
+        if (Array.isArray(rawQuestions) && rawQuestions.length > 0) {
+          calls.push({ id: tc.id, questions: rawQuestions as QuestionItem[] });
+        }
+      }
+    };
+    if (message.toolCalls) message.toolCalls.forEach(checkTool);
+    if (message.segments) {
+      for (const seg of message.segments) {
+        if (seg.toolCalls) seg.toolCalls.forEach(checkTool);
+      }
+    }
+    return calls;
+  }, [isUser, message?.toolCalls, message?.segments]);
+
+  if (!message) return null;
   const isSystem = message.role === 'system';
   const isLongPrompt = isUser && ((message.content?.length || 0) > 320 || (message.content?.split('\n').length || 0) > 6);
   const hasRenderableSegments = Boolean(message.segments?.some((segment) => segment.text?.trim() || segment.toolCalls?.length));
@@ -420,6 +444,15 @@ export const MessageRow = memo(function MessageRow({
           onSelectArtifact={onSelectArtifact}
         />
       )}
+
+      {/* Interactive Question Cards */}
+      {!isUser && questionToolCalls.map((item, index) => (
+        <InteractiveQuestionCard
+          key={item.id || index}
+          questions={item.questions}
+          onSelectOption={onAnswerQuestion}
+        />
+      ))}
     </div>
   );
 });

@@ -34,3 +34,8 @@ it('shows a save failure without presenting overall completion or verification s
  expect(screen.getByRole('status').textContent).toBe('Answer complete · Save failed');
  expect(screen.queryByText(/Verification passed/)).toBeNull();
 });
+it('renders context meter accurately with token counts and percentage', () => {
+ render(<RunStatusBar contextUsage={{ usedTokens: 18400, maxTokens: 128000 }} />);
+ expect(screen.getByTestId('context-meter')).toBeTruthy();
+ expect(screen.getByText('18.4k / 128k tokens (14%)')).toBeTruthy();
+});

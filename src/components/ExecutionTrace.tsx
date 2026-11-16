@@ -8,6 +8,7 @@ import {
   FileCode2,
   FileText,
   Globe,
+  HelpCircle,
   Loader2,
   Search,
   Settings,
@@ -180,6 +181,15 @@ function getToolDisplayInfo(tool: ToolCallItem): {
       isTerminal: false,
       isRunning,
       filePath: rawPath || undefined,
+    };
+  }
+
+  if (name === 'ask_question') {
+    return {
+      icon: isRunning ? <Loader2 size={13} className="text-[#58a6ff] animate-spin shrink-0" /> : <HelpCircle size={13} className="text-[#58a6ff] shrink-0" />,
+      label: isRunning ? 'Asking question...' : 'Asked clarifying question',
+      isTerminal: false,
+      isRunning,
     };
   }
 

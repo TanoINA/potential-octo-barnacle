@@ -76,6 +76,26 @@ it('does not turn a skill-scoped review instruction into a local review operatio
   expect(calls('send_message')[0][1].request.messages.at(-1)).toMatchObject({ content: '/review', selectedSkills: ['ponytail'] });
 });
 
+it('transforms /goal into specialized directive prompt', async () => {
+  const hook = await mounted();
+  await act(async () => {
+    expect(await hook.result.current.sendMessage('/goal build passing tests')).toBe(true);
+  });
+  const sentGoal = calls('send_message')[0][1].request.messages.at(-1).content;
+  expect(sentGoal).toContain('autonomous /goal mode');
+  expect(sentGoal).toContain('build passing tests');
+});
+
+it('transforms /grill-me into specialized directive prompt', async () => {
+  const hook = await mounted();
+  await act(async () => {
+    expect(await hook.result.current.sendMessage('/grill-me auth flow')).toBe(true);
+  });
+  const sentGrill = calls('send_message')[0][1].request.messages.at(-1).content;
+  expect(sentGrill).toContain('reverse-interview mode (/grill-me)');
+  expect(sentGrill).toContain('auth flow');
+});
+
 describe('selected skill replay', () => {
   it.each([
     ['retry user', true], ['retry assistant', true], ['edit', true], ['undo', true],

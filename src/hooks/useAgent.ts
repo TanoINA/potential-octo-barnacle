@@ -1425,6 +1425,12 @@ export function useAgent() {
     if (/^\/plan(\s+.*)?$/i.test(prompt)) {
       const task = prompt.replace(/^\/plan\s*/i, '').trim();
       activePrompt = `Please formulate a structured step-by-step execution plan for: ${task || 'the current task'}.\n\nFormat your plan inside a \`\`\`plan code block with checkable steps:\n\`\`\`plan\n- [ ] Step 1: <Description>\n- [ ] Step 2: <Description>\n- [ ] Step 3: <Description>\n\`\`\`\n\nThen proceed to carry out the steps sequentially, updating and reporting progress as each step completes.`;
+    } else if (/^\/goal(\s+.*)?$/i.test(prompt)) {
+      const target = prompt.replace(/^\/goal\s*/i, '').trim();
+      activePrompt = `You are running in autonomous /goal mode. Target goal: ${target || 'Implement and verify the current task'}.\n\nRules for this mode:\n1. Formulate the verification criteria (test command or build command).\n2. Execute implementation steps.\n3. Run the verification test/build commands to inspect real results.\n4. If failures occur, diagnose and repair root causes without asking for permission, looping until all checks pass.\n5. Only report completion once verification has passed 100%.`;
+    } else if (/^\/grill-me(\s+.*)?$/i.test(prompt)) {
+      const topic = prompt.replace(/^\/grill-me\s*/i, '').trim();
+      activePrompt = `You are running in reverse-interview mode (/grill-me). Topic: ${topic || 'the upcoming task and architecture'}.\n\nRules for this mode:\n1. Do not start writing code or implementing yet.\n2. Proactively grill and interview me with sharp, critical questions about requirements, edge cases, error modes, dependencies, and constraints.\n3. Ask 1-3 targeted questions at a time using the ask_question tool (or clear numbered options) so I can decide directly.\n4. Challenge unstated assumptions and probe potential failure modes.\n5. Once all edge cases and requirements are clarified and agreed upon, provide a bulleted summary of our consensus.`;
     }
 
     let formattedPrompt = activePrompt;

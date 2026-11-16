@@ -235,3 +235,20 @@ it('lets a timeline jump supersede a pending prepend anchor without a later corr
   expect(container.querySelector('[data-index="2"]')!.getBoundingClientRect().top).toBe(0);
   expect(screen.getByTestId('active-index').textContent).toBe('2');
 });
+
+it('opens floating search bar on Ctrl+F and navigates search matches', () => {
+  const base = props();
+  render(<ChatCanvas {...base} />);
+  expect(screen.queryByTestId('in-chat-search-bar')).toBeNull();
+
+  fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
+  expect(screen.getByTestId('in-chat-search-bar')).toBeTruthy();
+
+  const searchInput = screen.getByPlaceholderText(/Find in chat/i);
+  fireEvent.change(searchInput, { target: { value: 'Message 12' } });
+
+  expect(screen.getByText('1/1')).toBeTruthy();
+
+  fireEvent.keyDown(searchInput, { key: 'Escape' });
+  expect(screen.queryByTestId('in-chat-search-bar')).toBeNull();
+});

@@ -260,6 +260,23 @@ export const Sidebar = memo(function Sidebar({
                 </div>
               )}
             </button>
+            {onTogglePinSession && (
+              <button
+                type="button"
+                data-session-pin-button
+                className={`icon-button rounded-lg mr-0.5 opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-[#343438] ${
+                  session.pinned ? 'text-[#e6edf3] !opacity-100' : 'text-[#a1a1aa] hover:text-[#f4f4f5]'
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePinSession(session.id);
+                }}
+                aria-label={session.pinned ? `Unpin ${session.title}` : `Pin ${session.title} to top`}
+                title={session.pinned ? 'Unpin chat' : 'Pin chat to top'}
+              >
+                <Pin size={12} className={session.pinned ? 'fill-current text-[#e6edf3]' : ''} />
+              </button>
+            )}
             <button
               type="button"
               data-session-menu-trigger

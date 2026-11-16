@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { AttachedContext, BackgroundTask, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult, ExecutionMode } from '../types/agent';
+import type { AttachedContext, BackgroundTask, ChatMessage, EffectiveRunConfig, SkillInfo, SubagentProgress, UndoTurnResult, ExecutionMode } from '../types/agent';
 import { MessageRow } from './MessageRow';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ActivityTray } from './ActivityTray';
@@ -164,6 +164,8 @@ export interface SlashItem {
 
 const COMMAND_ITEMS: SlashItem[] = [
   { id: 'cmd_plan', category: 'COMMANDS', command: '/plan', description: 'Formulate an interactive step-by-step execution plan', usage: 'Formulate execution plan\n/plan <task goal>', iconType: 'terminal', needsPrompt: true },
+  { id: 'cmd_goal', category: 'COMMANDS', command: '/goal', description: 'Autonomous goal execution loop until build/test target passes', usage: 'Autonomous goal mode\n/goal <verification target>', iconType: 'terminal', needsPrompt: true },
+  { id: 'cmd_grill_me', category: 'COMMANDS', command: '/grill-me', description: 'Reverse-interview mode: proactively grill on edge cases and requirements', usage: 'Reverse-interview mode\n/grill-me [topic]', iconType: 'terminal' },
   { id: 'cmd_tasks', category: 'COMMANDS', command: '/tasks', description: 'List and inspect active background tasks and processes', usage: 'Manage background tasks\n/tasks', iconType: 'terminal' },
   { id: 'cmd_export', category: 'COMMANDS', command: '/export', description: 'Export this conversation transcript to Markdown (.md)', usage: 'Export conversation\n/export', iconType: 'terminal' },
   { id: 'cmd_review', category: 'COMMANDS', command: '/review', description: 'Review the full conversation for reusable lessons', iconType: 'terminal' },
@@ -318,6 +320,37 @@ interface QueuedPrompt {
 
 const EMPTY_QUEUED_PROMPTS: QueuedPrompt[] = [];
 type QueueSessionId = QueuedPrompt['sessionId'];
+
+function estimateSessionTokens(messages: ChatMessage[]): number {
+  let charCount = 0;
+  let imageTokens = 0;
+  for (const msg of messages) {
+    if (msg.content) charCount += msg.content.length;
+    if (msg.reasoning) charCount += msg.reasoning.length;
+    if (msg.preamble) charCount += msg.preamble.length;
+    if (msg.imageInputs) imageTokens += msg.imageInputs.length * 1600;
+    if (msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        if (tc.result) charCount += tc.result.length;
+        if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
+        else if (tc.args) charCount += JSON.stringify(tc.args).length;
+      }
+    }
+    if (msg.segments) {
+      for (const seg of msg.segments) {
+        if (seg.text) charCount += seg.text.length;
+        if (seg.toolCalls) {
+          for (const tc of seg.toolCalls) {
+            if (tc.result) charCount += tc.result.length;
+            if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
+            else if (tc.args) charCount += JSON.stringify(tc.args).length;
+          }
+        }
+      }
+    }
+  }
+  return Math.ceil(charCount / 4) + imageTokens;
+}
 
 export function ChatCanvas({
   messages,
@@ -1110,6 +1143,71 @@ export function ChatCanvas({
     return handleJumpToMessage(index, 'center');
   }, [jumpToMessage, isSessionLoading, currentSessionId]);
 
+  const [isInChatSearchOpen, setIsInChatSearchOpen] = useState(false);
+  const [inChatSearchQuery, setInChatSearchQuery] = useState('');
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+  const inChatSearchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        const target = e.target as HTMLElement | null;
+        if (target && typeof target.closest === 'function' && target.closest('[data-modal-container], [data-spotlight-bar]')) return;
+        e.preventDefault();
+        setIsInChatSearchOpen(true);
+        window.setTimeout(() => inChatSearchInputRef.current?.focus(), 50);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const inChatMatches = useMemo(() => {
+    const query = inChatSearchQuery.trim().toLowerCase();
+    if (!query) return [];
+    const matches: number[] = [];
+    messages.forEach((msg, idx) => {
+      const content = (msg.content || '').toLowerCase();
+      const reasoning = (msg.reasoning || '').toLowerCase();
+      let toolText = '';
+      if (msg.toolCalls) {
+        toolText = msg.toolCalls.map((tc) => `${tc.name} ${tc.result || ''}`).join(' ').toLowerCase();
+      }
+      if (content.includes(query) || reasoning.includes(query) || toolText.includes(query)) {
+        matches.push(idx);
+      }
+    });
+    return matches;
+  }, [messages, inChatSearchQuery]);
+
+  const handlePrevMatch = useCallback(() => {
+    if (inChatMatches.length === 0) return;
+    setCurrentMatchIdx((prev) => (prev <= 0 ? inChatMatches.length - 1 : prev - 1));
+  }, [inChatMatches.length]);
+
+  const handleNextMatch = useCallback(() => {
+    if (inChatMatches.length === 0) return;
+    setCurrentMatchIdx((prev) => (prev >= inChatMatches.length - 1 ? 0 : prev + 1));
+  }, [inChatMatches.length]);
+
+  useEffect(() => {
+    if (!isInChatSearchOpen || inChatMatches.length === 0) return;
+    const targetIndex = inChatMatches[currentMatchIdx];
+    if (targetIndex != null) {
+      handleJumpToMessage(targetIndex, 'center');
+      if (messages[targetIndex]?.id) {
+        setOutlinedMessageId(messages[targetIndex].id);
+      }
+    }
+  }, [isInChatSearchOpen, currentMatchIdx, inChatMatches, handleJumpToMessage, messages]);
+
+  const contextUsage = useMemo(() => {
+    if (!messages || messages.length === 0) return null;
+    const usedTokens = estimateSessionTokens(messages);
+    const maxTokens = 128_000;
+    return { usedTokens, maxTokens };
+  }, [messages]);
+
   useLayoutEffect(() => {
     jumpSettleRef.current?.correct();
     // Preserve an explicit jump's optimistic marker until its bounded settle ends.
@@ -1545,7 +1643,7 @@ export function ChatCanvas({
       let accepted = false;
       try {
         const clean = next.prompt.trim();
-        const localCommand = next.options.selectedSkills?.length ? undefined : allSlashItems.find((item) => item.category !== 'SKILLS' && item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
+        const localCommand = next.options.selectedSkills?.length ? undefined : allSlashItems.find((item) => item.category !== 'SKILLS' && item.command === clean.split(/\s+/)[0].toLowerCase() && item.command !== '/plan' && item.command !== '/goal' && item.command !== '/grill-me' && (!/^\/(review|reflect|refine)$/.test(item.command) || clean.toLowerCase() === item.command));
         if (localCommand) {
           executeSlashCommand(localCommand, clean.split(/\s+/).slice(1).join(' '), false);
           accepted = true;
@@ -1641,8 +1739,8 @@ export function ChatCanvas({
       setCursor(0);
     };
 
-    // /plan is transformed by useAgent; it is a run, not a local command.
-    if (slashItem && slashItem.command !== '/plan') {
+    // /plan, /goal, and /grill-me are transformed by useAgent; they are runs, not local commands.
+    if (slashItem && slashItem.command !== '/plan' && slashItem.command !== '/goal' && slashItem.command !== '/grill-me') {
       const args = clean.split(/\s+/).slice(1).join(' ').trim();
       executeSlashCommand(slashItem, args);
       setAttachedContexts([]);
@@ -1698,6 +1796,10 @@ export function ChatCanvas({
   const handleSelectCouncilWinner = useCallback((messageId: string, winner: 'A' | 'B') => {
     onSelectCouncilWinner?.(messageId, winner);
   }, [onSelectCouncilWinner]);
+
+  const handleAnswerQuestion = useCallback((answer: string) => {
+    void onSendMessage(answer);
+  }, [onSendMessage]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const itemCount = slashOpen ? slashMatches.length : mentionOpen ? fileOptions.length : 0;
@@ -1886,6 +1988,21 @@ export function ChatCanvas({
                     <kbd className="rounded border border-[#30363d] bg-[#0d1117] px-1 text-[9px] text-[#6e7681]">Alt+Space</kbd>
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setIsInChatSearchOpen(true);
+                    window.setTimeout(() => inChatSearchInputRef.current?.focus(), 50);
+                  }}
+                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                >
+                  <span className="flex items-center gap-2">
+                    <Search size={13} className="text-[#8b949e]" />
+                    Find in chat
+                  </span>
+                  <kbd className="rounded border border-[#30363d] bg-[#0d1117] px-1 text-[9px] text-[#6e7681]">Ctrl+F</kbd>
+                </button>
                 {onExportSession && (
                   <>
                     <div className="my-1 border-t border-[#30363d]/60 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[#6e7681]">Export</div>
@@ -1942,6 +2059,72 @@ export function ChatCanvas({
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        {isInChatSearchOpen && (
+          <div
+            className="absolute right-6 top-3 z-30 flex items-center gap-1.5 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-2.5 py-1.5 shadow-2xl text-xs backdrop-blur-md"
+            data-testid="in-chat-search-bar"
+          >
+            <Search size={13} className="text-[#8b949e] shrink-0" />
+            <input
+              ref={inChatSearchInputRef}
+              type="text"
+              value={inChatSearchQuery}
+              onChange={(e) => {
+                setInChatSearchQuery(e.target.value);
+                setCurrentMatchIdx(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (e.shiftKey) handlePrevMatch();
+                  else handleNextMatch();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setIsInChatSearchOpen(false);
+                }
+              }}
+              placeholder="Find in chat... (Ctrl+F)"
+              className="w-36 sm:w-48 bg-transparent text-[#e6edf3] placeholder-[#6e7681] text-xs focus:outline-none"
+              autoFocus
+            />
+            <span className="text-[11px] font-mono text-[#8b949e] px-1 select-none">
+              {inChatSearchQuery.trim()
+                ? inChatMatches.length > 0
+                  ? `${currentMatchIdx + 1}/${inChatMatches.length}`
+                  : '0/0'
+                : ''}
+            </span>
+            <button
+              type="button"
+              onClick={handlePrevMatch}
+              disabled={inChatMatches.length === 0}
+              className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#e6edf3] disabled:opacity-40"
+              title="Previous match (Shift+Enter)"
+              aria-label="Previous match"
+            >
+              <ChevronUp size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={handleNextMatch}
+              disabled={inChatMatches.length === 0}
+              className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#e6edf3] disabled:opacity-40"
+              title="Next match (Enter)"
+              aria-label="Next match"
+            >
+              <ChevronDown size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsInChatSearchOpen(false)}
+              className="rounded p-1 text-[#8b949e] hover:bg-[#21262d] hover:text-[#e6edf3]"
+              title="Close search (Esc)"
+              aria-label="Close search"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {isSessionLoading && <div role="status" className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d1117] text-sm text-[#8b949e]">Loading conversation{'\u2026'}</div>}
         <div
           ref={parentRef}
@@ -2049,6 +2232,7 @@ export function ChatCanvas({
                     onRetryMessage={onRetryTurn}
                     onEditMessage={onEditAndResendMessage}
                     onRollbackMessage={onRollbackToMessage}
+                    onAnswerQuestion={handleAnswerQuestion}
                     isStreaming={isStreaming}
                   />
                 </div>
@@ -2323,7 +2507,11 @@ export function ChatCanvas({
           </div>
         )}
 
-        <RunStatusBar status={isHistoryPreview ? null : runStatus} onCancelPreparation={onStop} />
+        <RunStatusBar
+          status={isHistoryPreview ? null : runStatus}
+          onCancelPreparation={onStop}
+          contextUsage={contextUsage}
+        />
         <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
           {selectedSkills.length > 0 && (
             <div aria-label="Selected skills" className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-b border-[#30363d]/50 px-3 py-2">

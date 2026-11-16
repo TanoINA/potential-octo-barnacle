@@ -228,6 +228,28 @@ describe('ChatCanvas plan commands', () => {
   });
 });
 
+describe('ChatCanvas goal and grill-me commands', () => {
+  it('sends /goal with its target as a message run, not a local client command', async () => {
+    const props = renderCanvas();
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/goal run full test suite' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(
+      '/goal run full test suite', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
+    ));
+  });
+
+  it('sends /grill-me as a message run, not a local client command', async () => {
+    const props = renderCanvas();
+    const input = screen.getByLabelText('Message AetherAgent');
+    fireEvent.change(input, { target: { value: '/grill-me database migration' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(props.onSendMessage).toHaveBeenCalledWith(
+      '/grill-me database migration', undefined, expect.objectContaining({ executionMode: expect.any(String) }),
+    ));
+  });
+});
+
 describe('ChatCanvas streaming commands', () => {
   it('runs /stop while a turn is still streaming', async () => {
     const onStop = vi.fn();

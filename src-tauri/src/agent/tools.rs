@@ -319,6 +319,42 @@ pub fn get_agent_tools() -> serde_json::Value {
                     "required": ["name", "description", "instructions"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ask_question",
+                "description": "Ask the user structured clarification or choice questions with interactive selectable options. Use this when facing architectural decisions, dependency choices, ambiguous requirements, or whenever user confirmation is needed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "description": "List of questions to present to the user",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {
+                                        "type": "string",
+                                        "description": "The specific question text"
+                                    },
+                                    "options": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "List of choices for the user to select from"
+                                    },
+                                    "is_multi_select": {
+                                        "type": "boolean",
+                                        "description": "Whether multiple choices can be selected. Defaults to false."
+                                    }
+                                },
+                                "required": ["question", "options"]
+                            }
+                        }
+                    },
+                    "required": ["questions"]
+                }
+            }
         }
     ]);
     tools.as_array_mut().expect("static tool array").extend(
@@ -359,6 +395,7 @@ pub async fn execute_tool(
         "fetch_web_page" => fetch_web_page(args, context).await,
         "search_web" => search_web(args, context).await,
         "learn_skill" => learn_skill(args, context).await,
+        "ask_question" => ask_question(args).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
     result.unwrap_or_else(ToolExecutionResult::failure)
@@ -1800,6 +1837,53 @@ async fn search_web(
     Ok(ToolExecutionResult::success(output.trim().to_string(), artifact))
 }
 
+async fn ask_question(args: &serde_json::Value) -> Result<ToolExecutionResult, String> {
+    let questions = args
+        .get("questions")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Missing or invalid required 'questions' array".to_string())?;
+
+    if questions.is_empty() {
+        return Err("The 'questions' array cannot be empty".to_string());
+    }
+
+    let mut formatted = String::from("Interactive question(s) presented to user:\n");
+    for (i, q) in questions.iter().enumerate() {
+        let question_text = q
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Question");
+        let is_multi = q
+            .get("is_multi_select")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        formatted.push_str(&format!(
+            "\n{}. {} (selection: {})\n",
+            i + 1,
+            question_text,
+            if is_multi { "multiple" } else { "single" }
+        ));
+        if let Some(opts) = q.get("options").and_then(|v| v.as_array()) {
+            for opt in opts {
+                if let Some(opt_text) = opt.as_str() {
+                    formatted.push_str(&format!("   - {}\n", opt_text));
+                }
+            }
+        }
+    }
+
+    Ok(ToolExecutionResult {
+        output: formatted.trim_end().to_string(),
+        artifact: None,
+        success: true,
+        cancelled: false,
+        duration_ms: Some(5),
+        exit_code: Some(0),
+        terminal_output: None,
+        files_changed: None,
+    })
+}
+
 fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -2773,5 +2857,32 @@ mod tests {
         assert_eq!(results[0].title, "Rust & Language");
         assert_eq!(results[0].url, "https://www.rust-lang.org/");
         assert_eq!(results[0].snippet, "A language empowering everyone.");
+    }
+
+    #[tokio::test]
+    async fn ask_question_formats_output_properly() {
+        let args = serde_json::json!({
+            "questions": [
+                {
+                    "question": "Which database would you prefer?",
+                    "options": ["SQLite", "PostgreSQL"],
+                    "is_multi_select": false
+                }
+            ]
+        });
+        let result = ask_question(&args).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("Which database would you prefer?"));
+        assert!(result.output.contains("SQLite"));
+        assert!(result.output.contains("PostgreSQL"));
+
+        let tools = get_agent_tools();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(names.contains(&"ask_question"));
     }
 }

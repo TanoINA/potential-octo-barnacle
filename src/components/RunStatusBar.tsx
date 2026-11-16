@@ -14,8 +14,21 @@ const labels = {
   error: 'Run error',
 };
 
+export interface ContextUsageInfo {
+  usedTokens: number;
+  maxTokens: number;
+}
+
 /** One clock in the visible status surface; no timers in message rows or tokens. */
-export const RunStatusBar = memo(function RunStatusBar({ status, onCancelPreparation }: { status?: RunStatus | null; onCancelPreparation?: () => void }) {
+export const RunStatusBar = memo(function RunStatusBar({
+  status,
+  onCancelPreparation,
+  contextUsage,
+}: {
+  status?: RunStatus | null;
+  onCancelPreparation?: () => void;
+  contextUsage?: ContextUsageInfo | null;
+}) {
   const [now, setNow] = useState(Date.now);
   const active = Boolean(status && !status.endedAt);
   useEffect(() => {
@@ -36,25 +49,73 @@ export const RunStatusBar = memo(function RunStatusBar({ status, onCancelPrepara
       document.removeEventListener('visibilitychange', sync);
     };
   }, [active, status?.runId, status?.sessionId]);
-  if (!status) return null;
-  const time = status.endedAt ?? now;
+
+  const hasContextMeter = Boolean(contextUsage && contextUsage.usedTokens > 0 && contextUsage.maxTokens > 0);
+  if (!status && !hasContextMeter) return null;
+
+  const time = status?.endedAt ?? now;
   const seconds = (since: number) => Math.max(0, Math.floor((time - since) / 1000));
-  const outcome = status.outcome;
-  let label: string = labels[status.phase];
-  if (status.saveFailed) label = `${outcome?.answer === 'completed' ? 'Answer complete' : outcome?.answer === 'cancelled' ? 'Cancelled' : 'Run error'} · Save failed`;
-  else if (status.endedAt && outcome) {
+  const outcome = status?.outcome;
+  let label: string = status ? labels[status.phase] : '';
+  if (status?.saveFailed) {
+    label = `${outcome?.answer === 'completed' ? 'Answer complete' : outcome?.answer === 'cancelled' ? 'Cancelled' : 'Run error'} · Save failed`;
+  } else if (status?.endedAt && outcome) {
     const changes = outcome.filesChanged === true ? 'Changes applied' : outcome.filesChanged === false ? 'No file changes recorded' : 'File changes unknown';
     const verification = outcome.verification === 'passed' ? 'Verification passed' : outcome.verification === 'failed' ? 'Verification failed' : 'Verification not recorded';
     label += ` · ${changes} · ${verification}`;
   }
+
   return (
-    <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-1 px-1 py-2 text-xs text-[#8b949e]" data-run-id={status.runId ?? undefined}>
-      <span role="status" aria-live="polite" className="flex items-center gap-2">
-        {active && <LoaderCircle size={13} aria-hidden="true" className="motion-safe:animate-spin" />}
-        {label}
-      </span>
-      {status.phase === 'preparing_attachments' && onCancelPreparation && <button type="button" onClick={onCancelPreparation} className="rounded px-2 py-1 text-[#e6edf3] hover:bg-[#30363d] focus-visible:outline focus-visible:outline-2">Cancel preparation</button>}
-      <span aria-live="off">{seconds(status.startedAt)}s elapsed · {seconds(status.phaseSince)}s in stage</span>
+    <div
+      className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 py-1.5 text-xs text-[#8b949e]"
+      data-run-id={status?.runId ?? undefined}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {status && (
+          <>
+            <span role="status" aria-live="polite" className="flex items-center gap-2">
+              {active && <LoaderCircle size={13} aria-hidden="true" className="motion-safe:animate-spin" />}
+              {label}
+            </span>
+            {status.phase === 'preparing_attachments' && onCancelPreparation && (
+              <button
+                type="button"
+                onClick={onCancelPreparation}
+                className="rounded px-2 py-1 text-[#e6edf3] hover:bg-[#30363d] focus-visible:outline focus-visible:outline-2"
+              >
+                Cancel preparation
+              </button>
+            )}
+            <span aria-live="off">{seconds(status.startedAt)}s elapsed · {seconds(status.phaseSince)}s in stage</span>
+          </>
+        )}
+      </div>
+
+      {hasContextMeter && contextUsage && (() => {
+        const { usedTokens, maxTokens } = contextUsage;
+        const pct = Math.min(100, Math.round((usedTokens / maxTokens) * 100));
+        const formatK = (n: number) => {
+          if (n >= 1000000) return n % 1000000 === 0 ? `${n / 1000000}m` : `${(n / 1000000).toFixed(1)}m`;
+          if (n >= 1000) return n % 1000 === 0 ? `${n / 1000}k` : `${(n / 1000).toFixed(1)}k`;
+          return `${n}`;
+        };
+        const color = pct >= 80 ? 'text-[#f85149] font-medium' : pct >= 60 ? 'text-[#d29922]' : 'text-[#8b949e]';
+        const barColor = pct >= 80 ? 'bg-[#f85149]' : pct >= 60 ? 'bg-[#d29922]' : 'bg-[#58a6ff]';
+        const meterText = `${formatK(usedTokens)} / ${formatK(maxTokens)} tokens (${pct}%)`;
+
+        return (
+          <div
+            className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-[#8b949e]"
+            title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${pct}%)${pct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
+            data-testid="context-meter"
+          >
+            <span className="w-12 h-1.5 rounded-full bg-[#21262d] overflow-hidden inline-flex border border-[#30363d]/50">
+              <span className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+            </span>
+            <span className={color}>{meterText}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 });

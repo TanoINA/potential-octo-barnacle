@@ -83,6 +83,31 @@ describe('Sidebar Pinned Sessions', () => {
     expect(onTogglePinSession).toHaveBeenCalledWith('sess-2');
   });
 
+  it('toggles pin status when clicking the quick pin hover button', () => {
+    const onTogglePinSession = vi.fn();
+
+    render(
+      <Sidebar
+        sessions={dummySessions}
+        currentSessionId="sess-2"
+        onNewSession={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onTogglePinSession={onTogglePinSession}
+        onExportSession={vi.fn()}
+        onOpenSettings={vi.fn()}
+        workspaceCwd=""
+        onSelectWorkspace={vi.fn()}
+        effectiveConfig={null}
+      />,
+    );
+
+    const quickPin = screen.getByRole('button', { name: 'Pin Normal chat Beta to top' });
+    fireEvent.click(quickPin);
+    expect(onTogglePinSession).toHaveBeenCalledWith('sess-2');
+  });
+
   it('triggers deep search on query and displays highlighted snippet', async () => {
     const onDeepSearch = vi.fn().mockResolvedValue([
       {
