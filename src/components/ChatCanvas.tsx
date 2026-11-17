@@ -40,6 +40,7 @@ import { MessageRow } from './MessageRow';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ActivityTray } from './ActivityTray';
 import { SkillPicker } from './SkillPicker';
+import { SelectedSkillChip } from './SelectedSkillChip';
 import { TimelineScrubber } from './TimelineScrubber';
 import { ChatHeader } from './ChatHeader';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
@@ -449,7 +450,10 @@ export function ChatCanvas({
   currentSessionId,
   workspaceCwd = '',
 }: ChatCanvasProps) {
+  const draftKey = JSON.stringify([workspaceCwd, currentSessionId]);
+  const pendingDraftSelectionRef = useRef<{ key: string; input: string; cursor: number } | null>(null);
   const [input, setInput] = useState('');
+  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -544,17 +548,26 @@ export function ChatCanvas({
     };
   }, []);
   useEffect(() => {
-    setAttachedContexts([]);
-    setSelectedSkills([]);
+    if (activeDraftRef.current.key !== draftKey) {
+      const previous = activeDraftRef.current;
+      draftsRef.current.set(previous.key, previous);
+      const next = draftsRef.current.get(draftKey) ?? { input: '', cursor: 0, attachments: [], skills: [], skillInfo: [], images: new Map() };
+      activeDraftRef.current = { ...next, key: draftKey };
+      setInput(next.input);
+      setCursor(next.cursor);
+      setAttachedContexts(next.attachments);
+      setSelectedSkills(next.skills);
+      setAvailableSkills(next.skillInfo);
+      preparedImageInputsRef.current = next.images;
+      pendingDraftSelectionRef.current = { key: draftKey, input: next.input, cursor: next.cursor };
+    }
     setSkillsMenuOpen(false);
     setLoadingSkills(false);
     setSkillsError(null);
-    setAvailableSkills([]);
-    preparedImageInputsRef.current.clear();
     setPendingAttachments(0);
     setAttachmentError(null);
     setIsDraggingOver(false);
-  }, [currentSessionId, workspaceCwd]);
+  }, [draftKey]);
 
   // Antrean dan status jeda dimiliki sesi asal, bukan tampilan yang sedang dibuka.
   useEffect(() => {
@@ -683,6 +696,19 @@ export function ChatCanvas({
   const [fileOptions, setFileOptions] = useState<string[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [attachedContexts, setAttachedContexts] = useState<AttachedContext[]>([]);
+  type ComposerDraft = {
+    input: string;
+    cursor: number;
+    attachments: AttachedContext[];
+    skills: string[];
+    skillInfo: SkillInfo[];
+    images: typeof preparedImageInputsRef.current;
+  };
+  const draftsRef = useRef(new Map<string, ComposerDraft>());
+  const activeDraftRef = useRef({ key: draftKey, input, cursor, attachments: attachedContexts, skills: selectedSkills, skillInfo: availableSkills, images: preparedImageInputsRef.current });
+  if (activeDraftRef.current.key === draftKey) {
+    activeDraftRef.current = { key: draftKey, input, cursor, attachments: attachedContexts, skills: selectedSkills, skillInfo: availableSkills, images: preparedImageInputsRef.current };
+  }
   const previewAttachmentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const attachment of attachedContexts) {
@@ -703,7 +729,6 @@ export function ChatCanvas({
   }, [attachedContexts]);
   const [addContextOpen, setAddContextOpen] = useState(false);
   const [skillsMenuOpen, setSkillsMenuOpen] = useState(false);
-  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
@@ -732,6 +757,13 @@ export function ChatCanvas({
   const ActiveModeIcon = activeExecutionMode.icon;
   const parentRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const selection = pendingDraftSelectionRef.current;
+    if (selection?.key === draftKey && selection.input === input && selection.cursor === cursor) {
+      textareaRef.current?.setSelectionRange(cursor, cursor);
+      pendingDraftSelectionRef.current = null;
+    }
+  }, [draftKey, input, cursor]);
   const stickToBottomRef = useRef(true);
   const [showJumpBottom, setShowJumpBottom] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -1708,9 +1740,10 @@ export function ChatCanvas({
 
   const send = async () => {
     if (isSessionLoading || attachmentScopeRef.current.pending > 0) return;
-    const origin = { ...attachmentScopeRef.current };
+
     let draft = input;
     const originalDraft = input;
+    const originDraftKey = draftKey;
     const draftSkills = [...selectedSkills];
     while (draft.startsWith('/')) {
       const token = draft.match(/^\/(\S+)(?:\s+|$)/);
@@ -1772,14 +1805,29 @@ export function ChatCanvas({
     }
 
     const clearIfUnchanged = (accepted: boolean) => {
-      if (!accepted || !isAttachmentOrigin(origin)) return;
+      if (!accepted) return;
+      const current = activeDraftRef.current.key === originDraftKey
+        ? activeDraftRef.current
+        : draftsRef.current.get(originDraftKey);
+      if (!current) return;
+      const next = {
+        ...current,
+        input: current.input === originalDraft ? '' : current.input,
+        cursor: current.input === originalDraft ? 0 : current.cursor,
+        attachments: current.attachments === draftAttachments ? [] : current.attachments,
+        skills: current.skills === selectedSkills ? [] : current.skills,
+      };
+      next.images = new Map([...current.images].filter(([path]) => next.attachments.some((attachment) => attachment.path === path)));
+      draftsRef.current.set(originDraftKey, next);
+      if (activeDraftRef.current.key !== originDraftKey) return;
       invalidateAttachments();
-      setInput((current) => (current === originalDraft ? '' : current));
-      setAttachedContexts((current) => (current === draftAttachments ? [] : current));
-      setSelectedSkills((current) => (current === selectedSkills ? [] : current));
-      setCursor(0);
+      activeDraftRef.current = { ...next, key: originDraftKey };
+      setInput(next.input);
+      setCursor(next.cursor);
+      setAttachedContexts(next.attachments);
+      setSelectedSkills(next.skills);
+      preparedImageInputsRef.current = next.images;
     };
-
     // /plan, /goal, /grill-me, /search, and /web are transformed by useAgent; they are runs, not local commands.
     if (slashItem && slashItem.command !== '/plan' && slashItem.command !== '/goal' && slashItem.command !== '/grill-me' && slashItem.command !== '/search' && slashItem.command !== '/web') {
       const args = clean.split(/\s+/).slice(1).join(' ').trim();
@@ -2384,10 +2432,12 @@ export function ChatCanvas({
         <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
           {selectedSkills.length > 0 && (
             <div aria-label="Selected skills" className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-b border-[#30363d]/50 px-3 py-2">
-              {selectedSkills.map((name) => <span key={name} className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-[#30363d] bg-[#0d1117] px-2 py-1 text-[11px] text-[#a5d6ff]">
-                <BookOpen size={12} className="shrink-0" /><span className="max-w-48 truncate">{name}</span>
-                <button type="button" aria-label={`Remove skill ${name}`} onClick={() => setSelectedSkills((previous) => previous.filter((skill) => skill !== name))} className="rounded text-[#8b949e] hover:text-[#e6edf3]"><X size={12} /></button>
-              </span>)}
+              {selectedSkills.map((name) => <SelectedSkillChip
+                key={name}
+                name={name}
+                skill={availableSkills.find((skill) => skill.name === name)}
+                onRemove={() => setSelectedSkills((previous) => previous.filter((skill) => skill !== name))}
+              />)}
             </div>
           )}
           {pendingAttachments > 0 && <div role="status" className="px-3 py-2 text-xs text-[#8b949e]">Preparing attachments ({pendingAttachments})...</div>}

@@ -22,6 +22,35 @@ const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const KILL_TIMEOUT: Duration = Duration::from_secs(15);
 const LOG_TRUNCATED: &str = "\n[task log quota reached; further output omitted]\n";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundTaskStatus {
+    Running,
+    Stopping,
+    Completed,
+    Failed,
+    #[serde(alias = "killed")]
+    Cancelled,
+}
+
+impl BackgroundTaskStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::Stopping)
+    }
+}
+
+impl std::fmt::Display for BackgroundTaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskInfo {
@@ -30,7 +59,7 @@ pub struct TaskInfo {
     pub command: String,
     pub tool_summary: Option<String>,
     pub is_daemon: bool,
-    pub status: String, // "running" | "completed" | "failed" | "killed"
+    pub status: BackgroundTaskStatus,
     pub pid: Option<u32>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
@@ -50,6 +79,13 @@ struct TaskEntry {
 }
 
 impl TaskEntry {
+    fn request_stop(&mut self) {
+        if self.info.status.is_active() && self.info.completed_at.is_none() {
+            self.info.status = BackgroundTaskStatus::Stopping;
+            self.cancel.cancel();
+        }
+    }
+
     fn push_output(&mut self, text: &str) {
         for line in text.split_inclusive('\n') {
             let mut remaining = line;
@@ -306,8 +342,9 @@ async fn monitor_task(
             biased;
             _ = cancel.cancelled(), if !cancellation_handled => {
                 cancellation_handled = true;
+                entry.write().await.request_stop();
+                killed = true;
                 if !process_exited {
-                    killed = true;
                     if let Err(error) = terminate_child(&mut child).await {
                         record_output(&entry, &mut log, &format!("\n[{error}]\n")).await;
                         entry.write().await.monitor_error = Some(error);
@@ -371,15 +408,14 @@ async fn monitor_task(
     guard.info.completed_at = Some(chrono::Utc::now().timestamp_millis());
     guard.info.exit_code = final_exit_code;
     guard.info.status = if guard.monitor_error.is_some() {
-        "failed"
-    } else if killed {
-        "killed"
+        BackgroundTaskStatus::Failed
+    } else if killed || guard.cancel.is_cancelled() {
+        BackgroundTaskStatus::Cancelled
     } else if final_exit_code == Some(0) {
-        "completed"
+        BackgroundTaskStatus::Completed
     } else {
-        "failed"
-    }
-    .into();
+        BackgroundTaskStatus::Failed
+    };
 }
 
 impl Default for TaskManager {
@@ -476,7 +512,7 @@ impl TaskManager {
             command: command.into(),
             tool_summary,
             is_daemon,
-            status: "running".into(),
+            status: BackgroundTaskStatus::Running,
             pid: child.id(),
             started_at: chrono::Utc::now().timestamp_millis(),
             completed_at: None,
@@ -534,7 +570,7 @@ impl TaskManager {
     pub async fn has_running_tasks(&self) -> bool {
         let entries: Vec<_> = self.tasks.read().await.values().cloned().collect();
         for entry in entries {
-            if entry.read().await.info.status == "running" {
+            if entry.read().await.info.status.is_active() {
                 return true;
             }
         }
@@ -601,7 +637,7 @@ impl TaskManager {
         }
         let (tx, cancel) = {
             let guard = entry.read().await;
-            if guard.info.status != "running"
+            if guard.info.status != BackgroundTaskStatus::Running
                 || guard.info.pid.is_none() && guard.info.completed_at.is_some()
             {
                 return Err(format!(
@@ -631,11 +667,11 @@ impl TaskManager {
     pub async fn kill_task(&self, session_id: &str, task_id: &str) -> Result<String, String> {
         let entry = self.entry(session_id, task_id).await?;
         {
-            let guard = entry.read().await;
-            if guard.info.completed_at.is_some() {
+            let mut guard = entry.write().await;
+            if !guard.info.status.is_active() {
                 return Ok(format!("Task '{task_id}' is already {}", guard.info.status));
             }
-            guard.cancel.cancel();
+            guard.request_stop();
         }
         tokio::time::timeout(KILL_TIMEOUT, async {
             loop {
@@ -663,7 +699,7 @@ impl TaskManager {
     pub async fn kill_session_tasks(&self, session_id: &str) {
         let tasks = self.list_tasks(session_id).await;
         for task in tasks {
-            if task.completed_at.is_none() {
+            if task.status.is_active() {
                 let _ = self.kill_task(session_id, &task.id).await;
             }
         }
@@ -679,7 +715,7 @@ impl TaskManager {
             let mut pending: futures_util::stream::FuturesUnordered<_> = entries
                 .into_iter()
                 .map(|entry| async move {
-                    entry.read().await.cancel.cancel();
+                    entry.write().await.request_stop();
                     loop {
                         {
                             let guard = entry.read().await;
@@ -719,6 +755,74 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn stop_requests_are_active_idempotent_and_wait_for_worker_completion() {
+        let mgr = TaskManager::new();
+        let entry = Arc::new(RwLock::new(TaskEntry {
+            info: TaskInfo {
+                id: "stopping-fixture".into(), session_id: "owner".into(),
+                command: String::new(), tool_summary: None, is_daemon: true,
+                status: BackgroundTaskStatus::Running, pid: Some(42), started_at: 0,
+                completed_at: None, exit_code: None, log_path: String::new(),
+                recent_output: String::new(),
+            },
+            output_lines: VecDeque::new(), stdin_tx: None,
+            cancel: CancellationToken::new(), monitor_error: None, output_closed: false,
+        }));
+        mgr.tasks.write().await.insert("stopping-fixture".into(), entry.clone());
+        let first = mgr.kill_task("owner", "stopping-fixture");
+        let repeated = mgr.kill_task("owner", "stopping-fixture");
+        tokio::pin!(first, repeated);
+        tokio::select! {
+            _ = &mut first => panic!("request must wait for the worker"),
+            _ = &mut repeated => panic!("repeated request must wait for the worker"),
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+        let pending = mgr.get_status("owner", "stopping-fixture", None).await.unwrap();
+        let active = mgr.has_running_tasks().await;
+        let input = mgr.send_input("owner", "stopping-fixture", "no").await;
+        let shutdown = mgr.shutdown(Duration::from_millis(25)).await;
+        assert!(shutdown.unwrap_err().contains("not confirmed"));
+        assert!(mgr.get_status("owner", "stopping-fixture", None).await.unwrap().completed_at.is_none());
+        assert!(mgr.has_running_tasks().await);
+        // Simulate monitor completion only after both requests have been observed.
+        {
+            let mut guard = entry.write().await;
+            guard.info.status = BackgroundTaskStatus::Cancelled;
+            guard.info.completed_at = Some(1);
+            guard.info.pid = None;
+        }
+        let (first, repeated) = tokio::join!(first, repeated);
+        assert!(first.unwrap().contains("terminated"));
+        assert!(repeated.unwrap().contains("terminated"));
+        assert_eq!(pending.status, BackgroundTaskStatus::Stopping);
+        assert_eq!(pending.pid, Some(42));
+        assert!(pending.completed_at.is_none());
+        assert!(active, "stopping daemons must block update readiness");
+        assert!(input.is_err());
+        assert!(mgr.kill_task("owner", "stopping-fixture").await.unwrap().contains("already cancelled"));
+        mgr.shutdown(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(mgr.get_status("owner", "stopping-fixture", None).await.unwrap().status, BackgroundTaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn termination_error_keeps_stop_pending_until_worker_finishes() {
+        let mgr = TaskManager::new();
+        let info = mgr.start_task("owner", fixture_command("sleep"), "shutdown", None, true).await.unwrap();
+        let entry = mgr.entry("owner", &info.id).await.unwrap();
+        // A recorded error makes kill return before monitor completion; the request
+        // must still expose stopping and remain in shutdown's active set.
+        entry.write().await.monitor_error = Some("injected termination failure".into());
+        let result = mgr.kill_task("owner", &info.id).await;
+        let pending = mgr.get_status("owner", &info.id, None).await.unwrap();
+        let done = finished(&mgr, "owner", &info.id).await;
+        assert!(result.unwrap_err().contains("injected"));
+        assert_eq!(pending.status, BackgroundTaskStatus::Stopping);
+        assert!(pending.completed_at.is_none());
+        assert!(done.completed_at.is_some());
+        assert_eq!(done.status, BackgroundTaskStatus::Failed);
+    }
+
+    #[tokio::test]
     async fn exit_shutdown_waits_for_busy_monitor_cleanup() {
         let mgr = TaskManager::new();
         let info = mgr
@@ -751,7 +855,7 @@ mod tests {
             "exit shutdown returned before the busy monitor confirmed process cleanup"
         );
         assert!(done.pid.is_none());
-        assert_eq!(done.status, "killed");
+        assert_eq!(done.status, BackgroundTaskStatus::Cancelled);
     }
 
     #[cfg(windows)]
@@ -833,7 +937,7 @@ mod tests {
         .expect("shutdown must bound even lock contention")
         .unwrap_err();
         assert!(error.contains("not confirmed"));
-        assert_eq!(busy.info.status, "running");
+        assert_eq!(busy.info.status, BackgroundTaskStatus::Running);
         assert!(busy.info.completed_at.is_none());
         assert_eq!(busy.info.pid, info.pid);
         busy.cancel.cancel();
@@ -892,7 +996,7 @@ mod tests {
             assert!(guard.info.pid.is_none());
         }
         let guard = entries[0].read().await;
-        assert_eq!(guard.info.status, "failed");
+        assert_eq!(guard.info.status, BackgroundTaskStatus::Failed);
         assert!(guard.output(500).contains("injected log failure"));
     }
 
@@ -912,7 +1016,7 @@ mod tests {
                         command: "test".into(),
                         tool_summary: None,
                         is_daemon: false,
-                        status: "running".into(),
+                        status: BackgroundTaskStatus::Running,
                         pid: None,
                         started_at: 0,
                         completed_at: None,
@@ -942,7 +1046,7 @@ mod tests {
     async fn update_gate_running_tasks_scans_all_sessions_and_task_kinds() {
         let manager = TaskManager::new();
         assert!(!manager.has_running_tasks().await);
-        for (index, status) in ["completed", "failed", "killed"].into_iter().enumerate() {
+        for (index, status) in [BackgroundTaskStatus::Completed, BackgroundTaskStatus::Failed, BackgroundTaskStatus::Cancelled].into_iter().enumerate() {
             let id = format!("terminal-{index}");
             manager.tasks.write().await.insert(
                 id.clone(),
@@ -953,7 +1057,7 @@ mod tests {
                         command: String::new(),
                         tool_summary: None,
                         is_daemon: index % 2 == 0,
-                        status: status.into(),
+                        status,
                         pid: None,
                         started_at: 0,
                         completed_at: Some(1),
@@ -974,7 +1078,7 @@ mod tests {
         for daemon in [false, true] {
             {
                 let mut guard = entry.write().await;
-                guard.info.status = "running".into();
+                guard.info.status = BackgroundTaskStatus::Running;
                 guard.info.completed_at = None;
                 guard.info.is_daemon = daemon;
             }
@@ -984,7 +1088,7 @@ mod tests {
                 manager.has_running_tasks().await,
                 "cancellation must not imply confirmed task completion"
             );
-            entry.write().await.info.status = "killed".into();
+            entry.write().await.info.status = BackgroundTaskStatus::Cancelled;
             assert!(!manager.has_running_tasks().await);
         }
         assert!(!manager.log_dir.exists(), "readiness must not create logs");
@@ -1117,7 +1221,7 @@ mod tests {
             .await
             .expect("spawn task");
 
-        assert_eq!(info.status, "running");
+        assert_eq!(info.status, BackgroundTaskStatus::Running);
         assert!(info.id.starts_with("task_"));
 
         // Wait for completion (give enough headroom under parallel test load)
@@ -1128,7 +1232,7 @@ mod tests {
                 .get_status("test-session", &info.id, Some(10))
                 .await
                 .expect("get status");
-            if status.status == "completed" {
+            if status.status == BackgroundTaskStatus::Completed {
                 completed = true;
                 assert!(status.recent_output.contains("task completed successfully"));
                 break;
@@ -1151,7 +1255,7 @@ mod tests {
             .await
             .expect("spawn sleep task");
 
-        assert_eq!(info.status, "running");
+        assert_eq!(info.status, BackgroundTaskStatus::Running);
         assert!(info.is_daemon);
 
         // Kill the task
@@ -1166,7 +1270,7 @@ mod tests {
             .get_status("test-session", &info.id, None)
             .await
             .expect("status after kill");
-        assert_eq!(status.status, "killed");
+        assert_eq!(status.status, BackgroundTaskStatus::Cancelled);
     }
 
     async fn finished(mgr: &TaskManager, session_id: &str, id: &str) -> TaskInfo {
@@ -1277,7 +1381,7 @@ mod tests {
                 command: String::new(),
                 tool_summary: None,
                 is_daemon: true,
-                status: "running".into(),
+                status: BackgroundTaskStatus::Running,
                 pid: None,
                 started_at: 0,
                 completed_at: None,
@@ -1357,7 +1461,7 @@ mod tests {
             .await
             .unwrap();
         let done = finished(&mgr, "test-session", &info.id).await;
-        assert_eq!(done.status, "completed");
+        assert_eq!(done.status, BackgroundTaskStatus::Completed);
         let listed = mgr.list_tasks("test-session").await;
         assert!(
             listed[0].recent_output.len() <= 64 * 1024,
@@ -1404,6 +1508,8 @@ mod tests {
             .await
             .unwrap();
         assert!(done.completed_at.is_some());
+        assert_eq!(done.status, BackgroundTaskStatus::Cancelled);
+        assert_eq!(serde_json::to_value(&done).unwrap()["status"], "cancelled");
         assert!(
             done.pid.is_none(),
             "completed process identity must be retired"
@@ -1573,7 +1679,7 @@ mod tests {
             mgr.entry("test-session", &info.id).await.unwrap()
         };
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(entry.read().await.info.status, "running");
+        assert_eq!(entry.read().await.info.status, BackgroundTaskStatus::Running);
         entry.read().await.cancel.cancel();
         tokio::time::timeout(KILL_TIMEOUT, async {
             loop {
@@ -1601,7 +1707,7 @@ mod tests {
             .await
             .unwrap();
         let done = finished(&mgr, "test-session", &info.id).await;
-        assert_eq!(done.status, "completed");
+        assert_eq!(done.status, BackgroundTaskStatus::Completed);
         assert!(done.pid.is_none());
         assert!(done.recent_output.contains("output drain deadline reached"));
     }

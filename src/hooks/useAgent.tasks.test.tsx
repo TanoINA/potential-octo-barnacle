@@ -43,6 +43,28 @@ beforeEach(() => {
 });
 
 describe('useAgent session-owned background tasks', () => {
+  it('continues polling stopping daemons until the worker reports a terminal state', async () => {
+    const hook = await mounted();
+    const backend = mocks.invoke.getMockImplementation()!;
+    let status: BackgroundTask['status'] = 'stopping';
+    mocks.invoke.mockImplementation(pagingBackend((name: string, args?: { sessionId?: string }) =>
+      name === 'list_background_tasks' ? [{ ...task('session-a'), isDaemon: true, status }] : backend(name, args)));
+    vi.useFakeTimers();
+    try {
+      await act(async () => hook.result.current.refreshBackgroundTasks());
+      const before = taskCalls().length;
+      status = 'cancelled';
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(taskCalls().length).toBe(before + 1);
+      expect(hook.result.current.backgroundTasks[0].status).toBe('cancelled');
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(taskCalls().length).toBe(before + 1);
+    } finally {
+      hook.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it('scopes killing to the origin and ignores errors arriving after navigation', async () => {
     const hook = await mounted();
     const killing = deferred<void>();

@@ -2119,7 +2119,7 @@ export function useAgent() {
   }, [data.session.id, isLoading, refreshBackgroundTasks]);
 
   useEffect(() => {
-    const hasRunning = backgroundTasks.some((t) => t.status === 'running');
+    const hasRunning = backgroundTasks.some((t) => t.status === 'running' || t.status === 'stopping');
     if (!hasRunning) return;
     const interval = setInterval(() => {
       void refreshBackgroundTasks();

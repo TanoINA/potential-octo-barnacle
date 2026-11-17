@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { BackgroundTasksCard } from './BackgroundTasksCard';
 import type { BackgroundTask } from '../types/agent';
@@ -32,6 +32,51 @@ describe('BackgroundTasksCard', () => {
       recentOutput: 'Build finished in 4.2s',
     },
   ];
+
+  it('keeps stopping tasks active and disables their stop control', () => {
+    const kill = vi.fn();
+    render(<BackgroundTasksCard tasks={[{ ...sampleTasks[0], status: 'stopping' }]} onKillTask={kill} />);
+    expect(screen.getByText('1 active')).toBeTruthy();
+    fireEvent.click(screen.getByText('Background Tasks'));
+    const stopping = screen.getByRole('button', { name: /Stopping/ });
+    expect((stopping as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(stopping);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('copies the exact command without opening logs or killing the task, and waits for success', async () => {
+    let resolve!: () => void;
+    const writeText = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const kill = vi.fn();
+    render(<BackgroundTasksCard tasks={[sampleTasks[0]]} onKillTask={kill} />);
+    fireEvent.click(screen.getByText('Background Tasks'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('npm run dev');
+    expect(screen.queryByText('Copied')).toBeNull();
+    expect(screen.queryByText(sampleTasks[0].recentOutput)).toBeNull();
+    expect(kill).not.toHaveBeenCalled();
+    await act(async () => resolve());
+    expect(screen.getByText('Copied')).toBeTruthy();
+    fireEvent.click(screen.getByText('View Logs'));
+    expect(screen.getByRole('button', { name: 'Copy logs' }).textContent).not.toContain('Copied');
+  });
+
+  it.each(['rejected', 'unavailable'])('reports %s clipboard errors for commands and logs', async (mode) => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: mode === 'unavailable' ? undefined : { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+    render(<BackgroundTasksCard tasks={[sampleTasks[0]]} />);
+    fireEvent.click(screen.getByText('Background Tasks'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Could not copy'));
+    expect(screen.queryByText('Copied')).toBeNull();
+    fireEvent.click(screen.getByText('View Logs'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy logs' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Could not copy'));
+    expect(screen.queryByText('Copied')).toBeNull();
+  });
 
   it('renders nothing when task list is empty', () => {
     const { container } = render(<BackgroundTasksCard tasks={[]} />);

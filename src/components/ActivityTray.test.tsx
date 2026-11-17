@@ -45,41 +45,55 @@ function canvasProps(overrides: Partial<ComponentProps<typeof ChatCanvas>> = {})
 }
 
 describe('bounded chat activity', () => {
-  it('retains real task refresh, kill, logs, and subagent artifact navigation for 100 tasks', () => {
-    const props = canvasProps();
+  it('retains real task refresh, kill, and logs with a small fixture', () => {
+    const props = canvasProps({ backgroundTasks: [tasks[0], tasks[1], tasks[99]], subagents: [], activeSkills: [] });
     render(<ChatCanvas {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: /Activity.*100 subagents/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Activity.*3 tasks/i }));
     const panel = screen.getByRole('region', { name: 'Activity details' });
     fireEvent.click(within(panel).getByRole('button', { name: 'Refresh tasks' }));
     expect(props.onRefreshBackgroundTasks).toHaveBeenCalledOnce();
     fireEvent.click(within(panel).getByRole('button', { name: 'Expand tasks' }));
     const taskCard = within(panel).getByTestId('background-tasks-card');
-    expect(within(taskCard).getAllByText(/^Background job /)).toHaveLength(100);
+    expect(within(taskCard).getAllByText(/^Background job /)).toHaveLength(3);
     expect(within(taskCard).getByText('PID 1099')).toBeTruthy();
     expect(within(taskCard).getByText('command-99')).toBeTruthy();
     expect(within(taskCard).getByText('D:/logs/task-99.log')).toBeTruthy();
     expect(within(taskCard).getAllByRole('button', { name: 'Kill' })).toHaveLength(1);
     fireEvent.click(within(taskCard).getByRole('button', { name: 'Kill' }));
     expect(props.onKillBackgroundTask).toHaveBeenCalledExactlyOnceWith('task-0');
-    fireEvent.click(within(taskCard).getAllByRole('button', { name: 'View Logs' })[99]);
+    fireEvent.click(within(taskCard).getAllByRole('button', { name: 'View Logs' })[2]);
     expect(within(taskCard).getByText('Output from task 99')).toBeTruthy();
     expect(within(taskCard).getByTitle('Copy logs')).toBeTruthy();
-    fireEvent.click(within(panel).getByRole('button', { name: 'Expand subagents' }));
-    const subagentCard = within(panel).getByTestId('subagent-tree-card');
-    expect(within(subagentCard).getAllByText(/^Worker /)).toHaveLength(100);
-    expect(within(subagentCard).getByText('Investigate module 99')).toBeTruthy();
-    expect(within(subagentCard).getByText('Findings from worker 99')).toBeTruthy();
-    fireEvent.click(within(subagentCard).getAllByRole('button', { name: 'View Generated Artifact' })[99]);
-    expect(props.onSelectArtifact).toHaveBeenCalledExactlyOnceWith('artifact-99');
-    expect(screen.getByRole('button', { name: /Activity.*100 subagents/i }).getAttribute('aria-expanded')).toBe('true');
-    expect(panel.classList.contains('max-h-[min(320px,35vh)]')).toBe(true);
   });
 
-  it('closes on session navigation without reopening on task or skill updates or on return', () => {
+  it('retains subagent artifact navigation with a small fixture', () => {
+    const props = canvasProps({ subagents: [subagents[0], subagents[1], subagents[99]], backgroundTasks: [], activeSkills: [] });
+    render(<ChatCanvas {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /Activity.*3 subagents/i }));
+    const panel = screen.getByRole('region', { name: 'Activity details' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Expand subagents' }));
+    const subagentCard = within(panel).getByTestId('subagent-tree-card');
+    expect(within(subagentCard).getAllByText(/^Worker /)).toHaveLength(3);
+    expect(within(subagentCard).getByText('Investigate module 99')).toBeTruthy();
+    expect(within(subagentCard).getByText('Findings from worker 99')).toBeTruthy();
+    fireEvent.click(within(subagentCard).getAllByRole('button', { name: 'View Generated Artifact' })[2]);
+    expect(props.onSelectArtifact).toHaveBeenCalledExactlyOnceWith('artifact-99');
+  });
+
+  it('keeps 100 tasks of each kind bounded and closes on session navigation without reopening on updates or return', () => {
     const props = canvasProps();
     const { rerender } = render(<ChatCanvas {...props} />);
     fireEvent.click(screen.getByRole('button', { name: /Activity.*100 subagents/i }));
-    expect(screen.getByRole('region', { name: 'Activity details' })).toBeTruthy();
+    const panel = screen.getByRole('region', { name: 'Activity details' });
+    expect(panel).toBeTruthy();
+    fireEvent.click(within(panel).getByRole('button', { name: 'Expand tasks' }));
+    const taskCard = within(panel).getByTestId('background-tasks-card');
+    expect(within(taskCard).getAllByText(/^Background job /)).toHaveLength(100);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Expand subagents' }));
+    const subagentCard = within(panel).getByTestId('subagent-tree-card');
+    expect(within(subagentCard).getAllByText(/^Worker /)).toHaveLength(100);
+    expect(screen.getByRole('button', { name: /Activity.*100 subagents/i }).getAttribute('aria-expanded')).toBe('true');
+    expect(panel.classList.contains('max-h-[min(320px,35vh)]')).toBe(true);
     rerender(<ChatCanvas {...props} currentSessionId="session-b" />);
     expect(screen.queryByRole('region', { name: 'Activity details' })).toBeNull();
     const updated = {

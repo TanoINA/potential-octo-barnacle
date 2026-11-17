@@ -5,6 +5,11 @@ All notable changes to AetherAgent are documented here.
 ## [Unreleased]
 
 ### Added
+
+- Per-session, per-workspace composer drafts retain text, selected skills, and attachments while the app stays open. Late send acknowledgements only clear the originating, unchanged draft.
+- Selected skill chips open an accessible preview with description, source, and path; missing metadata is explained without inventing instructions.
+- Background task cards can copy the original command, with clipboard success and error feedback.
+
 - **Web search improvements**: Domain scoping (`site:...`), direct page text extraction via `fetch_content`, instant-answer fallbacks, source chips in chat, and a `/search` slash command.
 - **Interactive questions**: An `ask_question` tool that renders multi-choice prompt cards directly in chat when the agent needs clarification.
 - **Auto-titling**: Sessions are automatically named after the first model response, with manual renames protected and `/title` available on demand.
@@ -15,6 +20,10 @@ All notable changes to AetherAgent are documented here.
 - **Settings enhancements**: Provider setup improvements, agent defaults, live MCP server connection testing, and dirty guards for unsaved changes.
 
 ### Fixed & Improved
+
+- Background tasks remain `stopping` until process-tree cleanup completes; repeated stop requests stay idempotent and stopping tasks still count as active.
+- Selecting a slash skill removes only its token, preserving surrounding draft text and cursor position.
+- Activity tray interaction tests use small fixtures separately from the 100-item stress and navigation checks.
 - **Concurrent MCP startup**: MCP servers now initialize concurrently at launch rather than sequentially.
 - **SQLite WAL mode**: Enabled Write-Ahead Logging and busy timeouts for smoother database read and write concurrency.
 - **Session cleanup**: Deleting a session now cancels its active background tasks and cleans up task tracking.

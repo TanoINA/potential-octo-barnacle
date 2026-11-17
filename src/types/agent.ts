@@ -305,7 +305,7 @@ export interface BackgroundTask {
   command: string;
   toolSummary?: string;
   isDaemon: boolean;
-  status: 'running' | 'completed' | 'failed' | 'killed';
+  status: 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'killed';
   pid?: number;
   startedAt: number;
   completedAt?: number;
