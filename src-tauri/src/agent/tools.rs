@@ -751,7 +751,9 @@ async fn edit_file(args: &serde_json::Value, cwd: &str) -> Result<ToolExecutionR
     checked_edit_result_len(original.len(), matches, old.len(), new.len())?;
     #[cfg(test)]
     assert!(
-        !FORBID_EDIT_ALLOCATION.try_with(|forbid| *forbid).unwrap_or(false),
+        !FORBID_EDIT_ALLOCATION
+            .try_with(|forbid| *forbid)
+            .unwrap_or(false),
         "edit_file attempted replacement allocation before rejecting oversized output"
     );
     let updated = if replace_all {
@@ -1222,7 +1224,9 @@ async fn run_command(
     loop {
         #[cfg(test)]
         let _ = FOREGROUND_PROBE.try_with(|probe| {
-            probe.polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            probe
+                .polls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         if let Ok(Some(status)) = child.try_wait() {
             exit_code = Some(status.code().unwrap_or(-1));
@@ -1511,7 +1515,7 @@ async fn fetch_web_page(
         .and_then(|v| v.as_u64())
         .unwrap_or(100_000)
         .clamp(2_000, 500_000) as usize;
-    let client = reqwest::Client::builder()
+    let client = public_http_client_builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -1586,7 +1590,11 @@ async fn fetch_web_page(
     let (mut extracted, truncated) = bounded_chars(extracted.trim(), max_chars);
     if extracted.trim().len() < 120 || extracted.contains("You need to enable JavaScript") {
         if let Some(meta_summary) = extract_meta_summary(&raw) {
-            extracted = format!("{}\n\n[Page Metadata Summary]:\n{}", extracted.trim(), meta_summary);
+            extracted = format!(
+                "{}\n\n[Page Metadata Summary]:\n{}",
+                extracted.trim(),
+                meta_summary
+            );
         }
     }
     let artifact = if extracted.lines().count() > 25 {
@@ -1611,49 +1619,69 @@ async fn fetch_web_page(
     ))
 }
 
-async fn validate_public_url(url: &Url) -> Result<(), String> {
+struct PublicDnsResolver;
+
+impl reqwest::dns::Resolve for PublicDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "DNS returned private, local, or no addresses",
+                )
+                .into());
+            }
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn public_http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        // A proxy could resolve the hostname elsewhere and bypass our address checks.
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicDnsResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("Too many redirects");
+            }
+            match validate_public_target(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(error) => attempt.error(error),
+            }
+        }))
+}
+
+fn validate_public_target(url: &Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err("Only HTTP(S) URLs are allowed".into());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err("URLs containing credentials are not allowed".into());
+        return Err("URLs with credentials are not allowed".into());
     }
-    let host = url.host().ok_or("URL must contain a host")?;
-    let ip = match host {
-        url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
-        url::Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
-        url::Host::Domain(_) => None,
-    };
-    if let Some(ip) = ip {
-        if !is_public_ip(ip) {
-            return Err(
-                "Private, loopback, link-local, and unspecified web targets are blocked".into(),
-            );
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) if is_public_ip(ip.into()) => Ok(()),
+        Some(url::Host::Ipv6(ip)) if is_public_ip(ip.into()) => Ok(()),
+        Some(url::Host::Domain(host)) if host != "localhost" && !host.ends_with(".localhost") => {
+            Ok(())
         }
-        return Ok(());
+        _ => Err("Private, loopback, link-local, and unspecified web targets are blocked".into()),
     }
-    let host = url.host_str().ok_or("URL must contain a host")?;
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
-        return Err("Local/private web targets are blocked".into());
-    }
-    let port = url
-        .port_or_known_default()
-        .ok_or("URL has no usable port")?;
-    let addresses = tokio::net::lookup_host((host, port))
+}
+
+async fn validate_public_url(url: &Url) -> Result<(), String> {
+    validate_public_target(url)?;
+    if let Some(url::Host::Domain(host)) = url.host() {
+        let _addresses = reqwest::dns::Resolve::resolve(
+            &PublicDnsResolver,
+            host.parse()
+                .map_err(|error| format!("Invalid DNS name: {error}"))?,
+        )
         .await
         .map_err(|error| format!("DNS lookup failed: {error}"))?;
-    let mut found = false;
-    for address in addresses {
-        found = true;
-        if !is_public_ip(address.ip()) {
-            return Err("URL resolves to a private or local address".into());
-        }
     }
-    if found {
-        Ok(())
-    } else {
-        Err("DNS returned no addresses".into())
-    }
+    Ok(())
 }
 
 fn clean_html_text(raw: &str) -> String {
@@ -1679,21 +1707,29 @@ pub(super) fn extract_meta_summary(raw_html: &str) -> Option<String> {
     static OG_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
     let mut parts = Vec::new();
-    let re_title = TITLE_RE.get_or_init(|| Regex::new(r#"(?is)<title[^>]*>(.*?)</title>"#).expect("valid title regex"));
+    let re_title = TITLE_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<title[^>]*>(.*?)</title>"#).expect("valid title regex")
+    });
     if let Some(cap) = re_title.captures(raw_html) {
         let title = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
         if !title.is_empty() {
             parts.push(format!("Title: {title}"));
         }
     }
-    let re_meta = META_RE.get_or_init(|| Regex::new(r#"(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["'](.*?)["']"#).expect("valid meta regex"));
+    let re_meta = META_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<meta\s+[^>]*name=["']description["'][^>]*content=["'](.*?)["']"#)
+            .expect("valid meta regex")
+    });
     if let Some(cap) = re_meta.captures(raw_html) {
         let desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
         if !desc.is_empty() {
             parts.push(format!("Description: {desc}"));
         }
     }
-    let re_og = OG_RE.get_or_init(|| Regex::new(r#"(?is)<meta\s+[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']"#).expect("valid og regex"));
+    let re_og = OG_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<meta\s+[^>]*property=["']og:description["'][^>]*content=["'](.*?)["']"#)
+            .expect("valid og regex")
+    });
     if let Some(cap) = re_og.captures(raw_html) {
         let og_desc = clean_html_text(cap.get(1).map(|m| m.as_str()).unwrap_or_default());
         if !og_desc.is_empty() && !parts.iter().any(|p| p.contains(&og_desc)) {
@@ -1754,7 +1790,9 @@ pub(super) struct SearchResultItem {
 
 pub(super) fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<SearchResultItem> {
     let mut results = Vec::new();
-    let re = match Regex::new(r#"(?s)<div[^>]*class="[^"]*result[^"]*"[^>]*>.*?<h2[^>]*class="result__title"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>.*?(?:<a[^>]*class="result__snippet"[^>]*>(.*?)</a>|<div[^>]*class="result__snippet"[^>]*>(.*?)</div>)"#) {
+    let re = match Regex::new(
+        r#"(?s)<div[^>]*class="[^"]*result[^"]*"[^>]*>.*?<h2[^>]*class="result__title"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>.*?(?:<a[^>]*class="result__snippet"[^>]*>(.*?)</a>|<div[^>]*class="result__snippet"[^>]*>(.*?)</div>)"#,
+    ) {
         Ok(r) => r,
         Err(_) => return results,
     };
@@ -1764,14 +1802,22 @@ pub(super) fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<SearchRe
         }
         let raw_url = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
         let raw_title = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
-        let raw_snippet = cap.get(3).or_else(|| cap.get(4)).map(|m| m.as_str()).unwrap_or_default();
+        let raw_snippet = cap
+            .get(3)
+            .or_else(|| cap.get(4))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
 
         let title = clean_html_text(raw_title);
         let snippet = clean_html_text(raw_snippet);
         let url = decode_ddg_url(raw_url);
 
         if !url.is_empty() && !title.is_empty() {
-            results.push(SearchResultItem { title, url, snippet });
+            results.push(SearchResultItem {
+                title,
+                url,
+                snippet,
+            });
         }
     }
     results
@@ -1779,7 +1825,9 @@ pub(super) fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<SearchRe
 
 pub(super) fn parse_bing_results(html: &str, limit: usize) -> Vec<SearchResultItem> {
     let mut results = Vec::new();
-    let re = match Regex::new(r#"(?s)<li[^>]*class="b_algo"[^>]*>.*?<h2>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>.*?(?:<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>|<p[^>]*>(.*?)</p>)"#) {
+    let re = match Regex::new(
+        r#"(?s)<li[^>]*class="b_algo"[^>]*>.*?<h2>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>.*?(?:<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>|<p[^>]*>(.*?)</p>)"#,
+    ) {
         Ok(r) => r,
         Err(_) => return results,
     };
@@ -1789,26 +1837,44 @@ pub(super) fn parse_bing_results(html: &str, limit: usize) -> Vec<SearchResultIt
         }
         let raw_url = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
         let raw_title = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
-        let raw_snippet = cap.get(3).or_else(|| cap.get(4)).map(|m| m.as_str()).unwrap_or_default();
+        let raw_snippet = cap
+            .get(3)
+            .or_else(|| cap.get(4))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
 
         let title = clean_html_text(raw_title);
         let snippet = clean_html_text(raw_snippet);
         let url = decode_bing_u(raw_url);
 
         if !url.is_empty() && !title.is_empty() {
-            results.push(SearchResultItem { title, url, snippet });
+            results.push(SearchResultItem {
+                title,
+                url,
+                snippet,
+            });
         }
     }
     results
 }
 
-pub(super) fn parse_duckduckgo_api_results(json: &serde_json::Value, limit: usize) -> Vec<SearchResultItem> {
+pub(super) fn parse_duckduckgo_api_results(
+    json: &serde_json::Value,
+    limit: usize,
+) -> Vec<SearchResultItem> {
     let mut results = Vec::new();
     if let (Some(text), Some(url)) = (
-        json.get("AbstractText").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
-        json.get("AbstractURL").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+        json.get("AbstractText")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty()),
+        json.get("AbstractURL")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty()),
     ) {
-        let heading = json.get("Heading").and_then(|v| v.as_str()).unwrap_or("Abstract");
+        let heading = json
+            .get("Heading")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Abstract");
         results.push(SearchResultItem {
             title: heading.to_string(),
             url: url.to_string(),
@@ -1821,8 +1887,14 @@ pub(super) fn parse_duckduckgo_api_results(json: &serde_json::Value, limit: usiz
                 break;
             }
             if let (Some(text), Some(url)) = (
-                topic.get("Text").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
-                topic.get("FirstURL").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+                topic
+                    .get("Text")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()),
+                topic
+                    .get("FirstURL")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()),
             ) {
                 let title = text.split(" - ").next().unwrap_or(text);
                 results.push(SearchResultItem {
@@ -1896,8 +1968,9 @@ async fn search_web(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let encoded_query = url::form_urlencoded::byte_serialize(effective_query.as_bytes()).collect::<String>();
-    let client = reqwest::Client::builder()
+    let encoded_query =
+        url::form_urlencoded::byte_serialize(effective_query.as_bytes()).collect::<String>();
+    let client = public_http_client_builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(15))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -1939,7 +2012,9 @@ async fn search_web(
 
     // 3. Fallback to DuckDuckGo Instant Answer API (JSON API, non-blocked)
     if results.is_empty() {
-        let ddg_api_url = format!("https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1");
+        let ddg_api_url = format!(
+            "https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"
+        );
         if let Ok(resp) = client.get(&ddg_api_url).send().await {
             if resp.status().is_success() {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
@@ -1962,7 +2037,8 @@ async fn search_web(
         for i in 0..top_count {
             if let Ok(content) = quick_fetch_snippet(&client, &results[i].url, context).await {
                 if !content.is_empty() {
-                    results[i].snippet = format!("{}\n   Content extract: {}", results[i].snippet, content);
+                    results[i].snippet =
+                        format!("{}\n   Content extract: {}", results[i].snippet, content);
                 }
             }
         }
@@ -1970,7 +2046,13 @@ async fn search_web(
 
     let mut output = format!("Search results for \"{effective_query}\":\n\n");
     for (idx, item) in results.iter().enumerate() {
-        output.push_str(&format!("{}. [{}]({})\n   {}\n\n", idx + 1, item.title, item.url, item.snippet));
+        output.push_str(&format!(
+            "{}. [{}]({})\n   {}\n\n",
+            idx + 1,
+            item.title,
+            item.url,
+            item.snippet
+        ));
     }
 
     let artifact = if results.len() >= 3 {
@@ -1985,7 +2067,10 @@ async fn search_web(
         None
     };
 
-    Ok(ToolExecutionResult::success(output.trim().to_string(), artifact))
+    Ok(ToolExecutionResult::success(
+        output.trim().to_string(),
+        artifact,
+    ))
 }
 
 async fn ask_question(args: &serde_json::Value) -> Result<ToolExecutionResult, String> {
@@ -2046,6 +2131,8 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 || ip.is_multicast()
                 || ip.is_broadcast()
                 || ip.is_documentation()
+                || octets[0] == 0
+                || octets[0..3] == [192, 0, 0]
                 || octets[0] >= 240 // 240.0.0.0/4 reserved for future use
                 || (octets[0] == 100 && (64..=127).contains(&octets[1])) // 100.64.0.0/10 CGNAT
                 || (octets[0] == 198 && (18..=19).contains(&octets[1])) // 198.18.0.0/15 benchmarking
@@ -2093,11 +2180,12 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 );
                 return is_public_ip(IpAddr::V4(server));
             }
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_multicast())
+            (segments[0] & 0xe000) == 0x2000
+                && !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.is_multicast())
         }
     }
 }
@@ -2402,7 +2490,15 @@ mod tests {
         let root = workspace();
         for (original, old, new, replace_all, updated, additions, deletions) in [
             ("one\ntwo\n", "two", "three", false, "one\nthree\n", 1, 1),
-            ("é\nkeep\né", "é", "界\nplus", true, "界\nplus\nkeep\n界\nplus", 4, 2),
+            (
+                "é\nkeep\né",
+                "é",
+                "界\nplus",
+                true,
+                "界\nplus\nkeep\n界\nplus",
+                4,
+                2,
+            ),
             ("one\ntwo\n", "two\n", "", false, "one\n", 0, 1),
             ("same\n", "same", "same", false, "same\n", 0, 0),
         ] {
@@ -2424,11 +2520,20 @@ mod tests {
             assert_eq!(result.artifact.as_ref().unwrap().content, expected_diff);
             assert_eq!(result.artifact.as_ref().unwrap().title, "Diff: a.txt");
             let stats = &result.files_changed.as_ref().unwrap()[0];
-            assert_eq!((&*stats.path, stats.additions, stats.deletions), ("a.txt", additions, deletions));
+            assert_eq!(
+                (&*stats.path, stats.additions, stats.deletions),
+                ("a.txt", additions, deletions)
+            );
             assert!(result.success);
-            assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), updated);
+            assert_eq!(
+                std::fs::read_to_string(root.join("a.txt")).unwrap(),
+                updated
+            );
             if original == "one\ntwo\n" && new == "three" {
-                assert_eq!(expected_diff, "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n");
+                assert_eq!(
+                    expected_diff,
+                    "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n"
+                );
             }
             if builds != 1 {
                 std::fs::remove_dir_all(&root).unwrap();
@@ -2460,8 +2565,12 @@ mod tests {
         let unchanged = std::fs::read_to_string(&file).unwrap() == original;
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
         assert!(unchanged, "rejected expansion changed the original file");
-        let (_, result) = attempt.expect("oversized edits must reject before replacement allocation");
-        assert_eq!(result.unwrap_err(), "edit_file result exceeds the 10 MiB limit");
+        let (_, result) =
+            attempt.expect("oversized edits must reject before replacement allocation");
+        assert_eq!(
+            result.unwrap_err(),
+            "edit_file result exceeds the 10 MiB limit"
+        );
     }
 
     #[tokio::test]
@@ -2520,7 +2629,9 @@ mod tests {
         let polls = probe.polls.load(std::sync::atomic::Ordering::Relaxed);
         let duration_ms = result.duration_ms.unwrap();
         let budget = duration_ms / 50 + 6;
-        eprintln!("foreground closed output: polls={polls}, duration_ms={duration_ms}, budget={budget}");
+        eprintln!(
+            "foreground closed output: polls={polls}, duration_ms={duration_ms}, budget={budget}"
+        );
         assert!(
             polls as u64 <= budget,
             "closed output busy-spun: {polls} polls, budget {budget}"
@@ -2537,30 +2648,39 @@ mod tests {
             sink: None,
         };
         let command = if cfg!(windows) {
-            "Start-Sleep -Milliseconds 750; exit 0"
+            "Start-Sleep -Seconds 30"
         } else {
-            "sleep 0.75; exit 0"
+            "exec sleep 30"
         };
+        let args = serde_json::json!({"command": command, "timeoutSeconds": 45});
         let probe = Arc::new(ForegroundProbe::default());
-        let args = serde_json::json!({"command": command, "timeoutSeconds": 5});
-        let result = tokio::time::timeout(
-            Duration::from_secs(8),
+        // Keep the child alive until EOF is observed instead of racing a short-lived process.
+        let observe_eof = async {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                while !probe
+                    .closed_while_running
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            })
+            .await
+            .expect("child must close output while still running");
+            context.cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(
             FOREGROUND_PROBE.scope(probe.clone(), run_command(&args, &context)),
-        )
-        .await;
-        std::fs::remove_dir_all(root).unwrap();
-        let result = result
-            .expect("closed output must not prevent process completion")
-            .unwrap();
-        assert!(result.success, "{}", result.output);
-        assert!(!result.cancelled);
-        assert_eq!(result.exit_code, Some(0));
-        assert!(
-            result.duration_ms.unwrap() >= 600,
-            "the isolated child must really sleep"
+            observe_eof
         );
-        assert_eq!(result.terminal_output.as_deref(), Some(""));
+        let result = result.expect("foreground command");
+        assert!(
+            !result.success && result.output.contains("cancelled"),
+            "{}",
+            result.output
+        );
         assert_foreground_poll_budget(&probe, &result);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[tokio::test]
@@ -2981,6 +3101,71 @@ mod tests {
     }
 
     #[test]
+    fn public_targets_reject_non_public_ip_literals() {
+        for host in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "192.0.0.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "[::1]",
+            "[::2]",
+            "[::ffff:127.0.0.1]",
+            "[fc00::1]",
+            "[ff02::1]",
+            "[2001:db8::1]",
+            "[2002:7f00:1::1]",
+        ] {
+            assert!(
+                validate_public_target(&Url::parse(&format!("http://{host}/")).unwrap()).is_err(),
+                "allowed {host}"
+            );
+        }
+        for host in ["8.8.8.8", "[2606:4700:4700::1111]"] {
+            assert!(
+                validate_public_target(&Url::parse(&format!("https://{host}/")).unwrap()).is_ok()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn public_dns_rejects_local_addresses() {
+        use reqwest::dns::Resolve;
+        assert!(PublicDnsResolver
+            .resolve("localhost".parse().unwrap())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn public_http_redirects_reject_private_targets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        let client = public_http_client_builder()
+            .resolve("public.example", address)
+            .build()
+            .unwrap();
+        let error = client
+            .get(format!("http://public.example:{}/", address.port()))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error.is_redirect(),
+            "private redirect must be blocked before connecting: {error}"
+        );
+        server.await.unwrap();
+    }
+
+    #[test]
     fn bing_search_results_and_u_decoding_work() {
         let sample = r#"
             <li class="b_algo">
@@ -2992,7 +3177,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Rust Lang");
         assert_eq!(results[0].url, "https://rust-lang.org/");
-        assert_eq!(results[0].snippet, "Empowering everyone to build reliable software.");
+        assert_eq!(
+            results[0].snippet,
+            "Empowering everyone to build reliable software."
+        );
     }
 
     #[test]
@@ -3053,7 +3241,10 @@ mod tests {
         let results = parse_duckduckgo_api_results(&json, 5);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Rust (programming language)");
-        assert_eq!(results[0].url, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        assert_eq!(
+            results[0].url,
+            "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        );
         assert_eq!(results[1].title, "Cargo");
         assert_eq!(results[1].url, "https://doc.rust-lang.org/cargo/");
     }
@@ -3073,7 +3264,8 @@ mod tests {
         "#;
         let summary = extract_meta_summary(sample).expect("meta summary");
         assert!(summary.contains("Title: Tauri 2.0 Documentation"));
-        assert!(summary.contains("Description: Build smaller, faster, and more secure desktop applications."));
+        assert!(summary
+            .contains("Description: Build smaller, faster, and more secure desktop applications."));
         assert!(summary.contains("OG Description: Official guides for Tauri v2 framework."));
     }
 }

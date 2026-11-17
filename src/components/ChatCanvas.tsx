@@ -332,7 +332,7 @@ export function getModelContextWindow(modelName?: string, customLimit?: number):
   }
 
   // 2. 1M frontier era generations (Gemini, GPT-5/6+, Claude 4/5+, DeepSeek V4+, Kimi K3+, GLM-5+, Qwen 3+, MiniMax M3+, MiMo, Hy4)
-  if (/gemini|gpt-[5-9]|claude-(?:fable|.*-[4-9])|deepseek[-_]v[4-9]|kimi-k[3-9]|glm-[5-9]|qwen-?[3-9]|minimax[-_]m[3-9]|mimo|hy[4-9]/i.test(m)) {
+  if (/gemini|gpt-[5-9]|claude-(?:fable|(?:sonnet|opus|haiku)-[4-9]|[4-9](?:[.-]|$))|deepseek[-_]v[4-9]|kimi-k[3-9]|glm-[5-9]|qwen-?[3-9]|minimax[-_]m[3-9]|mimo|hy[4-9]/i.test(m)) {
     return 1_000_000;
   }
 

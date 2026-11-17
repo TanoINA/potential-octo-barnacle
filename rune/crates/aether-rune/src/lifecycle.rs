@@ -49,12 +49,20 @@ pub fn on_close(s: &mut AppState, tx: &mut Tx) {
     }
 }
 
-/// Rune's OS/session-end hook cannot veto exit. Start cancellation as best effort;
-/// ordinary close takes the acknowledgment-driven on_close/poll path instead.
+/// Rune's final quit hook runs before controller runtimes are dropped. Ordinary
+/// close still takes the acknowledgment-driven on_close/poll path first.
 pub fn on_quit(s: &mut AppState, _: &mut Tx) {
     if s.shell.lifecycle == Lifecycle::Open {
         native::cancel(s);
         s.controller.begin_shutdown();
+    }
+    // Process-global tasks may belong to any window; only final quit stops them.
+    if let Err(error) = s
+        .controller
+        .runtime
+        .block_on(aether_core::agent::tasks::get_task_manager().shutdown(Duration::from_secs(15)))
+    {
+        eprintln!("Background task shutdown: {error}");
     }
 }
 

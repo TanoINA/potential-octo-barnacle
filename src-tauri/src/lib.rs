@@ -1527,7 +1527,12 @@ pub fn run() {
         .expect("error while building AetherAgent application")
         .run(|_app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                agent::tasks::get_task_manager().cancel_all();
+                // Exit callbacks are synchronous; keep the async runtime alive for cleanup.
+                if let Err(error) = tauri::async_runtime::block_on(
+                    agent::tasks::get_task_manager().shutdown(std::time::Duration::from_secs(15)),
+                ) {
+                    eprintln!("Background task shutdown: {error}");
+                }
             }
         });
 }

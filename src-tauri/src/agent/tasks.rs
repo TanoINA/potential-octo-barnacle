@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -87,6 +88,7 @@ fn char_boundary(text: &str, limit: usize) -> usize {
 pub struct TaskManager {
     tasks: RwLock<HashMap<String, Arc<RwLock<TaskEntry>>>>,
     log_dir: PathBuf,
+    shutting_down: AtomicBool,
 }
 
 static GLOBAL_TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
@@ -391,6 +393,7 @@ impl TaskManager {
         Self {
             tasks: RwLock::new(HashMap::new()),
             log_dir: get_tasks_dir(),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -440,6 +443,11 @@ impl TaskManager {
         if session_id.trim().is_empty() {
             return Err("Task session id must not be empty".into());
         }
+        // Serialize admission with exit: no child may appear after shutdown's snapshot.
+        let mut tasks = self.tasks.write().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("Task manager is shutting down".into());
+        }
         let task_id = format!("task_{}", uuid::Uuid::new_v4());
         // Validate/open exclusively BEFORE spawning; never advertise an unavailable log.
         let (path, file) = create_log(&self.log_dir, &task_id).await?;
@@ -486,7 +494,7 @@ impl TaskManager {
             monitor_error: None,
             output_closed: false,
         }));
-        self.tasks.write().await.insert(task_id, entry.clone());
+        tasks.insert(task_id, entry.clone());
         let stdin_entry = entry.clone();
         let writer = tokio::spawn(async move {
             if let Some(mut stdin) = stdin {
@@ -661,15 +669,47 @@ impl TaskManager {
         }
     }
 
-    pub fn cancel_all(&self) {
-        if let Ok(guard) = self.tasks.try_read() {
-            for entry in guard.values() {
-                if let Ok(entry_guard) = entry.try_read() {
-                    if entry_guard.info.completed_at.is_none() {
-                        entry_guard.cancel.cancel();
+    /// Final process exit only: close admission, cancel every session concurrently,
+    /// then await monitor-confirmed cleanup under one deadline (not one per task).
+    pub async fn shutdown(&self, deadline: Duration) -> Result<(), String> {
+        self.shutting_down.store(true, Ordering::Release);
+        let mut errors = Vec::new();
+        let result = tokio::time::timeout(deadline, async {
+            let entries: Vec<_> = self.tasks.read().await.values().cloned().collect();
+            let mut pending: futures_util::stream::FuturesUnordered<_> = entries
+                .into_iter()
+                .map(|entry| async move {
+                    entry.read().await.cancel.cancel();
+                    loop {
+                        {
+                            let guard = entry.read().await;
+                            if guard.info.completed_at.is_some() {
+                                return guard
+                                    .monitor_error
+                                    .as_ref()
+                                    .map(|error| format!("Task '{}': {error}", guard.info.id));
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
+                })
+                .collect();
+            use futures_util::StreamExt;
+            while let Some(error) = pending.next().await {
+                if let Some(error) = error {
+                    errors.push(error);
                 }
             }
+        })
+        .await;
+        if result.is_err() {
+            // Never fabricate completion or abort a monitor still owning a live PID.
+            errors.push("Task shutdown timed out; process cleanup was not confirmed".into());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 }
@@ -677,6 +717,184 @@ impl TaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exit_shutdown_waits_for_busy_monitor_cleanup() {
+        let mgr = TaskManager::new();
+        let info = mgr
+            .start_task(
+                "test-session",
+                fixture_command("sleep"),
+                "exit cleanup fixture",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let entry = mgr.entry("test-session", &info.id).await.unwrap();
+        let busy = entry.write().await;
+        let shutdown = mgr.shutdown(KILL_TIMEOUT);
+        let (result, ()) = tokio::join!(shutdown, async {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            drop(busy);
+        });
+        result.unwrap();
+        let done = mgr
+            .get_status("test-session", &info.id, None)
+            .await
+            .unwrap();
+        // Clean up the owned fixture even when the regression is RED.
+        entry.read().await.cancel.cancel();
+        finished(&mgr, "test-session", &info.id).await;
+        assert!(
+            done.completed_at.is_some(),
+            "exit shutdown returned before the busy monitor confirmed process cleanup"
+        );
+        assert!(done.pid.is_none());
+        assert_eq!(done.status, "killed");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exit_shutdown_terminates_live_process_tree() {
+        let mgr = TaskManager::new();
+        let info = mgr
+            .start_task(
+                "tree",
+                fixture_command("live-tree"),
+                "live tree",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = mgr.get_status("tree", &info.id, None).await.unwrap();
+                if let Some(pid) = status
+                    .recent_output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("descendant-pid=")?.parse::<u32>().ok())
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Hold the live descendant's handle across shutdown to avoid PID reuse.
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+            fn WaitForSingleObject(handle: *mut std::ffi::c_void, millis: u32) -> u32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        let handle = pid
+            .ok()
+            .map(|pid| unsafe { OpenProcess(0x00100000, 0, pid) });
+        let result = mgr.shutdown(KILL_TIMEOUT).await;
+        let handle = handle.expect("fixture must start a live descendant");
+        assert!(!handle.is_null(), "must open the live descendant");
+        let wait = unsafe {
+            let wait = WaitForSingleObject(handle, 0);
+            CloseHandle(handle);
+            wait
+        };
+        result.unwrap();
+        assert_eq!(wait, 0, "descendant remains alive after shutdown");
+        assert!(mgr
+            .get_status("tree", &info.id, None)
+            .await
+            .unwrap()
+            .completed_at
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn exit_shutdown_timeout_preserves_unconfirmed_state_and_closes_admission() {
+        let mgr = TaskManager::new();
+        let info = mgr
+            .start_task(
+                "test-session",
+                fixture_command("sleep"),
+                "timeout",
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let entry = mgr.entry("test-session", &info.id).await.unwrap();
+        let busy = entry.write().await;
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            mgr.shutdown(Duration::from_millis(25)),
+        )
+        .await
+        .expect("shutdown must bound even lock contention")
+        .unwrap_err();
+        assert!(error.contains("not confirmed"));
+        assert_eq!(busy.info.status, "running");
+        assert!(busy.info.completed_at.is_none());
+        assert_eq!(busy.info.pid, info.pid);
+        busy.cancel.cancel();
+        drop(busy);
+        finished(&mgr, "test-session", &info.id).await;
+        let error = mgr
+            .start_task(
+                "other-session",
+                fixture_command("unique"),
+                "late",
+                None,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("shutting down"));
+        assert_eq!(mgr.list_tasks("other-session").await.len(), 0);
+        mgr.shutdown(KILL_TIMEOUT).await.unwrap(); // repeat is safe after late cleanup
+    }
+
+    #[tokio::test]
+    async fn exit_shutdown_cancels_other_sessions_despite_a_busy_entry_and_preserves_errors() {
+        let mgr = TaskManager::new();
+        let mut entries = Vec::new();
+        for (session, daemon) in [("first", true), ("second", false)] {
+            let info = mgr
+                .start_task(session, fixture_command("sleep"), "exit", None, daemon)
+                .await
+                .unwrap();
+            entries.push(mgr.entry(session, &info.id).await.unwrap());
+        }
+        let mut busy = entries[0].write().await;
+        busy.monitor_error = Some("injected log failure".into());
+        let (result, cancelled) = tokio::join!(mgr.shutdown(KILL_TIMEOUT), async {
+            let cancelled = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if entries[1].read().await.cancel.is_cancelled() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok();
+            drop(busy);
+            cancelled
+        });
+        assert!(
+            cancelled,
+            "one busy entry must not prevent other sessions cancelling"
+        );
+        assert!(result.unwrap_err().contains("injected log failure"));
+        for entry in &entries {
+            let guard = entry.read().await;
+            assert!(guard.info.completed_at.is_some());
+            assert!(guard.info.pid.is_none());
+        }
+        let guard = entries[0].read().await;
+        assert_eq!(guard.info.status, "failed");
+        assert!(guard.output(500).contains("injected log failure"));
+    }
 
     #[tokio::test]
     async fn kill_session_tasks_terminates_only_tasks_for_matching_session() {
@@ -990,6 +1208,22 @@ mod tests {
             }
             "unique" => println!("unique"),
             "sleep" => std::thread::sleep(Duration::from_secs(30)),
+            "live-tree" => {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .env("AETHER_TASK_FIXTURE", "sleep")
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "agent::tasks::tests::task_fixture",
+                        "--nocapture",
+                    ])
+                    .spawn()
+                    .unwrap();
+                println!("descendant-pid={}", child.id());
+                std::io::stdout().flush().unwrap();
+                std::thread::sleep(Duration::from_secs(30));
+                drop(child); // self-expiring fixture if a regression leaves it alive
+            }
             "pipeholder" => std::thread::sleep(Duration::from_secs(4)),
             "descendant" => {
                 let child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1210,6 +1444,7 @@ mod tests {
         let blocked = TaskManager {
             tasks: RwLock::new(HashMap::new()),
             log_dir: path,
+            shutting_down: AtomicBool::new(false),
         };
         let error = blocked
             .start_task(
