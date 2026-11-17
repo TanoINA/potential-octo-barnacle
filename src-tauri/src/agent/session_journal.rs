@@ -201,16 +201,20 @@ fn tool_grows(old: &super::types::ToolCallItem, new: &super::types::ToolCallItem
         return false;
     };
     for value in [&mut a, &mut b] {
-        for key in ["id", "name", "args", "status", "argumentsRaw", "startedAt"] {
-            value.as_object_mut().unwrap().remove(key);
+        if let Some(obj) = value.as_object_mut() {
+            for key in ["id", "name", "args", "status", "argumentsRaw", "startedAt"] {
+                obj.remove(key);
+            }
         }
     }
     // Result/exit metadata can be introduced at completion; already observed
     // output and metadata cannot subsequently be rewritten.
-    a.as_object()
-        .unwrap()
+    let (Some(a_obj), Some(b_obj)) = (a.as_object(), b.as_object()) else {
+        return false;
+    };
+    a_obj
         .iter()
-        .all(|(key, value)| value.is_null() || b.get(key) == Some(value))
+        .all(|(key, value)| value.is_null() || b_obj.get(key) == Some(value))
 }
 fn tools_grow(old: &[super::types::ToolCallItem], new: &[super::types::ToolCallItem]) -> bool {
     let mut ids = std::collections::HashSet::new();
@@ -305,22 +309,26 @@ fn message_grows_at_epochs(
     // Only an explicit forward retry epoch can reset provider reasoning. Visible
     // narrative, tools, provider transcript and identity remain lower bounds.
     if new_epoch > old_epoch {
-        a.as_object_mut().unwrap().remove("reasoning");
-        b.as_object_mut().unwrap().remove("reasoning");
+        if let Some(a_obj) = a.as_object_mut() {
+            a_obj.remove("reasoning");
+        }
+        if let Some(b_obj) = b.as_object_mut() {
+            b_obj.remove("reasoning");
+        }
     }
     for value in [&mut a, &mut b] {
-        value.as_object_mut().unwrap().remove("checkpointEpoch");
-        // Notice text and optional provider attempt metadata are ephemeral UI state,
-        // not permission to reset narrative or tool progress.
-        value.as_object_mut().unwrap().remove("notice");
-        // Viewport payload hints are projections, never semantic progress.
-        value.as_object_mut().unwrap().remove("hasImageInputs");
-        value.as_object_mut().unwrap().remove("hasProviderMessages");
-    }
-    // content is a frontend mirror; before the first tool it moves into preamble.
-    for value in [&mut a, &mut b] {
-        value.as_object_mut().unwrap().remove("content");
-        value.as_object_mut().unwrap().remove("preamble");
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("checkpointEpoch");
+            // Notice text and optional provider attempt metadata are ephemeral UI state,
+            // not permission to reset narrative or tool progress.
+            obj.remove("notice");
+            // Viewport payload hints are projections, never semantic progress.
+            obj.remove("hasImageInputs");
+            obj.remove("hasProviderMessages");
+            // content is a frontend mirror; before the first tool it moves into preamble.
+            obj.remove("content");
+            obj.remove("preamble");
+        }
     }
     Ok(grows(&a, &b))
 }

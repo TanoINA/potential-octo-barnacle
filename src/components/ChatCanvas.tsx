@@ -348,32 +348,48 @@ export function getModelContextWindow(modelName?: string, customLimit?: number):
   return 128_000;
 }
 
-function estimateSessionTokens(messages: ChatMessage[]): number {
+const messageTokenCache = new WeakMap<ChatMessage, number>();
+
+export function estimateMessageTokens(msg: ChatMessage): number {
+  if (!msg.isStreaming) {
+    const cached = messageTokenCache.get(msg);
+    if (cached !== undefined) return cached;
+  }
   let charCount = 0;
   let imageTokens = 0;
-  for (const msg of messages) {
-    if (msg.content) {
-      charCount += msg.content.length;
-    } else if (msg.segments) {
-      for (const seg of msg.segments) {
-        if (seg.text) charCount += seg.text.length;
-      }
-    }
-    if (msg.reasoning) charCount += msg.reasoning.length;
-    if (msg.preamble) charCount += msg.preamble.length;
-    if (msg.imageInputs) imageTokens += msg.imageInputs.length * 1600;
-
-    const toolCalls = msg.toolCalls?.length
-      ? msg.toolCalls
-      : msg.segments?.flatMap((s) => s.toolCalls ?? []) ?? [];
-
-    for (const tc of toolCalls) {
-      if (tc.result) charCount += tc.result.length;
-      if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
-      else if (tc.args) charCount += JSON.stringify(tc.args).length;
+  if (msg.content) {
+    charCount += msg.content.length;
+  } else if (msg.segments) {
+    for (const seg of msg.segments) {
+      if (seg.text) charCount += seg.text.length;
     }
   }
-  return Math.ceil(charCount / 4) + imageTokens;
+  if (msg.reasoning) charCount += msg.reasoning.length;
+  if (msg.preamble) charCount += msg.preamble.length;
+  if (msg.imageInputs) imageTokens += msg.imageInputs.length * 1600;
+
+  const toolCalls = msg.toolCalls?.length
+    ? msg.toolCalls
+    : msg.segments?.flatMap((s) => s.toolCalls ?? []) ?? [];
+
+  for (const tc of toolCalls) {
+    if (tc.result) charCount += tc.result.length;
+    if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
+    else if (tc.args) charCount += JSON.stringify(tc.args).length;
+  }
+  const tokens = Math.ceil(charCount / 4) + imageTokens;
+  if (!msg.isStreaming) {
+    messageTokenCache.set(msg, tokens);
+  }
+  return tokens;
+}
+
+export function estimateSessionTokens(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const msg of messages) {
+    total += estimateMessageTokens(msg);
+  }
+  return total;
 }
 
 export function ChatCanvas({
@@ -1473,19 +1489,21 @@ export function ChatCanvas({
       const name = item.command.slice(1);
       if (!selectedSkills.includes(name) && selectedSkills.length >= 5) return;
       setSelectedSkills((previous) => previous.includes(name) ? previous : [...previous, name]);
-      if (tokenStart === 0 && input.slice(tokenStart, cursor).trim() === input.trim()) {
-        setInput('');
-        setCursor(0);
-      } else {
-        const next = `${input.slice(0, tokenStart)}${item.command} ${input.slice(cursor)}`;
-        const nextCursor = tokenStart + item.command.length + 1;
-        setInput(next);
-        setCursor(nextCursor);
-        requestAnimationFrame(() => {
-          textareaRef.current?.focus();
-          textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-        });
+      let before = input.slice(0, tokenStart);
+      let after = input.slice(cursor);
+      if (before.endsWith(' ') && after.startsWith(' ')) {
+        after = after.slice(1);
+      } else if (tokenStart === 0 && after.startsWith(' ')) {
+        after = after.slice(1);
       }
+      const nextInput = `${before}${after}`;
+      const nextCursor = before.length;
+      setInput(nextInput);
+      setCursor(nextCursor);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
       setMenuDismissed(true);
       textareaRef.current?.focus();
       return;

@@ -40,6 +40,8 @@ pub fn open_connection() -> Result<Connection, String> {
 }
 
 pub fn init_db(conn: &Connection) -> Result<(), String> {
+    let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    let _ = conn.pragma_update(None, "busy_timeout", 5000);
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS fts_content USING fts5(
             session_id UNINDEXED,
@@ -520,5 +522,15 @@ mod tests {
         let results_full = search_query_with(&conn, "factorial", 10).unwrap();
         assert_eq!(results_full.len(), 1, "full query 'factorial' must match");
         assert_eq!(results_full[0].session_id, "s1");
+    }
+
+    #[test]
+    fn init_db_configures_pragmas() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
     }
 }

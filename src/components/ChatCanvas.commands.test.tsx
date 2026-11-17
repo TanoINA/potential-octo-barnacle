@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
-import { ChatCanvas } from './ChatCanvas';
+import { ChatCanvas, estimateSessionTokens, estimateMessageTokens } from './ChatCanvas';
 import type { AgentSettings } from '../types/agent';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
@@ -716,6 +716,59 @@ describe('ChatCanvas prompt queueing', () => {
 
     fireEvent.keyDown(input, { key: 'Tab' });
 
-    expect(input.value).toBe('tolong kerjain ini pake /ponytail ');
+    expect(input.value).toBe('tolong kerjain ini pake ');
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+  });
+
+  it.each([
+    { draft: 'before /pony after', expected: 'before after', caret: 7 },
+    { draft: '/pony after', expected: 'after', caret: 0 },
+    { draft: '/pony', expected: '', caret: 0 },
+    { draft: 'before\n/pony\nafter', expected: 'before\n\nafter', caret: 7 },
+  ])('removes chosen skill token and normalizes adjacent whitespace from $draft', async ({ draft, expected, caret }) => {
+    const props = renderCanvas({ onListSkills: vi.fn(async () => [
+      { name: 'ponytail', description: 'Lazy senior dev', path: '', source: '' },
+    ]) });
+    await waitFor(() => expect(props.onListSkills).toHaveBeenCalled());
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    const cursor = draft.indexOf('/pony') + '/pony'.length;
+    fireEvent.change(input, { target: { value: draft } });
+    input.setSelectionRange(cursor, cursor);
+    fireEvent.select(input);
+    fireEvent.click(await screen.findByRole('button', { name: /\/ponytail/ }));
+    await waitFor(() => {
+      expect(input.value).toBe(expected);
+      expect(input.selectionStart).toBe(caret);
+      expect(input.selectionEnd).toBe(caret);
+    });
+    expect(screen.getByRole('button', { name: 'Remove skill ponytail' })).toBeTruthy();
+  });
+
+  it('estimates session tokens and caches non-streaming message token computations', () => {
+    const staticMsg: import('../types/agent').ChatMessage = {
+      id: 'm1',
+      role: 'user',
+      content: 'Hello, can you write an audit?',
+      timestamp: 100,
+      isStreaming: false,
+    };
+    const firstEstimate = estimateMessageTokens(staticMsg);
+    expect(firstEstimate).toBeGreaterThan(0);
+    expect(estimateMessageTokens(staticMsg)).toBe(firstEstimate);
+
+    const streamingMsg: import('../types/agent').ChatMessage = {
+      id: 'm2',
+      role: 'assistant',
+      content: 'Short',
+      timestamp: 200,
+      isStreaming: true,
+    };
+    const streamEst1 = estimateMessageTokens(streamingMsg);
+    streamingMsg.content = 'Much longer content streamed later';
+    const streamEst2 = estimateMessageTokens(streamingMsg);
+    expect(streamEst2).toBeGreaterThan(streamEst1);
+
+    const total = estimateSessionTokens([staticMsg, streamingMsg]);
+    expect(total).toBe(firstEstimate + streamEst2);
   });
 });
