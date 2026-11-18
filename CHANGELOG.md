@@ -23,6 +23,8 @@ All notable changes to AetherAgent are documented here.
 
 ### Fixed & Improved
 
+- Main-agent turns now default to unlimited, with an optional validated maximum in Settings. Explicit saved limits are preserved, including values above 200; cancellation, tool approvals, retries, and separate subagent limits remain unchanged.
+
 - Refined the chat welcome layout, grouped the empty prompt with its composer, and added workspace-aware folder opening. Removed duplicate model labels, clarified reasoning and execution controls, and cleaned Markdown from sidebar previews while preserving safe search highlights.
 
 - Background tasks remain `stopping` until process-tree cleanup completes; repeated stop requests stay idempotent and stopping tasks still count as active.

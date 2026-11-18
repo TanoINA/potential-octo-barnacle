@@ -1570,7 +1570,7 @@ export function useAgent() {
       reasoningEffort: effective.reasoningEffort,
       temperature: currentSettings.temperature,
       maxTokens: currentSettings.maxTokens,
-      maxTurns: currentSettings.maxTurns,
+      maxTurns: currentSettings.maxTurns ?? 0,
       streamResponse: currentSettings.streamResponse,
       skillPaths: currentSettings.skillPaths,
       mcpServers: currentSettings.mcpServers,

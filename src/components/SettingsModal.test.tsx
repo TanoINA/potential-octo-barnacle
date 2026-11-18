@@ -366,3 +366,48 @@ describe('SettingsModal enhanced features', () => {
     });
   });
 });
+
+describe('optional main-agent turn limit', () => {
+  it('defaults missing limits to unlimited and saves zero without imposing a cap', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { maxTurns: _previousLimit, ...withoutLimit } = baseSettings;
+    const settings = withoutLimit as AgentSettings;
+    render(<SettingsModal settings={settings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
+    expect((screen.getByRole('checkbox', { name: 'Limit agent turns' }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByRole('spinbutton', { name: 'Maximum agent turns' })).toBeNull();
+    expect(screen.getByText(/runs until it finishes or you stop it/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].maxTurns).toBe(0);
+  });
+
+  it('preserves existing limits, supports more than 200, and lets users remove the cap', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
+    const toggle = screen.getByRole('checkbox', { name: 'Limit agent turns' });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('spinbutton', { name: 'Maximum agent turns' }) as HTMLInputElement).value).toBe('24');
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Maximum agent turns' }), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0].maxTurns).toBe(500);
+    fireEvent.click(toggle);
+    expect(screen.queryByRole('spinbutton', { name: 'Maximum agent turns' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(onSave.mock.calls[1][0].maxTurns).toBe(0);
+    expect(baseSettings.maxTurns).toBe(24);
+  });
+
+  it.each(['', '0', '-1', '1.5', '4294967296'])('rejects invalid optional turn limit %s', async (value) => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsModal settings={baseSettings} onSave={onSave} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent defaults' }));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Maximum agent turns' }), { target: { value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(await screen.findByText(/maximum agent turns must be a positive whole number/i)).toBeTruthy();
+  });
+});

@@ -536,3 +536,16 @@ fn settings_read_completion_preserves_fields_edited_after_dispatch() {
     assert_eq!(rt.state.ui.form("settings.systemPrompt"),"Keep this unsaved edit");
     assert_eq!(rt.state.ui.settings_original["systemPrompt"],json!(rt.state.controller.model().settings.system_prompt));
 }
+#[test]
+fn agent_turn_limit_accepts_unlimited_and_explicit_large_caps() {
+    let mut rt = runtime(Panel::Settings);
+    settle(&mut rt);
+    for value in ["0", "500"] {
+        rt.state.ui.set_form("settings.maxTurns", value);
+        assert_eq!(rt.state.ui.settings_controls().unwrap()["maxTurns"], value.parse::<u32>().unwrap());
+    }
+    for value in ["", "-1", "1.5", "4294967296", "\"unlimited\""] {
+        rt.state.ui.set_form("settings.maxTurns", value);
+        assert!(rt.state.ui.settings_controls().is_err(), "Accepted invalid limit: {value}");
+    }
+}

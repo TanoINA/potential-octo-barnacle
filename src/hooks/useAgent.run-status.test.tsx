@@ -1,4 +1,4 @@
-﻿import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { pagingBackend } from '../test/sessionPaging';
 import type { AgentEvent, SessionData } from '../types/agent';
@@ -173,4 +173,16 @@ it('does not overwrite manual rename with auto-generated session title', async (
 
  expect(hook.result.current.sessionTitle).toBe('Custom Named Auth');
  expect(mocks.invoke).not.toHaveBeenCalledWith('generate_session_title', expect.anything());
+});
+
+it.each([undefined, 0, 500])('sends optional main-agent limit %s without a hidden cap', async (maxTurns) => {
+ mocks.invoke.mockImplementation(pagingBackend(async (name: string) => {
+  if (name === 'get_settings') return { providers: [provider], activeProviderId: 'p', skillPaths: [], mcpServers: [], maxTurns, self_improvement_enabled: false };
+  if (name === 'list_sessions') return [initial.session];
+  if (name === 'load_session') return structuredClone(initial);
+ }));
+ const hook = renderHook(useAgent);
+ await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+ await act(async () => { await hook.result.current.sendMessage('hello'); });
+ expect(mocks.invoke).toHaveBeenCalledWith('send_message', expect.objectContaining({ request: expect.objectContaining({ maxTurns: maxTurns ?? 0 }) }));
 });

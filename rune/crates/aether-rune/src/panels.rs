@@ -445,6 +445,9 @@ impl UiState {
                 .map_err(|_| {
                     format!("{key} must be a valid number (maxTokens also accepts null)")
                 })?;
+            if key == "maxTurns" && !parsed.as_u64().is_some_and(|turns| turns <= u32::MAX as u64) {
+                return Err("Max turns must be a whole number from 0 to 4,294,967,295 (0 = unlimited)".into());
+            }
             value[key] = parsed;
         }
         let typed: AgentSettings =
@@ -452,12 +455,11 @@ impl UiState {
         if !typed.temperature.is_finite() || !(0.0..=2.0).contains(&typed.temperature) {
             return Err("Temperature must be between 0 and 2".into());
         }
-        if typed.max_turns == 0
-            || typed.max_tokens == Some(0)
+        if typed.max_tokens == Some(0)
             || typed.auto_compaction_threshold_tokens == 0
         {
             return Err(
-                "Token limits, turn limits and compaction thresholds must be positive".into(),
+                "Token limits and compaction thresholds must be positive".into(),
             );
         }
         Ok(value)
@@ -856,7 +858,7 @@ fn settings_panel(state: &AppState, kit: &Kit) -> El {
         ("systemPrompt", "System prompt", true),
         ("temperature", "Temperature", false),
         ("maxTokens", "Max tokens (null = provider default)", false),
-        ("maxTurns", "Max turns", false),
+        ("maxTurns", "Max turns (0 = unlimited)", false),
         (
             "autoCompactionThresholdTokens",
             "Auto-compaction token threshold",
@@ -914,6 +916,9 @@ fn settings_panel(state: &AppState, kit: &Kit) -> El {
                         .map_err(|_| {
                             format!("{key} must be a valid number (maxTokens also accepts null)")
                         })?;
+                    if key == "maxTurns" && !parsed.as_u64().is_some_and(|turns| turns <= u32::MAX as u64) {
+                        return Err("Max turns must be a whole number from 0 to 4,294,967,295 (0 = unlimited)".into());
+                    }
                     value[key] = parsed;
                 }
                 serde_json::from_value::<AgentSettings>(value.clone())

@@ -187,6 +187,7 @@ export interface AgentSettings {
   favoriteModels: string[];
   skillPaths: string[];
   mcpServers: McpServerConfig[];
+  /** Main-agent turns: 0 means unlimited; positive integers apply an optional cap. */
   maxTurns: number;
   notificationsEnabled?: boolean;
   soundChimeEnabled?: boolean;
@@ -265,6 +266,7 @@ export interface AgentRunRequest {
   reasoningEffort: ReasoningEffort;
   temperature: number;
   maxTokens?: number;
+  /** Main-agent turns: 0 means unlimited; positive integers apply an optional cap. */
   maxTurns: number;
   streamResponse: boolean;
   skillPaths: string[];

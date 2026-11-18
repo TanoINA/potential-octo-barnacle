@@ -79,6 +79,8 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   const [tab, setTab] = useState<SettingsTab>('providers');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [limitTurns, setLimitTurns] = useState((settings.maxTurns ?? 0) > 0);
+  const [turnLimitDraft, setTurnLimitDraft] = useState(String(settings.maxTurns || 200));
   const [detectedSkills, setDetectedSkills] = useState<SkillInfo[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
@@ -96,6 +98,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   const isDirty = useMemo(() => {
     const initialNormalized = {
       ...settings,
+      maxTurns: settings.maxTurns ?? 0,
       self_improvement_enabled: settings.self_improvement_enabled ?? true,
       autoCompactionEnabled: settings.autoCompactionEnabled !== false,
       autoCompactionThresholdTokens: Number(settings.autoCompactionThresholdTokens) || 65536,
@@ -103,13 +106,14 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
     };
     const currentNormalized = {
       ...form,
+      maxTurns: limitTurns ? Number(turnLimitDraft) : 0,
       self_improvement_enabled: form.self_improvement_enabled === true,
       autoCompactionEnabled: form.autoCompactionEnabled !== false,
       autoCompactionThresholdTokens: Number(form.autoCompactionThresholdTokens) || 65536,
       executionMode: form.executionMode || 'turbo',
     };
     return JSON.stringify(initialNormalized) !== JSON.stringify(currentNormalized);
-  }, [form, settings]);
+  }, [form, settings, limitTurns, turnLimitDraft]);
 
 
 
@@ -174,11 +178,13 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   };
 
   const resetAgentDefaults = () => {
+    setLimitTurns(false);
+    setTurnLimitDraft('200');
     setForm((current) => ({
       ...current,
       temperature: 0.7,
       maxTokens: 8192,
-      maxTurns: 24,
+      maxTurns: 0,
       reasoningEffort: 'medium',
       thinking: false,
       streamResponse: true,
@@ -292,11 +298,17 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   };
 
   const saveChanges = async () => {
+    const maxTurns = limitTurns ? Number(turnLimitDraft) : 0;
+    if (limitTurns && (!/^\d+$/.test(turnLimitDraft) || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 4294967295)) {
+      setError('Maximum agent turns must be a positive whole number up to 4,294,967,295.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const normalized: AgentSettings = {
         ...form,
+        maxTurns,
         self_improvement_enabled: form.self_improvement_enabled === true,
         autoCompactionEnabled: form.autoCompactionEnabled !== false,
         autoCompactionThresholdTokens: Number(form.autoCompactionThresholdTokens) || 65536,
@@ -711,7 +723,14 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="settings-label">Temperature<input type="number" min="0" max="2" step="0.1" className="settings-input" value={form.temperature} onChange={(event) => setForm({ ...form, temperature: Number(event.target.value) })} /></label>
                 <label className="settings-label">Max tokens<input type="number" min="1" step="1" className="settings-input" value={form.maxTokens ?? ''} onChange={(event) => setForm({ ...form, maxTokens: event.target.value ? Number(event.target.value) : undefined })} placeholder="Provider default" /></label>
-                <label className="settings-label">Maximum agent turns<input type="number" min="1" max="200" className="settings-input" value={form.maxTurns} onChange={(event) => setForm({ ...form, maxTurns: Number(event.target.value) })} /></label>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-[#c9d1d9]">
+                    <input type="checkbox" checked={limitTurns} onChange={(event) => setLimitTurns(event.target.checked)} aria-describedby="turn-limit-help" />
+                    Limit agent turns
+                  </label>
+                  <p id="turn-limit-help" className="text-xs leading-5 text-[#8b949e]">{limitTurns ? 'Stop after this many main-agent turns. Subagents have separate limits.' : 'Unlimited: the agent runs until it finishes or you stop it. Provider charges still apply.'}</p>
+                  {limitTurns && <label className="settings-label">Maximum agent turns<input type="number" min="1" max="4294967295" step="1" className="settings-input" value={turnLimitDraft} onChange={(event) => setTurnLimitDraft(event.target.value)} /></label>}
+                </div>
                 <label className="settings-label">Default reasoning effort<select className="settings-input" value={form.reasoningEffort} onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value as ReasoningEffort })}>{EFFORTS.map((effort) => <option key={effort.value} value={effort.value}>{effort.label}</option>)}</select></label>
                 <label className="settings-label sm:col-span-2">
                   Default execution mode

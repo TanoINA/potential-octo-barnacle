@@ -49,3 +49,11 @@ These controls do not weaken canonical history guards, installer verification, o
 - Model selection stays in the composer instead of repeating in the session header and account footer. The header retains Council, activity, panel, and session actions.
 - Reasoning state is explicitly labeled, and the execution-mode tooltip explains the approval behavior. Permissions are unchanged.
 - Sidebar previews flatten basic Markdown links and formatting into plain text. Existing safe full-text search highlights are preserved. Truncated session titles expose their full value in a tooltip.
+
+## Optional main-agent turn limit
+
+New settings and requests with an omitted `maxTurns` use `0`, meaning unlimited. A positive integer applies an explicit main-agent cap; the old implicit 200-turn ceiling no longer applies. Existing saved positive limits stay enabled until the user disables **Limit agent turns** in Settings > Agent defaults. The numeric maximum is shown only when that option is enabled.
+
+Unlimited does not guarantee a never-ending run: the agent still finishes when it produces a final response, stops on cancellation and unrecoverable errors, and respects tool approvals and provider constraints. Normal provider costs still apply. Subagents retain their separate bounded limits.
+
+The Rune settings field uses the same persisted convention and labels `0` as unlimited. Skill instructions or screenshots mentioning a main-agent 200-turn maximum should not be treated as the runtime contract.
