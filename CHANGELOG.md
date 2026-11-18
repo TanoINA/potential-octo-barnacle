@@ -6,6 +6,8 @@ All notable changes to AetherAgent are documented here.
 
 ### Added
 
+- Bundled five lightweight quality and web guides: verification before completion, frontend design, web application testing, accessibility/usability review, and React best practices. Missing guides are seeded locally on startup without network downloads or new runtime dependencies; existing user skill files are preserved.
+
 - Per-session, per-workspace composer drafts retain text, selected skills, and attachments while the app stays open. Late send acknowledgements only clear the originating, unchanged draft.
 - Selected skill chips open an accessible preview with description, source, and path; missing metadata is explained without inventing instructions.
 - Background task cards can copy the original command, with clipboard success and error feedback.

@@ -3,6 +3,7 @@
 ## Current guides
 
 - [Architecture](ARCHITECTURE.md): application boundaries and runtime components.
+- [Bundled skills](bundled-skills.md): default guides, installation behavior, customization, and runtime requirements.
 - [Conversation UX](conversation-ux.md): skills, queue controls, activity summaries, and per-chat status.
 - [Session history](session-history-pagination.md): paging, canonical history, persistence, and recovery.
 - [Self-improvement review](self-improvement-review.md): review lifecycle and approval boundaries.

@@ -101,6 +101,31 @@ pub fn ensure_starter_skills(dir: &Path) {
         "---\nname: test-driven-development\ndescription: 'Enforce test-driven development: verify tests before and after code changes.'\n---\n# Test-Driven Development (TDD)\n\n1. **Baseline**: Run existing tests via `run_command` to establish a clean starting baseline.\n2. **Red**: Write a minimal failing test that specifies the expected behavior.\n3. **Green**: Implement minimal change using `write_file` or `edit_file` and verify test pass.\n4. **Refactor**: Clean up the code while keeping tests green.\n5. **Verify**: Run full unit and integration tests via `run_command` to ensure zero regressions.\n",
     );
 
+    for (name, content) in [
+        (
+            "verification-before-completion",
+            include_str!("../../../.aether/skills/verification-before-completion/SKILL.md"),
+        ),
+        (
+            "frontend-design",
+            include_str!("../../../.aether/skills/frontend-design/SKILL.md"),
+        ),
+        (
+            "webapp-testing",
+            include_str!("../../../.aether/skills/webapp-testing/SKILL.md"),
+        ),
+        (
+            "web-design-guidelines",
+            include_str!("../../../.aether/skills/web-design-guidelines/SKILL.md"),
+        ),
+        (
+            "react-best-practices",
+            include_str!("../../../.aether/skills/react-best-practices/SKILL.md"),
+        ),
+    ] {
+        write_starter_skill(dir, name, content);
+    }
+
     write_starter_skill(
         dir,
         "ponytail",
@@ -610,6 +635,11 @@ mod tests {
             "systematic-debugging",
             "codebase-inspection",
             "test-driven-development",
+            "verification-before-completion",
+            "frontend-design",
+            "webapp-testing",
+            "web-design-guidelines",
+            "react-best-practices",
             "ponytail",
             "ponytail-audit",
             "ponytail-debt",
@@ -632,6 +662,11 @@ mod tests {
             "systematic-debugging",
             "codebase-inspection",
             "test-driven-development",
+            "verification-before-completion",
+            "frontend-design",
+            "webapp-testing",
+            "web-design-guidelines",
+            "react-best-practices",
             "ponytail",
             "ponytail-audit",
             "ponytail-debt",
@@ -1034,6 +1069,47 @@ mod tests {
         assert!(content.contains("Updated instructions"));
 
         tokio::fs::remove_dir_all(&root).await.unwrap();
+    }
+
+    #[test]
+    fn bundled_quality_and_web_skills_are_valid_and_preserve_user_edits() {
+        let dir =
+            std::env::temp_dir().join(format!("aether-bundled-skills-{}", uuid::Uuid::new_v4()));
+        let names = [
+            "verification-before-completion",
+            "frontend-design",
+            "webapp-testing",
+            "web-design-guidelines",
+            "react-best-practices",
+        ];
+        ensure_starter_skills(&dir);
+        for name in names {
+            let file = dir.join(name).join("SKILL.md");
+            let content = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("Missing bundled skill {name}: {error}"));
+            let skill = parse_frontmatter(&content).expect("Valid bundled skill frontmatter");
+            assert_eq!(skill.name.as_deref(), Some(name));
+            assert!(!skill.description.unwrap().trim().is_empty());
+            assert!(!normalize_skill_instructions(&content).trim().is_empty());
+            assert!(content.len() as u64 <= MAX_SKILL_BYTES);
+            assert!(content.lines().count() < 500);
+            std::fs::write(file, format!("Custom content: {name}")).unwrap();
+        }
+        let optional = dir.join("my-optional-skill");
+        std::fs::create_dir_all(&optional).unwrap();
+        std::fs::write(optional.join("SKILL.md"), "User-managed skill").unwrap();
+        ensure_starter_skills(&dir);
+        for name in names {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(name).join("SKILL.md")).unwrap(),
+                format!("Custom content: {name}")
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(optional.join("SKILL.md")).unwrap(),
+            "User-managed skill"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

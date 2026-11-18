@@ -82,3 +82,5 @@ App configuration, keys, and session databases are stored in `~/.aether-agent/`.
 - [Release guide](docs/release.md)
 - [Documentation index](docs/README.md)
 - [Changelog](CHANGELOG.md)
+
+New installations receive lightweight quality and web-development guides, including verification before completion, frontend design, browser testing, accessibility review, and React practices. Existing user skills are preserved. See [bundled skills](docs/bundled-skills.md) for the default set and tooling requirements.
