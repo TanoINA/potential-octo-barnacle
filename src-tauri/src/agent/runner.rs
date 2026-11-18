@@ -1586,7 +1586,8 @@ impl AgentRunner {
         let mut turns = 0;
         let mut finished = false;
         let mut final_response_nonempty = false;
-        while turns < request.max_turns.clamp(1, 200) {
+        // Zero disables only the main-agent turn cap; cancellation still runs every turn.
+        while request.max_turns == 0 || turns < request.max_turns {
             if cancel.is_cancelled() {
                 break;
             }
@@ -2109,7 +2110,7 @@ impl AgentRunner {
                 break;
             }
         }
-        if !finished && !cancel.is_cancelled() && turns >= request.max_turns.clamp(1, 200) {
+        if !finished && !cancel.is_cancelled() && request.max_turns > 0 && turns >= request.max_turns {
             emitter.error(format!(
                 "Agent reached the configured maximum of {} turns",
                 request.max_turns
@@ -4869,6 +4870,130 @@ mod tests {
             self.0.lock().unwrap().push(payload);
             Ok(())
         }
+    }
+
+    async fn run_main_turn_limit_fixture(
+        max_turns: usize,
+        expected_calls: usize,
+        finish_on_last: bool,
+        cancel_after: Option<usize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct Sink {
+            events: ToolEventCollector,
+            cancel: CancellationToken,
+            remaining: AtomicUsize,
+        }
+        impl super::super::events::EventSink for Sink {
+            fn emit(&self, topic: &str, payload: serde_json::Value) -> Result<(), String> {
+                if payload["type"] == "tool_update" && payload["data"]["tool"]["status"] == "done" {
+                    if self.remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                        self.cancel.cancel();
+                    }
+                }
+                self.events.emit(topic, payload)
+            }
+        }
+
+        let (cwd, root) = workspace_with_skill("turn-limit-fixture", "Local fixture only.");
+        std::fs::write(root.join("fixture.txt"), "small tool result").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = calls.clone();
+        let server = tokio::spawn(async move {
+            for turn in 1..=expected_calls {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut raw = Vec::new();
+                let mut buffer = [0; 8192];
+                let header_end = loop {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    raw.extend_from_slice(&buffer[..count]);
+                    if let Some(offset) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break offset + 4;
+                    }
+                };
+                let length = String::from_utf8_lossy(&raw[..header_end]).lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap())
+                }).unwrap();
+                while raw.len() < header_end + length {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    raw.extend_from_slice(&buffer[..count]);
+                }
+                server_calls.fetch_add(1, Ordering::SeqCst);
+                let delta = if finish_on_last && turn == expected_calls {
+                    serde_json::json!({"content":"Task complete"})
+                } else {
+                    serde_json::json!({"tool_calls":[{"index":0,"id":format!("call-{turn}"),"type":"function",
+                        "function":{"name":"read_file","arguments":"{\"path\":\"fixture.txt\"}"}}]})
+                };
+                let event = serde_json::json!({"choices":[{"delta":delta}]});
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {event}\n\ndata: [DONE]\n\n").as_bytes()).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let cancel = CancellationToken::new();
+        if cancel_after == Some(0) {
+            cancel.cancel();
+        }
+        let events = ToolEventCollector::default();
+        let sink = Sink {
+            events: events.clone(), cancel: cancel.clone(),
+            remaining: AtomicUsize::new(cancel_after.unwrap_or(usize::MAX)),
+        };
+        let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "runId":"turn-limit", "sessionId":format!("turn-limit-{}", Uuid::new_v4()),
+            "provider":{"baseUrl":format!("http://{address}"),"model":"local-fixture"},
+            "messages":[{"id":"u","role":"user","content":"Read the fixture","timestamp":1}],
+            "maxTurns":max_turns, "autoCompactionEnabled":false,
+            "self_improvement_enabled":false,
+            "reviewConfig":{"createDir":root.join("skills"),"creation_nudge_interval":0}
+        })).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), AgentRunner::new().run(
+            AgentHost::new(sink), cwd, request, cancel,
+        )).await.expect("main run must terminate on completion, finite cap, or cancellation");
+        assert_eq!(calls.load(Ordering::SeqCst), expected_calls, "maxTurns={max_turns}");
+        tokio::time::timeout(std::time::Duration::from_secs(5), server).await.unwrap().unwrap();
+        let events = events.0.lock().unwrap();
+        let errors: Vec<_> = events.iter().filter(|event| event["type"] == "error").collect();
+        if !finish_on_last && cancel_after.is_none() {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0]["data"]["message"], format!("Agent reached the configured maximum of {max_turns} turns"));
+        } else {
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        let done: Vec<_> = events.iter().filter(|event| event["type"] == "done").collect();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0]["data"]["cancelled"], cancel_after.is_some());
+        assert_eq!(done[0]["data"]["successful"], finish_on_last && cancel_after.is_none());
+    }
+
+    #[tokio::test]
+    async fn main_turn_limit_unlimited_completes_after_more_than_200_turns() {
+        run_main_turn_limit_fixture(0, 206, true, None).await;
+    }
+
+    #[tokio::test]
+    async fn main_turn_limit_positive_caps_are_exact_including_above_200() {
+        for limit in [1, 3, 205] {
+            run_main_turn_limit_fixture(limit, limit, false, None).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn main_turn_limit_completion_on_last_finite_turn_is_successful() {
+        run_main_turn_limit_fixture(2, 2, true, None).await;
+    }
+
+    #[tokio::test]
+    async fn main_turn_limit_unlimited_cancellation_stops_without_cap_error() {
+        run_main_turn_limit_fixture(0, 0, false, Some(0)).await;
+        run_main_turn_limit_fixture(0, 205, false, Some(205)).await;
     }
 
     #[tokio::test]

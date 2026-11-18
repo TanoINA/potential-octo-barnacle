@@ -159,7 +159,6 @@ pub async fn load_settings() -> Result<AgentSettings, String> {
     {
         settings.active_provider_id = settings.providers[0].id.clone();
     }
-    settings.max_turns = settings.max_turns.clamp(1, 200);
     if !settings.temperature.is_finite() {
         settings.temperature = 0.7;
     }
@@ -209,9 +208,6 @@ pub async fn save_settings(settings: &AgentSettings) -> Result<(), String> {
     }
     if !settings.temperature.is_finite() || !(0.0..=2.0).contains(&settings.temperature) {
         return Err("Temperature must be between 0 and 2".into());
-    }
-    if !(1..=200).contains(&settings.max_turns) {
-        return Err("Maximum agent turns must be between 1 and 200".into());
     }
     if settings.max_tokens == Some(0) {
         return Err("Max tokens must be at least 1 or left unset".into());
@@ -2749,6 +2745,45 @@ async fn recover_session_journals(root: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn main_turn_limit_storage_defaults_and_round_trip_preserve_limits() {
+        const CHILD: &str = "AETHER_TURN_LIMIT_STORAGE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = fixture_dir();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::storage::tests::main_turn_limit_storage_defaults_and_round_trip_preserve_limits", "--nocapture"])
+                .env(CHILD, "1")
+                .env("AETHER_JOURNAL_TEST_ROOT", &root)
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        // A fresh child isolates real load/save calls from all other settings users.
+        assert_eq!(config_dir(), PathBuf::from(std::env::var_os("AETHER_JOURNAL_TEST_ROOT").unwrap()));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut observed = vec![default_settings().max_turns, load_settings().await.unwrap().max_turns];
+            let limits = [0, 1, 24, 200, 201, 1000];
+            for limit in limits {
+                let legacy = serde_json::to_vec(&serde_json::json!({"maxTurns":limit})).unwrap();
+                fs::write(settings_path(), &legacy).await.unwrap();
+                observed.push(load_settings().await.unwrap().max_turns);
+                assert_eq!(fs::read(settings_path()).await.unwrap(), legacy, "loading must not migrate stored limits");
+            }
+            assert_eq!(observed, vec![0, 0, 0, 1, 24, 200, 201, 1000]);
+            fs::write(settings_path(), b"{}").await.unwrap();
+            assert_eq!(load_settings().await.unwrap().max_turns, 0);
+            for limit in limits {
+                let mut settings = default_settings();
+                settings.max_turns = limit;
+                save_settings(&settings).await.unwrap();
+                assert_eq!(load_settings().await.unwrap().max_turns, limit);
+                let stored: serde_json::Value = serde_json::from_slice(&fs::read(settings_path()).await.unwrap()).unwrap();
+                assert_eq!(stored["maxTurns"], limit);
+            }
+        });
+    }
+
     #[derive(Debug, Default)]
     struct DirectorySnapshotCounts {
         live: usize,

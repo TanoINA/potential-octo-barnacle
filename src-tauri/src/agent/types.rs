@@ -166,6 +166,8 @@ pub struct AgentSettings {
     pub skill_paths: Vec<String>,
     #[serde(rename = "mcpServers")]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Main-agent provider-turn limit: 0 means unlimited; positive values are exact caps.
+    /// Existing stored positive limits are preserved, not migrated to unlimited.
     #[serde(rename = "maxTurns")]
     pub max_turns: usize,
     #[serde(rename = "notificationsEnabled", default = "default_true")]
@@ -200,7 +202,7 @@ impl Default for AgentSettings {
             favorite_models: Vec::new(),
             skill_paths: Vec::new(),
             mcp_servers: Vec::new(),
-            max_turns: 24,
+            max_turns: default_max_turns(),
             notifications_enabled: true,
             sound_chime_enabled: false,
             self_improvement_enabled: true,
@@ -513,6 +515,8 @@ pub struct AgentRunRequest {
     pub temperature: f64,
     #[serde(rename = "maxTokens", default)]
     pub max_tokens: Option<u32>,
+    /// Main-agent provider-turn limit, defaulting to 0 (unlimited) when omitted.
+    /// Any positive value is an exact cap; subagent limits are independent.
     #[serde(rename = "maxTurns", default = "default_max_turns")]
     pub max_turns: usize,
     #[serde(rename = "streamResponse", default = "default_stream")]
@@ -549,7 +553,7 @@ fn default_temperature() -> f64 {
     0.7
 }
 fn default_max_turns() -> usize {
-    24
+    0
 }
 fn default_stream() -> bool {
     true
@@ -730,6 +734,43 @@ pub enum AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_turn_limit_defaults_to_unlimited() {
+        assert_eq!(AgentSettings::default().max_turns, 0);
+        let settings: AgentSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(settings.max_turns, 0);
+        let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+            "runId":"turn-default", "sessionId":"turn-default", "provider":{}, "messages":[]
+        })).unwrap();
+        assert_eq!(request.max_turns, 0);
+    }
+
+    #[test]
+    fn main_turn_limit_serde_preserves_zero_and_legacy_positive_limits() {
+        for limit in [0, 1, 24, 200, 201, 1000] {
+            let settings: AgentSettings = serde_json::from_value(serde_json::json!({
+                "maxTurns":limit
+            })).unwrap();
+            assert_eq!(settings.max_turns, limit);
+            assert_eq!(serde_json::to_value(settings).unwrap()["maxTurns"], limit);
+            let request: AgentRunRequest = serde_json::from_value(serde_json::json!({
+                "runId":"turn-serde", "sessionId":"turn-serde", "provider":{},
+                "messages":[], "maxTurns":limit
+            })).unwrap();
+            assert_eq!(request.max_turns, limit);
+            assert_eq!(serde_json::to_value(request).unwrap()["maxTurns"], limit);
+        }
+        for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::Value::Null] {
+            assert!(serde_json::from_value::<AgentSettings>(serde_json::json!({
+                "maxTurns":invalid
+            })).is_err());
+            assert!(serde_json::from_value::<AgentRunRequest>(serde_json::json!({
+                "runId":"turn-invalid", "sessionId":"turn-invalid", "provider":{},
+                "messages":[], "maxTurns":invalid
+            })).is_err());
+        }
+    }
 
     #[test]
     fn selected_skills_round_trip_preserves_names_and_legacy_default() {
