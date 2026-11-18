@@ -14,6 +14,7 @@ import {
   File,
   FileCode2,
   Folder,
+  FolderOpen,
   Globe,
   Image as ImageIcon,
   Mic,
@@ -145,6 +146,7 @@ interface ChatCanvasProps {
   onRenameSession?: (sessionId: string, title: string) => Promise<void>;
   currentSessionId?: string | null;
   workspaceCwd?: string;
+  onOpenFolder?: () => void;
 }
 
 export interface SlashItem {
@@ -449,6 +451,7 @@ export function ChatCanvas({
   onRenameSession,
   currentSessionId,
   workspaceCwd = '',
+  onOpenFolder,
 }: ChatCanvasProps) {
   const draftKey = JSON.stringify([workspaceCwd, currentSessionId]);
   const pendingDraftSelectionRef = useRef<{ key: string; input: string; cursor: number } | null>(null);
@@ -1974,7 +1977,7 @@ export function ChatCanvas({
         }}
       />
 
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className={`chat-stage relative flex min-h-0 flex-1 flex-col overflow-hidden ${messages.length === 0 ? 'chat-stage--welcome' : ''}`}>
         {isInChatSearchOpen && (
           <div
             className="absolute right-6 top-3 z-30 flex items-center gap-1.5 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-2.5 py-1.5 shadow-2xl text-xs backdrop-blur-md"
@@ -2048,7 +2051,7 @@ export function ChatCanvas({
           inert={isSessionLoading || undefined}
           style={isSessionLoading ? { visibility: 'hidden' } : undefined}
           tabIndex={0}
-          className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+          className="chat-viewport min-h-0 flex-1 overflow-y-auto px-4 py-5"
         onKeyDown={(event) => {
           if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar'].includes(event.key)) {
             cancelAnchorCorrection();
@@ -2105,7 +2108,7 @@ export function ChatCanvas({
           }
         }}
       >
-        <div className="mx-auto mb-4 flex max-w-3xl flex-wrap items-center justify-center gap-3 text-xs text-[#8b949e]">
+        {messages.length > 0 && <div className="mx-auto mb-4 flex max-w-3xl flex-wrap items-center justify-center gap-3 text-xs text-[#8b949e]">
           <span>{messages.length} / {totalMessageCount} messages loaded</span>
           {hasOlderMessages && onLoadOlderMessages && (
             <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} className="flex items-center gap-2 rounded border border-[#30363d] px-3 py-2 disabled:opacity-50">
@@ -2116,14 +2119,19 @@ export function ChatCanvas({
           {historyError && <div role="alert" className="text-[#f85149]">{historyError}{' '}
             {onLoadOlderMessages && <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} aria-label="Retry loading older messages" className="underline">Retry</button>}
           </div>}
-        </div>
+        </div>}
         {messages.length === 0 ? (
-          <div className="ui-enter mx-auto flex h-full max-w-lg flex-col justify-center py-8 text-left">
-            <h2 className="text-base font-medium text-[#e6edf3]">What would you like to work on?</h2>
-            <p className="mt-2 text-sm leading-6 text-[#8b949e]">Describe a task, ask a question, or attach files for context.</p>
+          <div className="chat-welcome ui-enter mx-auto flex w-full max-w-3xl flex-col justify-center px-4 py-8 text-left">
+            <h2 className="text-[26px] leading-tight font-semibold tracking-tight text-[#e6edf3]">What would you like to work on?</h2>
+            <p className="mt-3 text-sm leading-6 text-[#8b949e]">{workspaceCwd ? 'Describe a task, ask a question, or attach files for context.' : 'Open a project folder, or start with a question.'}</p>
+            {!workspaceCwd && (
+              <button type="button" onClick={onOpenFolder} disabled={!onOpenFolder} className="mt-5 inline-flex w-fit items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22] px-4 py-2 text-[13px] font-medium text-[#e6edf3] hover:bg-[#21262d] disabled:opacity-50">
+                <FolderOpen size={15} aria-hidden="true" /> Open folder
+              </button>
+            )}
             <ul className="mt-4 space-y-1 text-xs leading-5 text-[#8b949e]">
               <li>Find the code responsible for a failing test.</li>
-              <li>Explain how this workspace is organized.</li>
+              {workspaceCwd && <li>Explain how this workspace is organized.</li>}
             </ul>
             <p className="mt-4 font-mono text-[11px] text-[#8b949e]">@ for workspace files &middot; / for commands</p>
           </div>
@@ -2157,8 +2165,6 @@ export function ChatCanvas({
           </div>
         )}
       </div>
-    </div>
-
       {/* Conversation Timeline Scrubber */}
       {!isSessionLoading && <div role="region" aria-label={`Loaded message timeline: ${messages.length} of ${totalMessageCount} messages loaded`}>
       <TimelineScrubber
@@ -2196,7 +2202,7 @@ export function ChatCanvas({
         </button>
       )}
 
-      <div className="relative shrink-0 border-t border-[#30363d] bg-[#0d1117] p-3">
+      <div className="chat-composer relative shrink-0 border-t border-[#30363d] bg-[#0d1117] p-3">
         {/* Council Mode Banner with Candidate A and Candidate B selectors */}
         {councilMode && (
           <div className="mx-auto mb-2.5 w-full max-w-3xl rounded-lg border border-[#30363d] bg-[#161b22] p-2.5 shadow-sm">
@@ -2600,8 +2606,8 @@ export function ChatCanvas({
                     }`}
                   >
                     {effectiveConfig?.thinking
-                      ? (effectiveConfig.reasoningEffort ? effectiveConfig.reasoningEffort.replace('_', ' ') : 'On')
-                      : 'Off'}
+                      ? (effectiveConfig.reasoningEffort ? ('Reasoning ' + effectiveConfig.reasoningEffort.replace('_', ' ')) : 'Reasoning on')
+                      : 'Reasoning off'}
                   </span>
                   <ChevronUp size={12} className={`text-[#8b949e] transition-transform ${thinkingMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
@@ -2724,7 +2730,7 @@ export function ChatCanvas({
                     setSkillsMenuOpen(false);
                   }}
                   className="flex h-8 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
-                  title={`Execution mode: ${activeExecutionMode.title}`}
+                  title={`${activeExecutionMode.title}: ${activeExecutionMode.description}`}
                   aria-label="Execution mode"
                 >
                   <ActiveModeIcon size={13} className="shrink-0 text-[#8b949e]" />
@@ -2833,6 +2839,7 @@ export function ChatCanvas({
             </div>
           </div>
         </div>
+      </div>
       </div>
       {input && (
         <button type="button" onClick={() => { invalidateAttachments(); setInput(''); setAttachedContexts([]); setMenuDismissed(false); textareaRef.current?.focus(); }} className="sr-only" aria-label="Clear composer"><X /></button>

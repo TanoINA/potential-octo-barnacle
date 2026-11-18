@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Brain,
   Download,
   MoreHorizontal,
   PanelLeft,
@@ -43,8 +42,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   councilMode,
   setCouncilMode,
   councilSecondCandidate,
-  onOpenModelPicker,
-  effectiveConfig,
   subagents,
   onToggleArtifacts,
   artifactCount,
@@ -84,7 +81,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
         )}
         <div className="min-w-0 max-w-[56px] sm:max-w-[180px] truncate">
           <h1 className="truncate text-xs font-semibold text-[#e6edf3]">{sessionTitle || 'New Chat'}</h1>
-          <span className="text-[10px] text-[#6e7681] whitespace-nowrap block">{totalMessageCount} messages</span>
+          {totalMessageCount > 0 && <span className="text-[12px] text-[#8b949e] whitespace-nowrap block">{totalMessageCount} messages</span>}
         </div>
       </div>
 
@@ -115,17 +112,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
         >
           <Users size={13} />
           <span className="hidden md:inline text-xs">Council</span>
-        </button>
-
-        {/* Model Picker */}
-        <button
-          type="button"
-          onClick={onOpenModelPicker}
-          className="flex h-8 max-w-[58px] sm:max-w-[145px] items-center gap-1 rounded-lg border border-[#30363d] bg-[#161b22] px-2 text-xs text-[#58a6ff] hover:bg-[#21262d] transition-colors shrink-0"
-          title="Choose model and reasoning"
-        >
-          <span className="truncate font-mono text-[11px]">{effectiveConfig?.provider.model || 'Select model'}</span>
-          {effectiveConfig?.thinking && <Brain size={12} className="shrink-0 text-[#8b949e]" />}
         </button>
 
         {/* Task / Artifacts Bubble Button */}

@@ -299,6 +299,73 @@ const navigationProps = () => ({
   effectiveConfig: null,
 });
 
+describe('Sidebar readable session details', () => {
+  it.each([
+    ['# Summary\n\n**Bold** and *italic* with [docs](https://example.com) and `code`.', 'Summary Bold and italic with docs and code.'],
+    ['> Quote\n\n- First\n- Second\n\n1. Third\n2. Fourth', 'Quote First Second Third Fourth'],
+    ['```ts\nconst value = 1;\n```\n\nNext  line\t here', 'const value = 1; Next line here'],
+    ['Plain file_name.ts and snake_case with 2 * 3 and https://example.com', 'Plain file_name.ts and snake_case with 2 * 3 and https://example.com'],
+    ['![Diagram](https://example.com/image.png) and [guide][ref]\n\n[ref]: https://example.com', 'Diagram and guide'],
+    ['First  \nsecond', 'First second'],
+    ['```ts\nconst partial = 1;', 'const partial = 1;'],
+    ['---\n\n## Heading\n\nText &amp; escaped \\*literal\\*', 'Heading Text & escaped *literal*'],
+  ])('renders a readable plain preview for %j', (preview, expected) => {
+    const props = navigationProps();
+    render(<Sidebar {...props} sessions={[{ ...props.sessions[0], preview }]} />);
+    const text = screen.getByText(expected);
+    expect(text.textContent).toBe(expected);
+    expect(text.childElementCount).toBe(0);
+    fireEvent.click(text);
+    expect(props.onSelectSession).toHaveBeenCalledWith('history');
+  });
+
+  it('keeps HTML in normal previews literal, including mark tags', () => {
+    const props = navigationProps();
+    const preview = '<img src=x onerror="window.__previewXss = true"> <script>alert(1)</script> <mark>literal</mark>';
+    const { container } = render(<Sidebar {...props} sessions={[{ ...props.sessions[0], preview }]} />);
+    expect(screen.getByText(preview).textContent).toBe(preview);
+    expect(container.querySelector('img, script, mark')).toBeNull();
+  });
+
+  it.each([false, true])('exposes the full truncated title and pin instructions (pinned=%s)', (pinned) => {
+    const props = navigationProps();
+    const title = 'A very long conversation title that must remain available when the sidebar truncates it';
+    render(<Sidebar {...props} sessions={[{ ...props.sessions[0], title, pinned }]} />);
+    const text = screen.getByText(title);
+    const button = screen.getByRole('button', { name: title });
+    expect(text.classList.contains('truncate')).toBe(true);
+    expect(button.title).toContain(title);
+    expect(button.title).toContain(pinned ? 'Pinned chat (Shift+Click to unpin)' : 'Shift+Click to pin chat to top');
+    expect(button.getAttribute('aria-current')).toBe('page');
+    fireEvent.click(button, { shiftKey: true });
+    expect(props.onTogglePinSession).toHaveBeenCalledWith('history');
+    expect(props.onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('uses Untitled in the title tooltip for an empty title', () => {
+    const props = navigationProps();
+    render(<Sidebar {...props} sessions={[{ ...props.sessions[0], title: '' }]} />);
+    expect(screen.getByRole('button', { name: 'Untitled' }).title).toContain('Untitled');
+  });
+
+  it.each([true, false])('shows provider and Settings rather than a repeated model (configured=%s)', (configured) => {
+    const props = navigationProps();
+    const effectiveConfig = configured ? {
+      provider: { id: 'test', name: 'Test Provider', kind: 'openai' as const, baseUrl: '', apiKey: '', model: 'repeated-model' },
+      thinking: false,
+      reasoningEffort: 'medium' as const,
+      usesSettingsDefault: true,
+    } : null;
+    render(<Sidebar {...props} effectiveConfig={effectiveConfig} />);
+    const footer = screen.getByRole('button', { name: configured ? /Test Provider\s*Settings/ : /No provider\s*Settings/ });
+    expect(screen.queryByText('repeated-model')).toBeNull();
+    expect(screen.queryByText('Configure model')).toBeNull();
+    fireEvent.click(footer);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(props.onOpenSettings).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('Sidebar chat activity', () => {
   it('shows activity for each chat independently of which chat is open', () => {
     const props = navigationProps();
@@ -417,10 +484,14 @@ it('opens the exact deep search hit rather than selecting the session tail', asy
   const hit = { sessionId: 'history', sessionTitle: 'History', sessionUpdatedAt: 2, snippet: 'needle', matchCount: 1, score: 1, matchMessageId: 'old-message' };
   const props = navigationProps();
   const jump = vi.fn(async () => true);
-  render(<Sidebar {...props} onDeepSearch={async () => [hit]} onOpenSearchResult={jump} />);
+  render(<Sidebar {...props} sessions={[{ ...props.sessions[0], preview: '**Original** preview' }]} onDeepSearch={async () => [hit]} onOpenSearchResult={jump} />);
+  expect(screen.getByText('Original preview')).toBeTruthy();
   fireEvent.change(screen.getByPlaceholderText(/Search messages/i), { target: { value: 'needle' } });
   await waitFor(() => expect(screen.getByText('needle')).toBeTruthy());
+  expect(screen.queryByText('Original preview')).toBeNull();
   fireEvent.click(screen.getByText('needle'));
   expect(jump).toHaveBeenCalledWith(hit);
   expect(props.onSelectSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+  expect(screen.getByText('Original preview')).toBeTruthy();
 });

@@ -23,6 +23,8 @@ All notable changes to AetherAgent are documented here.
 
 ### Fixed & Improved
 
+- Refined the chat welcome layout, grouped the empty prompt with its composer, and added workspace-aware folder opening. Removed duplicate model labels, clarified reasoning and execution controls, and cleaned Markdown from sidebar previews while preserving safe search highlights.
+
 - Background tasks remain `stopping` until process-tree cleanup completes; repeated stop requests stay idempotent and stopping tasks still count as active.
 - Selecting a slash skill removes only its token, preserving surrounding draft text and cursor position.
 - Activity tray interaction tests use small fixtures separately from the 100-item stress and navigation checks.
@@ -46,6 +48,7 @@ All notable changes to AetherAgent are documented here.
 - **Offline release verification**: Tools to verify Windows Authenticode signatures, minisign updater signatures, and SHA-256 hashes before installation.
 
 ### Changed
+
 - Refined the UI layout: simplified header hierarchy, cleaner composer footer, and reduced motion options.
 - Switched session persistence to atomic replacement writes with recovery checkpoint sidecars.
 - Hardened tool execution against directory traversal and symlink escapes.

@@ -1,4 +1,4 @@
-﻿import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { ChatCanvas, getModelContextWindow } from './ChatCanvas';
@@ -30,11 +30,13 @@ describe('ChatCanvas calm presentation', () => {
     const emptyState = heading.parentElement!;
     expect(emptyState.classList.contains('ui-enter')).toBe(true);
     expect(within(emptyState).getByText('Find the code responsible for a failing test.')).toBeTruthy();
-    expect(within(emptyState).getByText('Explain how this workspace is organized.')).toBeTruthy();
+    expect(within(emptyState).queryByText('Explain how this workspace is organized.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open folder' })).toBeTruthy();
+    expect(container.querySelector('.chat-stage--welcome')).toBeTruthy();
     expect(within(emptyState).getByText(/@ for workspace files/)).toBeTruthy();
     expect(within(emptyState).getByText(/\/ for commands/)).toBeTruthy();
-    expect(emptyState.querySelector('svg')).toBeNull();
-    expect(emptyState.querySelector('button')).toBeNull();
+
+
     expect(screen.queryByText('Native workspace tools')).toBeNull();
     expect(screen.queryByText('Provider flexibility')).toBeNull();
     expect(container.querySelector('[class*="gradient"], [class*="animate-bounce"], [class*="animate-pulse"], [class*="animate-ping"]')).toBeNull();
@@ -151,5 +153,16 @@ describe('ChatCanvas calm presentation', () => {
     // Custom limit override
     expect(getModelContextWindow('kimi-k3.1-pro', 32_000)).toBe(32_000);
     expect(getModelContextWindow('unknown-model', 512_000)).toBe(512_000);
+  });
+  it('opens a folder from welcome and adapts suggestions to the workspace', () => {
+    const onOpenFolder = vi.fn();
+    const { unmount } = setup({ onOpenFolder });
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }));
+    expect(onOpenFolder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Explain how this workspace is organized.')).toBeNull();
+    unmount();
+    setup({ onOpenFolder, workspaceCwd: 'D:/project' });
+    expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull();
+    expect(screen.getByText('Explain how this workspace is organized.')).toBeTruthy();
   });
 });

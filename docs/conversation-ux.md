@@ -41,3 +41,11 @@ Safe local documents open through the OS handler. Executable, installer, shortcu
 ## Boundaries
 
 These controls do not weaken canonical history guards, installer verification, or tool execution policy. Signed updates require separately provisioned operator credentials and hosting; a successful local build does not enable automatic updates.
+
+## Welcome and session navigation
+
+- Empty chats group their welcome prompt and composer together. Once messages exist, the same composer stays mounted at the bottom; draft and input state are not recreated by this layout change.
+- Without a workspace, the welcome prompt offers **Open folder** using the existing workspace picker. Chatting without a folder remains supported. Workspace-specific suggestions appear only when a folder is selected.
+- Model selection stays in the composer instead of repeating in the session header and account footer. The header retains Council, activity, panel, and session actions.
+- Reasoning state is explicitly labeled, and the execution-mode tooltip explains the approval behavior. Permissions are unchanged.
+- Sidebar previews flatten basic Markdown links and formatting into plain text. Existing safe full-text search highlights are preserved. Truncated session titles expose their full value in a tooltip.

@@ -131,6 +131,7 @@ export function App() {
         )}
         <ChatCanvas
           workspaceCwd={agent.workspaceCwd}
+          onOpenFolder={() => { void agent.selectWorkspace(); }}
           messages={agent.messages}
           isHistoryPreview={agent.isHistoryPreview}
           jumpToMessage={agent.jumpToMessage}

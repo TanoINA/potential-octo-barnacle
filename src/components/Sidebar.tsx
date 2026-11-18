@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import { Check, Download, Folder, FolderPlus, GitBranch, GitCommit, Layers, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, Plus, RefreshCw, Search, Settings, Sparkles, Trash2, X } from 'lucide-react';
 import type { DeepSearchResult, EffectiveRunConfig, Session, SessionActivity } from '../types/agent';
 import { AetherLogo } from './AetherLogo';
@@ -27,6 +28,25 @@ interface SidebarProps {
   gitStatus?: import('../types/agent').GitRepoStatus | null;
   onRefreshGitStatus?: () => Promise<import('../types/agent').GitRepoStatus | null>;
   onCommitWorkspace?: (message: string) => Promise<string>;
+}
+
+interface PreviewNode {
+  type: string;
+  value?: string;
+  alt?: string | null;
+  children?: PreviewNode[];
+}
+
+function plainSessionPreview(markdown: string): string {
+  const text = (node: PreviewNode): string => {
+    if (node.type === 'break') return ' ';
+    const content = node.value ?? node.alt ?? node.children?.map(text).join('') ?? '';
+    return ['paragraph', 'heading', 'code', 'listItem', 'thematicBreak'].includes(node.type)
+      ? `${content} `
+      : content;
+  };
+  // Keep HTML node values literal; React escapes the resulting plain string.
+  return text(fromMarkdown(markdown)).replace(/\s+/g, ' ').trim();
 }
 
 const SNIPPET_HIGHLIGHT_CLASS = 'bg-[#3f3f46] text-[#f4f4f5] font-medium px-0.5 rounded-lg';
@@ -234,7 +254,7 @@ export const Sidebar = memo(function Sidebar({
               }}
               aria-current={active ? 'page' : undefined}
               className="min-w-0 flex-1 rounded-lg px-2.5 py-2 text-left"
-              title={session.pinned ? 'Pinned chat (Shift+Click to unpin)' : 'Shift+Click to pin chat to top'}
+              title={`${session.title || 'Untitled'}\n${session.pinned ? 'Pinned chat (Shift+Click to unpin)' : 'Shift+Click to pin chat to top'}`}
             >
               <span className="flex items-center gap-2">
                 {session.pinned ? (
@@ -250,7 +270,7 @@ export const Sidebar = memo(function Sidebar({
                 </span>}
               </span>
               {session.preview && !deepResult && (
-                <span className="ml-5 mt-0.5 block truncate text-xs text-[#92929c]">{session.preview}</span>
+                <span className="ml-5 mt-0.5 block truncate text-xs text-[#92929c]">{plainSessionPreview(session.preview)}</span>
               )}
               {deepResult?.snippet && (
                 <div
@@ -554,7 +574,7 @@ export const Sidebar = memo(function Sidebar({
         <div className="flex items-center gap-1">
           <button type="button" onClick={onOpenSettings} className="min-w-0 flex-1 rounded-lg px-1.5 py-1 text-left hover:bg-[#1c1c1f]">
             <span className="block truncate text-[13px] text-[#a1a1aa]">{effectiveConfig?.provider.name || 'No provider'}</span>
-            <span className="block truncate font-mono text-xs text-[#d4d4d8]">{effectiveConfig?.provider.model || 'Configure model'}</span>
+            <span className="block truncate text-xs text-[#d4d4d8]">Settings</span>
           </button>
           <button type="button" onClick={onOpenSettings} className="icon-button rounded-lg text-[#a1a1aa] hover:bg-[#27272a] hover:text-[#f4f4f5]" aria-label="Open settings"><Settings size={15} /></button>
         </div>

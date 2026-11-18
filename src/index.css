@@ -115,3 +115,16 @@ input:focus-visible, textarea:focus-visible {
   }
 }
 
+
+/* Keep welcome content and composer together without remounting the input. */
+.chat-stage--welcome { justify-content: center; }
+.chat-stage--welcome .chat-viewport { flex: 0 1 auto; padding-top: 24px; padding-bottom: 0; }
+.chat-stage--welcome .chat-welcome { min-height: 0; padding-top: 0; padding-bottom: 0; }
+.chat-stage--welcome .chat-composer { border-top-color: transparent; padding-top: 24px; }
+@media (max-width: 640px) {
+  .chat-viewport, .chat-composer { padding-left: 12px; padding-right: 12px; }
+  .chat-welcome h2 { font-size: 23px; }
+}
+@media (max-height: 600px) {
+  .chat-stage--welcome { justify-content: flex-start; }
+}
