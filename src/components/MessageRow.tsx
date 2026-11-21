@@ -61,10 +61,13 @@ export const MessageRow = memo(function MessageRow({
   const questionToolCalls = useMemo(() => {
     if (isUser || !message) return [];
     const calls: { id?: string; questions: QuestionItem[] }[] = [];
+    // The same tool call lives in message.toolCalls and its segment, so dedupe by id.
+    const seen = new Set<string>();
     const checkTool = (tc: ToolCallItem) => {
-      if (tc.name === 'ask_question') {
+      if (tc.name === 'ask_question' && !(tc.id && seen.has(tc.id))) {
         const rawQuestions = tc.args?.questions || [];
         if (Array.isArray(rawQuestions) && rawQuestions.length > 0) {
+          if (tc.id) seen.add(tc.id);
           calls.push({ id: tc.id, questions: rawQuestions as QuestionItem[] });
         }
       }

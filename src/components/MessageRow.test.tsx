@@ -341,3 +341,21 @@ it('collapses long user prompts and expands on click', () => {
   rerender(<MessageRow message={shortMessage} onSelectArtifact={vi.fn()} />);
   expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
 });
+
+it('renders one clarification card when a tool call is mirrored into segments', () => {
+  const question = { question: 'Font display?', options: ['Instrument Serif', 'Archivo 800'] };
+  const tool = { id: 'turn_61_attempt_1_stream_0', name: 'ask_question', args: { questions: [question] }, status: 'done' as const };
+  const message: ChatMessage = {
+    id: 'msg-dup-question',
+    role: 'assistant',
+    content: '',
+    timestamp: 1700000000000,
+    toolCalls: [tool],
+    segments: [
+      { id: 'seg_0', text: '', toolCalls: [{ ...tool, id: 'turn_60_attempt_1_stream_0' }] },
+      { id: 'seg_1', text: '', toolCalls: [tool] },
+    ],
+  };
+  render(<MessageRow message={message} onSelectArtifact={vi.fn()} />);
+  expect(screen.getAllByTestId('interactive-question-card')).toHaveLength(2);
+});
