@@ -47,7 +47,8 @@ async fn fetch_bytes(url: url::Url, limits: DownloadLimits, policy: UrlPolicy, p
 
 async fn fetch_http(url: url::Url, limits: DownloadLimits, policy: UrlPolicy, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Vec<u8>, String> {
     policy.validate(&url)?;
-    let client = reqwest::Client::builder().no_proxy()
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(limits.connect)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 5 || policy.validate(attempt.url()).is_err() {
@@ -55,8 +56,13 @@ async fn fetch_http(url: url::Url, limits: DownloadLimits, policy: UrlPolicy, mu
             } else {
                 attempt.follow()
             }
-        }))
-        .build().map_err(|_| "Could not initialize update download")?;
+        }));
+    if matches!(policy, UrlPolicy::PublicHttps) {
+        builder = builder.dns_resolver(std::sync::Arc::new(super::tools::PublicDnsResolver));
+    }
+    let client = builder
+        .build()
+        .map_err(|_| "Could not initialize update download")?;
     let response = tokio::time::timeout(limits.stale, client.get(url).send())
         .await.map_err(|_| "Update download stalled")?
         .map_err(|_| "Download request failed")?;
@@ -116,7 +122,7 @@ fn append_chunk(bytes: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> Result<(
         return Err("Update exceeds size limit".into());
     }
     // Never allocate from untrusted Content-Length, and check the cap before growing.
-    bytes.try_reserve_exact(chunk.len()).map_err(|_| "Not enough memory for update")?;
+    bytes.try_reserve(chunk.len()).map_err(|_| "Not enough memory for update")?;
     bytes.extend_from_slice(chunk);
     Ok(())
 }

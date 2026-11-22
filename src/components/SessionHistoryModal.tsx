@@ -147,9 +147,9 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
           {onSearch && (
             <section aria-label="Search history" className="space-y-2">
-              <input aria-label="Search all conversations" placeholder="Search all conversations?" value={query}
+              <input aria-label="Search all conversations" placeholder="Search all conversations…" value={query}
                 onChange={(event) => setQuery(event.target.value)} className="w-full rounded border border-[#30363d] bg-[#0d1117] p-2" />
-              {searching && <div role="status">Searching?</div>}
+              {searching && <div role="status">Searching…</div>}
               {searchError && <div role="alert">{searchError}</div>}
               {!searching && query.trim() && !results.length && !searchError && <div>No results</div>}
               {results.map((result) => (
@@ -157,14 +157,14 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
                   onClick={() => { if (onSelectResult) void select(() => onSelectResult(result)); }}>
                   <strong>{result.sessionTitle}</strong>
                   <span className="block whitespace-pre-wrap">{result.snippet.replace(/<\/?mark>/g, '')}</span>
-                  <span>{result.matchMessageId ? 'Jump to matching message' : 'Open conversation'} ? {result.matchCount} matches</span>
+                  <span>{result.matchMessageId ? 'Jump to matching message' : 'Open conversation'} · {result.matchCount} matches</span>
                 </button>
               ))}
             </section>
           )}
           {onSelectMessage && !query.trim() && (
             <section aria-label="Loaded messages" className="max-h-36 overflow-y-auto space-y-1">
-              <div className="text-[#8b949e]">Loaded window ? search above to find older messages</div>
+              <div className="text-[#8b949e]">Loaded window — search above to find older messages</div>
               {messages.map((message) => <button type="button" key={message.id}
                 className="block w-full truncate rounded p-1 text-left hover:bg-[#21262d]"
                 onClick={() => void select(() => onSelectMessage(message.id))}>{message.role}: {message.content.slice(0, 120) || message.id}</button>)}

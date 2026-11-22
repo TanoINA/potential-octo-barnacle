@@ -108,7 +108,12 @@ impl StreamAccumulator {
         for (index, block) in &mut self.assistant_content {
             if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
                 if let Some(tool) = self.tools.get(index) {
-                    if let Ok(input) = serde_json::from_str::<serde_json::Value>(&tool.arguments) {
+                    let raw = if tool.arguments.trim().is_empty() {
+                        "{}"
+                    } else {
+                        tool.arguments.as_str()
+                    };
+                    if let Ok(input) = serde_json::from_str::<serde_json::Value>(raw) {
                         block["input"] = input;
                     }
                 }
@@ -126,7 +131,11 @@ impl StreamAccumulator {
                 call_type: "function".into(),
                 function: ChatCompletionFunctionCall {
                     name: tool.name,
-                    arguments: tool.arguments,
+                    arguments: if tool.arguments.trim().is_empty() {
+                        "{}".into()
+                    } else {
+                        tool.arguments
+                    },
                 },
                 stream_index: index,
             })
@@ -211,18 +220,27 @@ async fn fetch_models_from(
     provider: &ProviderConfig,
     url: &str,
 ) -> Result<Vec<String>, String> {
+    let secrets = super::reflection::provider_secrets(provider);
+    let redact = |mut text: String| {
+        for secret in &secrets {
+            if !secret.is_empty() {
+                text = text.replace(secret, "[redacted]");
+            }
+        }
+        text
+    };
     let response = client
         .get(url)
         .headers(request_headers(provider)?)
         .send()
         .await
-        .map_err(|error| format!("Failed to reach {url}: {error}"))?;
+        .map_err(|error| redact(format!("Failed to reach {url}: {error}")))?;
     let status = response.status();
     let body = read_bounded_response(response, &CancellationToken::new(), 2 * 1024 * 1024)
         .await
-        .map_err(|error| format!("Could not read model response: {error}"))?;
+        .map_err(|error| format!("Could not read model response: {}", redact(error)))?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {}", bounded_error(&body)));
+        return Err(format!("HTTP {status}: {}", redact(bounded_error(&body))));
     }
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| format!("Provider returned invalid model JSON: {error}"))?;
@@ -425,6 +443,14 @@ where
             let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
                 format!("Expected JSON or SSE from provider, received invalid JSON: {error}")
             })?;
+            if let Some(error) = value.get("error").filter(|v| !v.is_null()) {
+                let message = error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| error.as_str())
+                    .unwrap_or("Provider returned an error payload");
+                return Err(message.to_string());
+            }
             let mut accumulator = StreamAccumulator::default();
             match provider.kind {
                 ProviderKind::Anthropic => process_anthropic_message(
@@ -451,57 +477,16 @@ where
         let stream_error = Mutex::new(None::<String>);
         {
             let mut process_event = |data: &str| {
-                if done.load(Ordering::Relaxed) {
-                    return;
-                }
-                if data.trim() == "[DONE]" {
-                    done.store(true, Ordering::Relaxed);
-                    return;
-                }
-                let value = match serde_json::from_str::<serde_json::Value>(data) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        if let Ok(mut slot) = stream_error.lock() {
-                            *slot = Some(format!("Provider emitted malformed SSE JSON: {error}"));
-                        }
-                        done.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                };
-                if let Some(error) = value.get("error") {
-                    let message = error
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| error.as_str())
-                        .unwrap_or("Provider emitted an error event");
-                    if let Ok(mut slot) = stream_error.lock() {
-                        *slot = Some(message.to_string());
-                    }
-                    done.store(true, Ordering::Relaxed);
-                    return;
-                }
-                if provider.kind == ProviderKind::Anthropic
-                    && value.get("type").and_then(|v| v.as_str()) == Some("message_stop")
-                {
-                    done.store(true, Ordering::Relaxed);
-                    return;
-                }
-                match provider.kind {
-                    ProviderKind::Anthropic => process_anthropic_event(
-                        &value,
-                        &mut accumulator,
-                        &mut on_chunk,
-                        &mut on_reasoning,
-                        &mut on_tool_delta,
-                    ),
-                    _ => process_openai_event(
-                        &value,
-                        &mut accumulator,
-                        &mut on_chunk,
-                        &mut on_reasoning,
-                        &mut on_tool_delta,
-                    ),
-                }
+                process_sse_event(
+                    data,
+                    provider.kind,
+                    &mut accumulator,
+                    &done,
+                    &stream_error,
+                    &mut on_chunk,
+                    &mut on_reasoning,
+                    &mut on_tool_delta,
+                );
             };
             let mut decoder = SseDecoder::default();
             decoder.feed(body.as_bytes(), &mut process_event);
@@ -529,57 +514,16 @@ where
     let stream_error = Mutex::new(None::<String>);
     {
         let mut process_event = |data: &str| {
-            if done.load(Ordering::Relaxed) {
-                return;
-            }
-            if data.trim() == "[DONE]" {
-                done.store(true, Ordering::Relaxed);
-                return;
-            }
-            let value = match serde_json::from_str::<serde_json::Value>(data) {
-                Ok(value) => value,
-                Err(error) => {
-                    if let Ok(mut slot) = stream_error.lock() {
-                        *slot = Some(format!("Provider emitted malformed SSE JSON: {error}"));
-                    }
-                    done.store(true, Ordering::Relaxed);
-                    return;
-                }
-            };
-            if let Some(error) = value.get("error") {
-                let message = error
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| error.as_str())
-                    .unwrap_or("Provider emitted an error event");
-                if let Ok(mut slot) = stream_error.lock() {
-                    *slot = Some(message.to_string());
-                }
-                done.store(true, Ordering::Relaxed);
-                return;
-            }
-            if provider.kind == ProviderKind::Anthropic
-                && value.get("type").and_then(|v| v.as_str()) == Some("message_stop")
-            {
-                done.store(true, Ordering::Relaxed);
-                return;
-            }
-            match provider.kind {
-                ProviderKind::Anthropic => process_anthropic_event(
-                    &value,
-                    &mut accumulator,
-                    &mut on_chunk,
-                    &mut on_reasoning,
-                    &mut on_tool_delta,
-                ),
-                _ => process_openai_event(
-                    &value,
-                    &mut accumulator,
-                    &mut on_chunk,
-                    &mut on_reasoning,
-                    &mut on_tool_delta,
-                ),
-            }
+            process_sse_event(
+                data,
+                provider.kind,
+                &mut accumulator,
+                &done,
+                &stream_error,
+                &mut on_chunk,
+                &mut on_reasoning,
+                &mut on_tool_delta,
+            );
         };
         let mut decoder = SseDecoder::default();
         let mut stream = response.bytes_stream();
@@ -624,6 +568,70 @@ where
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn process_sse_event(
+    data: &str,
+    kind: ProviderKind,
+    accumulator: &mut StreamAccumulator,
+    done: &AtomicBool,
+    stream_error: &Mutex<Option<String>>,
+    on_chunk: &mut impl FnMut(String),
+    on_reasoning: &mut impl FnMut(String),
+    on_tool_delta: &mut impl FnMut(ToolDelta),
+) {
+    if done.load(Ordering::Relaxed) {
+        return;
+    }
+    if data.trim() == "[DONE]" {
+        done.store(true, Ordering::Relaxed);
+        return;
+    }
+    let value = match serde_json::from_str::<serde_json::Value>(data) {
+        Ok(value) => value,
+        Err(error) => {
+            if let Ok(mut slot) = stream_error.lock() {
+                *slot = Some(format!("Provider emitted malformed SSE JSON: {error}"));
+            }
+            done.store(true, Ordering::Relaxed);
+            return;
+        }
+    };
+    if let Some(error) = value.get("error").filter(|v| !v.is_null()) {
+        let message = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .or_else(|| error.as_str())
+            .unwrap_or("Provider emitted an error event");
+        if let Ok(mut slot) = stream_error.lock() {
+            *slot = Some(message.to_string());
+        }
+        done.store(true, Ordering::Relaxed);
+        return;
+    }
+    if kind == ProviderKind::Anthropic
+        && value.get("type").and_then(|v| v.as_str()) == Some("message_stop")
+    {
+        done.store(true, Ordering::Relaxed);
+        return;
+    }
+    match kind {
+        ProviderKind::Anthropic => process_anthropic_event(
+            &value,
+            accumulator,
+            on_chunk,
+            on_reasoning,
+            on_tool_delta,
+        ),
+        _ => process_openai_event(
+            &value,
+            accumulator,
+            on_chunk,
+            on_reasoning,
+            on_tool_delta,
+        ),
+    }
+}
+
 fn openai_body(
     provider: &ProviderConfig,
     messages: &serde_json::Value,
@@ -639,7 +647,7 @@ fn openai_body(
     let mut token_key = "max_tokens";
     if official {
         let model = provider.model.as_str();
-        let o_series = ["o1", "o1-mini", "o1-preview", "o3", "o3-mini", "o4-mini"]
+        let o_series = ["o1", "o1-mini", "o1-preview", "o3", "o3-mini", "o3-pro", "o4-mini"]
             .iter()
             .any(|name| payload_model_matches(model, name));
         let gpt5 = [
@@ -1515,8 +1523,8 @@ fn process_anthropic_event<F1, F2, F3>(
                 ) {
                     if let Some(object) = block.as_object_mut() {
                         let value = object.entry(field).or_insert_with(|| serde_json::json!(""));
-                        if let Some(text) = value.as_str() {
-                            *value = serde_json::json!(format!("{text}{fragment}"));
+                        if let serde_json::Value::String(text) = value {
+                            text.push_str(fragment);
                         }
                     }
                 }

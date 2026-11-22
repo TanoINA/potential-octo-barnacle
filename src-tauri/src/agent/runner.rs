@@ -211,6 +211,28 @@ impl EmitterContext {
     }
 }
 
+fn abandon_partial_tools(
+    partial_tools: HashMap<usize, ToolCallItem>,
+    emitter: &EmitterContext,
+    reason: &str,
+) {
+    if partial_tools.is_empty() {
+        return;
+    }
+    let completed_at = chrono::Utc::now().timestamp_millis();
+    let mut abandoned_tools: Vec<_> = partial_tools.into_iter().collect();
+    abandoned_tools.sort_unstable_by_key(|(index, _)| *index);
+    for (_, mut tool) in abandoned_tools {
+        tool.status = "cancelled".into();
+        tool.result = Some(reason.into());
+        tool.completed_at = Some(completed_at);
+        tool.duration_ms = tool
+            .started_at
+            .map(|started_at| (completed_at - started_at).max(0) as u64);
+        emitter.tool(tool);
+    }
+}
+
 /// Per-run skill maintenance state. Clones share exact-file read authorization;
 /// construction performs no filesystem discovery or directory creation.
 #[derive(Clone)]
@@ -221,6 +243,7 @@ struct ForegroundSkillTools {
     config: ReviewConfig,
     run_id: String,
     session_id: String,
+    provider_secrets: Vec<String>,
 }
 
 impl ForegroundSkillTools {
@@ -230,6 +253,7 @@ impl ForegroundSkillTools {
         config: &ReviewConfig,
         run_id: &str,
         session_id: &str,
+        provider_secrets: Vec<String>,
     ) -> Self {
         Self {
             store: Arc::new(tokio::sync::Mutex::new(None)),
@@ -238,6 +262,7 @@ impl ForegroundSkillTools {
             config: config.clone(),
             run_id: run_id.into(),
             session_id: session_id.into(),
+            provider_secrets,
         }
     }
 
@@ -272,6 +297,11 @@ impl ForegroundSkillTools {
         } else {
             (name, args)
         };
+        if name == "skill_manage" && super::review::contains_secret(args, &self.provider_secrets) {
+            return ToolExecutionResult::failure(
+                "Active provider credential in write arguments; refusing to persist it".into(),
+            );
+        }
         let mut guard = self.store.lock().await;
         if guard.is_none() {
             let roots = foreground_skill_creation_root(&self.config).and_then(|create_root| {
@@ -797,7 +827,6 @@ async fn run_subagent(
             let _ = apply_micro_compaction(&mut outbound, &tools, &emitter.run_id, &emitter.session_id, threshold);
         }
         let mut turn_text = String::new();
-        let mut partial_tools: HashMap<usize, ToolCallItem> = HashMap::new();
         let mut subagent_attempt = 1;
         let mut final_subagent_result = None;
         let mut subagent_last_err = String::new();
@@ -819,7 +848,6 @@ async fn run_subagent(
             }
 
             turn_text.clear();
-            partial_tools.clear();
 
             let attempt_result = stream_chat_completion(
                 provider,
@@ -830,30 +858,7 @@ async fn run_subagent(
                     turn_text.push_str(&chunk);
                 },
                 |_reasoning| {},
-                |delta: ToolDelta| {
-                    let item = partial_tools
-                        .entry(delta.index)
-                        .or_insert_with(|| ToolCallItem {
-                            id: format!("sub_tool_{}", delta.index),
-                            name: "tool".into(),
-                            args: serde_json::Value::Object(Default::default()),
-                            status: "pending".into(),
-                            result: None,
-                            artifact_id: None,
-                            arguments_raw: Some(String::new()),
-                            ..Default::default()
-                        });
-                    if let Some(name) = delta.name.filter(|v| !v.is_empty()) {
-                        item.name = name;
-                    }
-                    if let Some(args) = delta.arguments {
-                        item.arguments_raw = Some(format!(
-                            "{}{}",
-                            item.arguments_raw.clone().unwrap_or_default(),
-                            args
-                        ));
-                    }
-                },
+                |_delta: ToolDelta| {},
                 parent_cancel.clone(),
             )
             .await;
@@ -893,15 +898,18 @@ async fn run_subagent(
                         ..Default::default()
                     };
                 }
-                let err = if subagent_last_err.is_empty() {
-                    "Subagent stream cancelled".to_string()
-                } else if subagent_attempt > 1 {
-                    format!(
-                        "Subagent failed after {subagent_attempt} attempts: {subagent_last_err}"
-                    )
-                } else {
-                    subagent_last_err
-                };
+                let err = redact_provider_error(
+                    if subagent_last_err.is_empty() {
+                        "Subagent stream cancelled".to_string()
+                    } else if subagent_attempt > 1 {
+                        format!(
+                            "Subagent failed after {subagent_attempt} attempts: {subagent_last_err}"
+                        )
+                    } else {
+                        subagent_last_err
+                    },
+                    provider,
+                );
                 progress.status = "failed".into();
                 progress.completed_at = Some(chrono::Utc::now().timestamp_millis());
                 progress.summary = Some(format!("Error: {err}"));
@@ -934,6 +942,9 @@ async fn run_subagent(
         }
 
         for call in &result.tool_calls {
+            if parent_cancel.is_cancelled() {
+                break;
+            }
             let started_at = chrono::Utc::now().timestamp_millis();
             let args = if call.function.arguments.trim().is_empty() {
                 Ok(serde_json::json!({}))
@@ -1174,20 +1185,33 @@ struct ReviewCadence {
 }
 
 impl ReviewCadence {
+    fn ensure_capacity(&mut self, session_id: &str) {
+        if !self.iterations.contains_key(session_id) && self.iterations.len() >= 512 {
+            self.iterations.clear();
+        }
+    }
+
     fn iteration(&mut self, session_id: &str) {
+        self.ensure_capacity(session_id);
         let count = self.iterations.entry(session_id.to_string()).or_default();
         *count = count.saturating_add(1);
     }
 
     fn tool_attempt(&mut self, session_id: &str, tool: &str) {
         if matches!(tool, "learn_skill" | "skill_manage") {
+            self.ensure_capacity(session_id);
             self.iterations.insert(session_id.to_string(), 0);
         }
     }
 
     fn take_due(&mut self, session_id: &str, interval: usize) -> bool {
-        let count = self.iterations.entry(session_id.to_string()).or_default();
-        if interval > 0 && *count >= interval {
+        if interval == 0 {
+            return false;
+        }
+        let Some(count) = self.iterations.get_mut(session_id) else {
+            return false;
+        };
+        if *count >= interval {
             *count = 0;
             true
         } else {
@@ -1545,6 +1569,7 @@ impl AgentRunner {
             &request.review_config,
             &request.run_id,
             &request.session_id,
+            super::reflection::provider_secrets(&request.provider),
         );
         let workspace_memory = match load_workspace_memory(&workspace_cwd).await {
             Ok(memory) => memory,
@@ -1688,6 +1713,13 @@ impl AgentRunner {
                         if current_attempt > 1 {
                             emitter.clear_notice();
                         }
+                        if res.cancelled || cancel.is_cancelled() {
+                            abandon_partial_tools(
+                                partial_tools,
+                                &emitter,
+                                "Run cancelled before tool execution",
+                            );
+                        }
                         final_stream_result = Some(res);
                         break;
                     }
@@ -1702,18 +1734,11 @@ impl AgentRunner {
                             && !cancel.is_cancelled()
                         {
                             // Tutup placeholder upaya lama tanpa mengubah data parsial yang sudah tersimpan.
-                            let completed_at = chrono::Utc::now().timestamp_millis();
-                            let mut abandoned_tools: Vec<_> = partial_tools.into_iter().collect();
-                            abandoned_tools.sort_unstable_by_key(|(index, _)| *index);
-                            for (_, mut tool) in abandoned_tools {
-                                tool.status = "cancelled".into();
-                                tool.result = Some("Provider attempt abandoned for retry".into());
-                                tool.completed_at = Some(completed_at);
-                                tool.duration_ms = tool
-                                    .started_at
-                                    .map(|started_at| (completed_at - started_at).max(0) as u64);
-                                emitter.tool(tool);
-                            }
+                            abandon_partial_tools(
+                                partial_tools,
+                                &emitter,
+                                "Provider attempt abandoned for retry",
+                            );
                             current_attempt += 1;
                             let notice_msg = format!(
                                 "No output from provider for 60s — reconnecting (attempt {}/{})...",
@@ -1727,6 +1752,11 @@ impl AgentRunner {
                             );
                             continue;
                         } else {
+                            abandon_partial_tools(
+                                partial_tools,
+                                &emitter,
+                                "Stream aborted before tool call completed",
+                            );
                             break;
                         }
                     }
@@ -1771,8 +1801,11 @@ impl AgentRunner {
                 let parsed_args = if call.function.arguments.trim().is_empty() {
                     Ok(serde_json::json!({}))
                 } else {
-                    serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                        .map_err(|error| error.to_string())
+                    match serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+                        Ok(value) if value.is_object() => Ok(value),
+                        Ok(_) => Err("expected a JSON object".to_string()),
+                        Err(error) => Err(error.to_string()),
+                    }
                 };
 
                 match parsed_args {
@@ -2038,10 +2071,11 @@ impl AgentRunner {
                         .await
                     } else {
                         let exec = execute_tool(&prep.function_name, &prep.args, &context).await;
-                        if prep.function_name == "read_file" {
+                        if prep.function_name == "read_file" && exec.success {
                             if let Some(file_path) = prep
                                 .args
-                                .get("filePath")
+                                .get("path")
+                                .or_else(|| prep.args.get("filePath"))
                                 .or_else(|| prep.args.get("file_path"))
                                 .and_then(|v| v.as_str())
                             {
@@ -2596,8 +2630,31 @@ async fn run_reflection(
                 summary.push_str("Review was cancelled after partial changes");
             }
         }
-        event.workspace_cwd = Some(context.cwd.clone());
-        super::storage::record_self_improvement(&event).await?;
+        event.workspace_cwd = Some(context.cwd.clone()).filter(|s| !s.trim().is_empty());
+        let mut last_record_err = None;
+        for attempt in 0..5 {
+            match super::storage::record_self_improvement(&event).await {
+                Ok(()) => {
+                    last_record_err = None;
+                    break;
+                }
+                Err(error)
+                    if attempt < 4
+                        && (error.contains("no longer exists")
+                            || error.contains("was not found")) =>
+                {
+                    last_record_err = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                }
+                Err(error) => {
+                    last_record_err = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = last_record_err {
+            return Err(error);
+        }
         app.emit("agent:self-improvement", &event)
             .map_err(|error| error.to_string())
     }
@@ -2818,7 +2875,8 @@ fn valid_provider_messages(messages: &[serde_json::Value]) -> bool {
                         else {
                             return false;
                         };
-                        let Ok(input) = serde_json::from_str::<serde_json::Value>(args) else {
+                        let normalized = if args.trim().is_empty() { "{}" } else { args };
+                        let Ok(input) = serde_json::from_str::<serde_json::Value>(normalized) else {
                             return false;
                         };
                         if !input.is_object() || calls.insert(id, (name, input)).is_some() {
@@ -2933,10 +2991,12 @@ fn append_history_segment(
             let arguments = item
                 .arguments_raw
                 .as_deref()
+                .filter(|raw| !raw.trim().is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
                     item.args
                         .as_str()
+                        .filter(|raw| !raw.trim().is_empty())
                         .map(str::to_owned)
                         .unwrap_or_else(|| item.args.to_string())
                 });
@@ -3030,11 +3090,12 @@ pub async fn generate_title_with_provider(
         {"role": "user", "content": instruction}
     ]);
     let tools = serde_json::json!([]);
+    let thinking = !super::provider::supports_thinking_off(provider, ReasoningEffort::Low);
     let options = CompletionOptions {
-        thinking: false,
+        thinking,
         reasoning_effort: ReasoningEffort::Low,
         temperature: 0.3,
-        max_tokens: Some(30),
+        max_tokens: Some(if thinking { 2048 } else { 512 }),
         stream: false,
     };
 
@@ -3057,7 +3118,7 @@ pub async fn generate_title_with_provider(
     )
     .await
     .map_err(|_| "Title generation timed out".to_string())?
-    .map_err(|e| format!("Title generation failed: {e}"))?;
+    .map_err(|e| format!("Title generation failed: {}", redact_provider_error(e, provider)))?;
 
     let cleaned = clean_generated_title(&result.content);
     if cleaned.is_empty() {
@@ -3527,8 +3588,14 @@ mod tests {
                 ..Default::default()
             };
             let paths = super::super::skills::effective_skill_paths(&cwd, &[], &config).unwrap();
-            let tools =
-                ForegroundSkillTools::new(&cwd, &paths, &config, "origin-run", "origin-session");
+            let tools = ForegroundSkillTools::new(
+                &cwd,
+                &paths,
+                &config,
+                "origin-run",
+                "origin-session",
+                Vec::new(),
+            );
             *tools.store.lock().await = Some(
                 super::super::review_skills::ReviewSkillStore::new(
                     &cwd,
@@ -3647,6 +3714,7 @@ mod tests {
             },
             "legacy-run",
             "legacy-session",
+            Vec::new(),
         );
         *tools.store.lock().await = Some(
             super::super::review_skills::ReviewSkillStore::new(
@@ -3709,6 +3777,7 @@ mod tests {
             },
             "run",
             "session",
+            Vec::new(),
         );
         assert!(tools.store.lock().await.is_none());
         assert!(!created.exists());

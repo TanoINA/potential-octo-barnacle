@@ -28,11 +28,21 @@ interface ExecutionTraceProps {
 export function parseSearchLinks(text?: string): { title: string; url: string; snippet?: string }[] {
   if (!text) return [];
   const matches = [...text.matchAll(/\d+\.\s*\[(.*?)\]\((.*?)\)(?:\s*\n\s*(.*?)(?=\n\n|\n\d+\.|$))?/gs)];
-  return matches.map((m) => ({
-    title: m[1],
-    url: m[2],
-    snippet: m[3]?.trim(),
-  }));
+  const safe: { title: string; url: string; snippet?: string }[] = [];
+  for (const m of matches) {
+    try {
+      const parsed = new URL(m[2]);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+      safe.push({
+        title: m[1],
+        url: m[2],
+        snippet: m[3]?.trim(),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return safe;
 }
 
 function formatDuration(ms?: number): string {

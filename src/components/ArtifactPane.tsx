@@ -24,6 +24,20 @@ function matchesTab(artifact: Artifact, tab: ViewerTab): boolean {
   return artifact.type !== 'diff' && artifact.type !== 'terminal';
 }
 
+function svgPreviewDoc(svg: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;"><style>html,body{margin:0;padding:16px;min-height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#0d1117;}svg{max-width:100%;max-height:100%;}</style></head><body>${svg}</body></html>`;
+}
+
+function fencedCodeMarkdown(language: string, content: string): string {
+  let maxRun = 0;
+  for (const match of content.matchAll(/`+/g)) {
+    if (match[0].length > maxRun) maxRun = match[0].length;
+  }
+  const fence = '`'.repeat(Math.max(3, maxRun + 1));
+  const lang = language.replace(/`/g, '').trim();
+  return `${fence}${lang}\n${content}\n${fence}`;
+}
+
 export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, onClose, initialTab, overlay = false }: ArtifactPaneProps) {
   const initial = artifacts.find((artifact) => artifact.id === activeArtifactId) || artifacts[0];
   const [tab, setTab] = useState<ViewerTab>(initialTab || (artifacts.length === 0 ? 'shell' : (initial?.type === 'diff' || initial?.type === 'terminal' ? initial.type : 'code')));
@@ -238,7 +252,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
                   title={active.title || 'HTML preview'}
                   srcDoc={active.content}
                   className="h-full w-full border-none"
-                  sandbox="allow-scripts allow-modals allow-forms"
+                  sandbox="allow-scripts"
                 />
               </div>
             );
@@ -246,10 +260,12 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
 
           if (isSvg) {
             return (
-              <div className="flex h-full w-full items-center justify-center overflow-auto p-4 bg-[#0d1117]">
-                <div
-                  dangerouslySetInnerHTML={{ __html: active.content }}
-                  className="max-h-full max-w-full [&>svg]:max-h-full [&>svg]:max-w-full"
+              <div className="h-full w-full bg-[#0d1117]">
+                <iframe
+                  title={active.title || 'SVG preview'}
+                  srcDoc={svgPreviewDoc(active.content)}
+                  className="h-full w-full border-none bg-[#0d1117]"
+                  sandbox=""
                 />
               </div>
             );
@@ -260,7 +276,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               {active.type === 'markdown' || active.language === 'markdown' || active.filePath?.endsWith('.md') || !active.language ? (
                 <MarkdownRenderer content={active.content} />
               ) : (
-                <MarkdownRenderer content={`\`\`\`${active.language}\n${active.content}\n\`\`\``} />
+                <MarkdownRenderer content={fencedCodeMarkdown(active.language, active.content)} />
               )}
             </div>
           );

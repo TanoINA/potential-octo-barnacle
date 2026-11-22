@@ -265,9 +265,9 @@ async fn terminate_child(child: &mut Child) -> Result<(), String> {
     {
         return Ok(());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     let mut tree_error = None;
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, unix)))]
     let tree_error: Option<String> = None;
     #[cfg(windows)]
     if let Some(pid) = child.id() {
@@ -277,6 +277,26 @@ async fn terminate_child(child: &mut Child) -> Result<(), String> {
             .kill_on_drop(true);
         match tokio::time::timeout(Duration::from_secs(8), command.output()).await {
             Ok(Ok(result)) if result.status.success() => {}
+            Ok(Ok(_)) if matches!(child.try_wait(), Ok(Some(_))) => {}
+            Ok(Ok(result)) => {
+                tree_error = Some(format!(
+                    "Task tree termination failed: {}",
+                    String::from_utf8_lossy(&result.stderr).trim()
+                ))
+            }
+            Ok(Err(error)) => tree_error = Some(format!("Task tree termination failed: {error}")),
+            Err(_) => tree_error = Some("Task tree termination timed out".into()),
+        }
+    }
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let mut command = super::create_hidden_command("kill");
+        command
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(8), command.output()).await {
+            Ok(Ok(result)) if result.status.success() => {}
+            Ok(Ok(_)) if matches!(child.try_wait(), Ok(Some(_))) => {}
             Ok(Ok(result)) => {
                 tree_error = Some(format!(
                     "Task tree termination failed: {}",
@@ -491,6 +511,11 @@ impl TaskManager {
             .stderr(Stdio::piped())
             .stdin(Stdio::piped())
             .kill_on_drop(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.as_std_mut().process_group(0);
+        }
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -531,6 +556,27 @@ impl TaskManager {
             output_closed: false,
         }));
         tasks.insert(task_id, entry.clone());
+        const MAX_RETAINED_COMPLETED_TASKS: usize = 64;
+        let mut finished = Vec::new();
+        for (id, item) in tasks.iter() {
+            if let Ok(guard) = item.try_read() {
+                if let Some(done_at) = guard.info.completed_at {
+                    finished.push((id.clone(), done_at, guard.info.log_path.clone()));
+                }
+            }
+        }
+        if finished.len() > MAX_RETAINED_COMPLETED_TASKS {
+            finished.sort_by_key(|(_, done_at, _)| *done_at);
+            let remove_count = finished.len() - MAX_RETAINED_COMPLETED_TASKS;
+            for (id, _, log_path) in finished.into_iter().take(remove_count) {
+                tasks.remove(&id);
+                if !log_path.is_empty() {
+                    tokio::spawn(async move {
+                        let _ = tokio::fs::remove_file(log_path).await;
+                    });
+                }
+            }
+        }
         let stdin_entry = entry.clone();
         let writer = tokio::spawn(async move {
             if let Some(mut stdin) = stdin {

@@ -237,7 +237,7 @@ fn redact_value(value: &mut Value, secrets: &[String]) {
     }
 }
 
-fn contains_secret(value: &Value, secrets: &[String]) -> bool {
+pub(super) fn contains_secret(value: &Value, secrets: &[String]) -> bool {
     match value {
         Value::String(text) => secrets.iter().any(|secret| text.contains(secret)),
         Value::Array(values) => values.iter().any(|v| contains_secret(v, secrets)),

@@ -61,6 +61,17 @@ fn validate_council_scope(a: &AgentRunRequest, b: &AgentRunRequest) -> Result<()
     Ok(())
 }
 
+struct RunFinishGuard {
+    runner: Arc<AgentRunner>,
+    run_id: String,
+}
+
+impl Drop for RunFinishGuard {
+    fn drop(&mut self) {
+        self.runner.finish(&self.run_id);
+    }
+}
+
 #[tauri::command]
 async fn send_message(
     app: AppHandle,
@@ -78,9 +89,13 @@ async fn send_message(
     let cwd = bind_workspace(request.workspace_cwd.as_deref(), &cwd)?;
     let cancel = runner.begin(&request.run_id, &request.session_id)?;
     let run_id = request.run_id.clone();
+    let guard = RunFinishGuard {
+        runner: runner.clone(),
+        run_id,
+    };
     tokio::spawn(async move {
+        let _guard = guard;
         runner.run(host(app), cwd, request, cancel).await;
-        runner.finish(&run_id);
     });
     Ok(())
 }
@@ -112,11 +127,15 @@ async fn send_council_message(
     let cwd = cwd_a;
     let cancel = runner.begin(&request_a.run_id, &request_a.session_id)?;
     let run_id = request_a.run_id.clone();
+    let guard = RunFinishGuard {
+        runner: runner.clone(),
+        run_id,
+    };
     tokio::spawn(async move {
+        let _guard = guard;
         runner
             .run_council(host(app), cwd, request_a, request_b, cancel)
             .await;
-        runner.finish(&run_id);
     });
     Ok(())
 }
@@ -1076,19 +1095,12 @@ pub fn resolve_open_target(target: &str, workspace_cwd: &str) -> std::path::Path
     }
 }
 
-// Build the exact native-open argument; no command interpreter is involved.
-fn build_open_target(target: &str, cwd: &str) -> Result<std::ffi::OsString, String> {
+fn resolve_and_check_local_target(target: &str, cwd: &str) -> Result<std::path::PathBuf, String> {
     let target = target.trim();
     if target.is_empty() || target.chars().any(char::is_control) {
         return Err("Invalid open target".into());
     }
     if let Ok(url) = url::Url::parse(target) {
-        if matches!(url.scheme(), "http" | "https" | "mailto") {
-            if url.scheme() != "mailto" && url.host_str().is_none() {
-                return Err("URL requires a host".into());
-            }
-            return Ok(target.into());
-        }
         let windows_drive = target.as_bytes().get(1) == Some(&b':')
             && target
                 .as_bytes()
@@ -1107,14 +1119,60 @@ fn build_open_target(target: &str, cwd: &str) -> Result<std::ffi::OsString, Stri
     }
     let resolved = resolve_open_target(target, cwd);
     let resolved_text = resolved.to_string_lossy();
-    let clean = resolved_text
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&resolved_text);
-    if clean.starts_with(r"\\") || clean.starts_with("//") {
+    let normalized = resolved_text.replace('/', "\\");
+    if let Some(rest) = normalized.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        let is_drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\';
+        if !is_drive {
+            return Err("UNC/device targets are not allowed".into());
+        }
+    } else if normalized.starts_with(r"\\") {
         return Err("UNC/device targets are not allowed".into());
     }
-    let canonical = std::fs::canonicalize(&resolved)
-        .map_err(|error| format!("Open target is unavailable: {error}"))?;
+    Ok(resolved)
+}
+
+fn validate_local_open_target(target: &str, cwd: &str) -> Result<std::path::PathBuf, String> {
+    let resolved = resolve_and_check_local_target(target, cwd)?;
+    std::fs::canonicalize(&resolved).map_err(|error| format!("Open target is unavailable: {error}"))
+}
+
+fn spawn_reaped(mut cmd: std::process::Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_display_path(path: &std::path::Path) -> Result<String, String> {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let stripped = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+    if stripped.contains('"') || stripped.chars().any(char::is_control) {
+        return Err("Invalid path characters".into());
+    }
+    Ok(stripped)
+}
+
+// Build the exact native-open argument; no command interpreter is involved.
+fn build_open_target(target: &str, cwd: &str) -> Result<std::ffi::OsString, String> {
+    let target = target.trim();
+    if target.is_empty() || target.chars().any(char::is_control) {
+        return Err("Invalid open target".into());
+    }
+    if let Ok(url) = url::Url::parse(target) {
+        if matches!(url.scheme(), "http" | "https" | "mailto") {
+            if url.scheme() != "mailto" && url.host_str().is_none() {
+                return Err("URL requires a host".into());
+            }
+            return Ok(target.into());
+        }
+    }
+    let canonical = validate_local_open_target(target, cwd)?;
     let metadata = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
     if !metadata.is_file() && !metadata.is_dir() {
         return Err("Target must be a regular file or directory".into());
@@ -1206,11 +1264,9 @@ fn native_open(target: &std::ffi::OsStr) -> Result<(), String> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(program)
-        .arg(target)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Native opener failed: {error}"))
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg(target);
+    spawn_reaped(cmd).map_err(|error| format!("Native opener failed: {error}"))
 }
 
 #[tauri::command]
@@ -1235,60 +1291,53 @@ async fn reveal_in_explorer(state: State<'_, AppState>, path: String) -> Result<
         .lock()
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
-    let resolved = resolve_open_target(target, &cwd);
+    let checked = resolve_and_check_local_target(target, &cwd)?;
+    let resolved = if let Ok(canonical) = std::fs::canonicalize(&checked) {
+        canonical
+    } else if let Some(parent) = checked.parent().and_then(|p| std::fs::canonicalize(p).ok()) {
+        parent
+    } else if !cwd.trim().is_empty() {
+        validate_local_open_target(&cwd, "")?
+    } else {
+        return Err("Reveal target is unavailable".into());
+    };
 
     #[cfg(target_os = "windows")]
     {
-        let win_path = resolved.to_string_lossy().replace('/', "\\");
+        use std::os::windows::process::CommandExt;
+        let win_path = windows_display_path(&resolved)?;
         let mut cmd = std::process::Command::new("explorer");
         if resolved.is_dir() {
             cmd.arg(&win_path);
-            cmd.current_dir(&resolved);
-        } else if resolved.exists() {
-            cmd.arg(format!("/select,{}", win_path));
-            if let Some(parent) = resolved.parent() {
-                if parent.exists() {
-                    cmd.current_dir(parent);
+            cmd.current_dir(&win_path);
+        } else {
+            cmd.raw_arg(format!("/select,\"{win_path}\""));
+            if let Some(parent) = resolved.parent().filter(|p| p.exists()) {
+                if let Ok(parent_dir) = windows_display_path(parent) {
+                    cmd.current_dir(parent_dir);
                 }
             }
-        } else if let Some(parent) = resolved.parent() {
-            let parent_path = parent.to_string_lossy().replace('/', "\\");
-            if parent.exists() {
-                cmd.arg(&parent_path);
-                cmd.current_dir(parent);
-            } else if !cwd.trim().is_empty() && std::path::Path::new(&cwd).exists() {
-                let win_cwd = cwd.replace('/', "\\");
-                cmd.arg(&win_cwd);
-                cmd.current_dir(&cwd);
-            } else {
-                cmd.arg(format!("/select,{}", win_path));
-            }
-        } else if !cwd.trim().is_empty() && std::path::Path::new(&cwd).exists() {
-            let win_cwd = cwd.replace('/', "\\");
-            cmd.arg(&win_cwd);
-            cmd.current_dir(&cwd);
-        } else {
-            cmd.arg(format!("/select,{}", win_path));
         }
-        cmd.spawn()
-            .map_err(|e| format!("Failed to reveal in explorer: {e}"))?;
+        spawn_reaped(cmd).map_err(|e| format!("Failed to reveal in explorer: {e}"))?;
         Ok(())
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .args(["-R", &resolved.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("Failed to reveal in finder: {e}"))?;
+        let mut cmd = std::process::Command::new("open");
+        cmd.args(["-R", &resolved.to_string_lossy()]);
+        spawn_reaped(cmd).map_err(|e| format!("Failed to reveal in finder: {e}"))?;
         Ok(())
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
-        let parent = resolved.parent().unwrap_or(&resolved);
-        std::process::Command::new("xdg-open")
-            .arg(parent)
-            .spawn()
-            .map_err(|e| format!("Failed to open directory: {e}"))?;
+        let dir = if resolved.is_dir() {
+            &resolved
+        } else {
+            resolved.parent().unwrap_or(&resolved)
+        };
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(dir);
+        spawn_reaped(cmd).map_err(|e| format!("Failed to open directory: {e}"))?;
         Ok(())
     }
 }
@@ -1300,70 +1349,61 @@ async fn open_terminal(state: State<'_, AppState>, path: Option<String>) -> Resu
         .lock()
         .map_err(|_| "Workspace lock is unavailable".to_string())?
         .clone();
-    let target_dir = if let Some(p) = path {
-        let p_trimmed = p.trim();
-        if !p_trimmed.is_empty() {
-            let resolved = resolve_open_target(p_trimmed, &cwd);
-            if resolved.is_dir() {
-                resolved
-            } else {
-                resolved.parent().unwrap_or(&resolved).to_path_buf()
-            }
-        } else if !cwd.is_empty() {
-            std::path::PathBuf::from(&cwd)
+    let target_dir = if let Some(p) = path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let checked = resolve_and_check_local_target(p, &cwd)?;
+        let resolved = if let Ok(canonical) = std::fs::canonicalize(&checked) {
+            canonical
+        } else if let Some(parent) = checked.parent().and_then(|d| std::fs::canonicalize(d).ok()) {
+            parent
         } else {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            return Err("Terminal target directory is unavailable".into());
+        };
+        if resolved.is_dir() {
+            resolved
+        } else {
+            resolved.parent().unwrap_or(&resolved).to_path_buf()
         }
-    } else if !cwd.is_empty() {
-        std::path::PathBuf::from(&cwd)
+    } else if !cwd.trim().is_empty() {
+        validate_local_open_target(&cwd, "")?
     } else {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        std::env::current_dir().map_err(|e| format!("Failed to resolve current directory: {e}"))?
     };
 
-    let valid_dir = if target_dir.exists() && target_dir.is_dir() {
+    let valid_dir = if target_dir.is_dir() {
         target_dir
-    } else if let Some(parent) = target_dir.parent() {
-        if parent.exists() && parent.is_dir() {
-            parent.to_path_buf()
-        } else if !cwd.is_empty() && std::path::Path::new(&cwd).exists() {
-            std::path::PathBuf::from(&cwd)
-        } else {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        }
-    } else if !cwd.is_empty() && std::path::Path::new(&cwd).exists() {
-        std::path::PathBuf::from(&cwd)
+    } else if let Some(parent) = target_dir.parent().filter(|p| p.is_dir()) {
+        parent.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        return Err("Terminal target is not a directory".into());
     };
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        std::process::Command::new("powershell.exe")
-            .creation_flags(0x00000010)
-            .current_dir(&valid_dir)
-            .args(["-NoLogo", "-NoExit"])
-            .spawn()
-            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        let win_dir = windows_display_path(&valid_dir)?;
+        let mut cmd = std::process::Command::new("powershell.exe");
+        cmd.creation_flags(0x00000010)
+            .current_dir(&win_dir)
+            .args(["-NoLogo", "-NoExit"]);
+        spawn_reaped(cmd).map_err(|e| format!("Failed to open terminal: {e}"))?;
         Ok(())
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .args(["-a", "Terminal", &valid_dir.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        let mut cmd = std::process::Command::new("open");
+        cmd.args(["-a", "Terminal", &valid_dir.to_string_lossy()]);
+        spawn_reaped(cmd).map_err(|e| format!("Failed to open terminal: {e}"))?;
         Ok(())
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
-        std::process::Command::new("x-terminal-emulator")
-            .current_dir(&valid_dir)
-            .spawn()
+        let mut primary = std::process::Command::new("x-terminal-emulator");
+        primary.current_dir(&valid_dir);
+        spawn_reaped(primary)
             .or_else(|_| {
-                std::process::Command::new("terminal")
-                    .current_dir(&valid_dir)
-                    .spawn()
+                let mut fallback = std::process::Command::new("terminal");
+                fallback.current_dir(&valid_dir);
+                spawn_reaped(fallback)
             })
             .map_err(|e| format!("Failed to open terminal: {e}"))?;
         Ok(())
@@ -1422,8 +1462,6 @@ pub fn run() {
     let initial_cwd = storage::load_workspace_sync();
     agent::skills::init_skills_environment();
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(agent::release::ReleaseState::default())
@@ -1777,8 +1815,11 @@ mod tests {
             "missing.txt",
             "a\0b",
             r"\\server\share\file.txt",
+            r"\\%3F\UNC\server\share\file.txt",
+            "file:///%5c%5c%3f%5cUNC%5cserver%5cshare%5cdoc.txt",
         ] {
             assert!(build_open_target(unsafe_target, &root.to_string_lossy()).is_err());
+            assert!(validate_local_open_target(unsafe_target, &root.to_string_lossy()).is_err());
         }
         for ext in ["exe", "cmd", "bat", "lnk", "url", "ps1", "js", "vbs"] {
             let executable = root.join(format!("blocked.{ext}"));

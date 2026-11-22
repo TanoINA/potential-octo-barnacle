@@ -352,6 +352,7 @@ export function getModelContextWindow(modelName?: string, customLimit?: number):
 }
 
 const messageTokenCache = new WeakMap<ChatMessage, number>();
+const toolArgsLengthCache = new WeakMap<object, number>();
 
 export function estimateMessageTokens(msg: ChatMessage): number {
   if (!msg.isStreaming) {
@@ -378,7 +379,18 @@ export function estimateMessageTokens(msg: ChatMessage): number {
   for (const tc of toolCalls) {
     if (tc.result) charCount += tc.result.length;
     if (tc.argumentsRaw) charCount += tc.argumentsRaw.length;
-    else if (tc.args) charCount += JSON.stringify(tc.args).length;
+    else if (tc.args) {
+      if (typeof tc.args === 'object') {
+        let len = toolArgsLengthCache.get(tc.args);
+        if (len === undefined) {
+          len = JSON.stringify(tc.args).length;
+          toolArgsLengthCache.set(tc.args, len);
+        }
+        charCount += len;
+      } else {
+        charCount += String(tc.args).length;
+      }
+    }
   }
   const tokens = Math.ceil(charCount / 4) + imageTokens;
   if (!msg.isStreaming) {
@@ -553,7 +565,13 @@ export function ChatCanvas({
   useEffect(() => {
     if (activeDraftRef.current.key !== draftKey) {
       const previous = activeDraftRef.current;
+      draftsRef.current.delete(previous.key);
       draftsRef.current.set(previous.key, previous);
+      while (draftsRef.current.size > 12) {
+        const oldestKey = draftsRef.current.keys().next().value;
+        if (oldestKey === undefined) break;
+        draftsRef.current.delete(oldestKey);
+      }
       const next = draftsRef.current.get(draftKey) ?? { input: '', cursor: 0, attachments: [], skills: [], skillInfo: [], images: new Map() };
       activeDraftRef.current = { ...next, key: draftKey };
       setInput(next.input);
@@ -830,9 +848,13 @@ export function ChatCanvas({
     appendAttachments(origin, contexts);
   }, [appendAttachments, isAttachmentOrigin]);
 
+  const isHistoryPreviewRef = useRef(isHistoryPreview);
+  isHistoryPreviewRef.current = isHistoryPreview;
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
+    if (isHistoryPreviewRef.current) return;
     const files = Array.from(e.dataTransfer?.files || []);
     if (!files.length) return;
     const origin = beginAttachments();
@@ -854,6 +876,7 @@ export function ChatCanvas({
   };
 
   const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement> | ClipboardEvent) => {
+    if (isHistoryPreviewRef.current) return;
     const data = e.clipboardData;
     if (!data) return;
     const files = Array.from(data.files || []);
@@ -888,6 +911,10 @@ export function ChatCanvas({
           if (disposed) return;
           unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
             if (disposed) return;
+            if (isHistoryPreviewRef.current) {
+              setIsDraggingOver(false);
+              return;
+            }
             if (event.payload.type === 'enter' || event.payload.type === 'over') {
               setIsDraggingOver(true);
             } else if (event.payload.type === 'leave') {
@@ -1195,7 +1222,7 @@ export function ChatCanvas({
     observer.observe(element);
     for (const row of element.querySelectorAll<HTMLElement>('[data-index]')) observer.observe(row);
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [messages, isSessionLoading, correctAnchor]);
+  }, [messages.length, isSessionLoading, correctAnchor]);
 
   const [outlinedMessageId, setOutlinedMessageId] = useState<string | null>(null);
   useEffect(() => {
@@ -1221,6 +1248,10 @@ export function ChatCanvas({
   const [inChatSearchQuery, setInChatSearchQuery] = useState('');
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
   const inChatSearchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setCurrentMatchIdx(0);
+  }, [currentSessionId, inChatSearchQuery]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1254,6 +1285,9 @@ export function ChatCanvas({
     return matches;
   }, [messages, inChatSearchQuery]);
 
+  const inChatMatchesRef = useRef(inChatMatches);
+  inChatMatchesRef.current = inChatMatches;
+
   const handlePrevMatch = useCallback(() => {
     if (inChatMatches.length === 0) return;
     setCurrentMatchIdx((prev) => (prev <= 0 ? inChatMatches.length - 1 : prev - 1));
@@ -1264,16 +1298,19 @@ export function ChatCanvas({
     setCurrentMatchIdx((prev) => (prev >= inChatMatches.length - 1 ? 0 : prev + 1));
   }, [inChatMatches.length]);
 
+  const clampedMatchIdx = inChatMatches.length > 0 ? Math.min(currentMatchIdx, inChatMatches.length - 1) : -1;
+  const activeMatchMessageId = clampedMatchIdx >= 0 ? messages[inChatMatches[clampedMatchIdx]]?.id ?? null : null;
+
   useEffect(() => {
-    if (!isInChatSearchOpen || inChatMatches.length === 0) return;
-    const targetIndex = inChatMatches[currentMatchIdx];
+    if (!isInChatSearchOpen || clampedMatchIdx < 0) return;
+    const targetIndex = inChatMatchesRef.current[clampedMatchIdx];
     if (targetIndex != null) {
       handleJumpToMessage(targetIndex, 'center');
-      if (messages[targetIndex]?.id) {
-        setOutlinedMessageId(messages[targetIndex].id);
+      if (activeMatchMessageId) {
+        setOutlinedMessageId(activeMatchMessageId);
       }
     }
-  }, [isInChatSearchOpen, currentMatchIdx, inChatMatches, handleJumpToMessage, messages]);
+  }, [isInChatSearchOpen, inChatSearchQuery, clampedMatchIdx, activeMatchMessageId, currentSessionId, handleJumpToMessage]);
 
   const contextUsage = useMemo(() => {
     if (!messages || messages.length === 0) return null;
@@ -1430,6 +1467,7 @@ export function ChatCanvas({
   }, [settings]);
 
   const handleAddFiles = async () => {
+    if (isHistoryPreview) return;
     setAddContextOpen(false);
     const origin = beginAttachments();
     try {
@@ -1455,6 +1493,7 @@ export function ChatCanvas({
   };
 
   const handleAddFolder = async () => {
+    if (isHistoryPreview) return;
     setAddContextOpen(false);
     const origin = beginAttachments();
     try {
@@ -1477,6 +1516,7 @@ export function ChatCanvas({
   };
 
   const handleAddMention = () => {
+    if (isHistoryPreview) return;
     setAddContextOpen(false);
     const needsSpace = input !== '' && !input.endsWith(' ');
     const next = needsSpace ? `${input} @` : `${input}@`;
@@ -1486,6 +1526,7 @@ export function ChatCanvas({
   };
 
   const handleOpenSkillsList = async () => {
+    if (isHistoryPreview) return;
     setAddContextOpen(false);
     setSkillsMenuOpen(true);
     setSkillsError(null);
@@ -1508,6 +1549,7 @@ export function ChatCanvas({
   };
 
   const handleAddBrowser = () => {
+    if (isHistoryPreview) return;
     setAddContextOpen(false);
     const url = window.prompt('Enter public URL to inspect / fetch:');
     if (url && (url || '').trim()) {
@@ -1742,7 +1784,7 @@ export function ChatCanvas({
   }, [queuedPrompts, currentSessionId, isSessionLoading, isHistoryPreview, isStreaming, isReviewing, runStatus?.phase, stopRequested, stoppedWithQueue, onSendMessage, updateSessionQueue, pauseSessionQueue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async () => {
-    if (isSessionLoading || attachmentScopeRef.current.pending > 0) return;
+    if (isSessionLoading || isHistoryPreview || attachmentScopeRef.current.pending > 0) return;
 
     let draft = input;
     const originalDraft = input;
@@ -2528,11 +2570,12 @@ export function ChatCanvas({
               <div className="relative" data-context-menu>
                 <button
                   type="button"
+                  disabled={isSessionLoading || isHistoryPreview}
                   onClick={() => {
                     setAddContextOpen((value) => !value);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#21262d] text-[#8b949e] transition-colors hover:bg-[#30363d] hover:text-[#e6edf3]"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#21262d] text-[#8b949e] transition-colors hover:bg-[#30363d] hover:text-[#e6edf3] disabled:cursor-not-allowed disabled:opacity-40"
                   title="Add Context (Files, Folder, Mentions)"
                   aria-label="Add Context"
                 >
@@ -2808,7 +2851,7 @@ export function ChatCanvas({
                         onClick={send}
                         className="flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 py-1.5 text-xs font-medium text-[#58a6ff] hover:bg-[#30363d] hover:border-[#58a6ff]/50 transition-colors"
                         title="Add to queue (executes after current turn)"
-                        disabled={isSessionLoading || pendingAttachments > 0}
+                        disabled={isSessionLoading || isHistoryPreview || pendingAttachments > 0}
                         aria-label="Queue message"
                       >
                         <Clock size={12} className="text-[#8b949e]" />
@@ -2828,7 +2871,7 @@ export function ChatCanvas({
                   <button
                     type="button"
                     onClick={send}
-                    disabled={runStatus?.phase === 'saving_results' || runStatus?.phase === 'preparing_attachments' || pendingAttachments > 0 || isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
+                    disabled={isSessionLoading || isHistoryPreview || runStatus?.phase === 'saving_results' || runStatus?.phase === 'preparing_attachments' || pendingAttachments > 0 || isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
                     className="rounded-lg bg-[#1f6feb] p-2 text-white transition-colors hover:bg-[#388bfd] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send message"
                   >

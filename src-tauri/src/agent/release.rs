@@ -108,20 +108,6 @@ pub async fn check_release_update(
         .pubkey(key)
         .endpoints(vec![endpoint.clone()])
         .map_err(|_| "Invalid updater endpoint")?
-        .timeout(std::time::Duration::from_secs(30))
-        .configure_client(|client| {
-            client
-                .https_only(true)
-                .redirect(reqwest_updater::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= 5
-                        || validate_url(attempt.url().as_str()).is_err()
-                    {
-                        attempt.stop()
-                    } else {
-                        attempt.follow()
-                    }
-                }))
-        })
         .version_comparator(|current, release| {
             is_newer(&current.to_string(), &release.version.to_string())
         })

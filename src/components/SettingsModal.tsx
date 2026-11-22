@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
@@ -94,6 +94,8 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
   const dialogRef = useModalAccessibility<HTMLElement>(true, () => { if (!saving) onClose(); });
   const selectedProvider = form.providers.find((provider) => provider.id === selectedProviderId) || form.providers[0];
+  const selectedProviderIdRef = useRef(selectedProviderId);
+  selectedProviderIdRef.current = selectedProviderId;
 
   const isDirty = useMemo(() => {
     const initialNormalized = {
@@ -106,6 +108,10 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
     };
     const currentNormalized = {
       ...form,
+      mcpServers: form.mcpServers.map((server) => ({
+        ...server,
+        env: server.id in envDrafts ? parseEnv(envDrafts[server.id]) : server.env,
+      })),
       maxTurns: limitTurns ? Number(turnLimitDraft) : 0,
       self_improvement_enabled: form.self_improvement_enabled === true,
       autoCompactionEnabled: form.autoCompactionEnabled !== false,
@@ -113,7 +119,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
       executionMode: form.executionMode || 'turbo',
     };
     return JSON.stringify(initialNormalized) !== JSON.stringify(currentNormalized);
-  }, [form, settings, limitTurns, turnLimitDraft]);
+  }, [form, settings, limitTurns, turnLimitDraft, envDrafts]);
 
 
 
@@ -142,12 +148,28 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   const handleRefreshModels = async (provider: ProviderConfig) => {
     setFetchingModels(true);
     setFetchStatus(null);
+    const snapshot = { id: provider.id, baseUrl: provider.baseUrl, apiKey: provider.apiKey, kind: provider.kind };
     try {
       const models = await invoke<string[]>('fetch_provider_models', { provider });
-      updateProvider(provider.id, { models });
-      setFetchStatus(`Successfully fetched ${models.length} models.`);
+      let stale = false;
+      setForm((current) => {
+        const target = current.providers.find((item) => item.id === snapshot.id);
+        if (!target || target.baseUrl !== snapshot.baseUrl || target.apiKey !== snapshot.apiKey || target.kind !== snapshot.kind) {
+          stale = true;
+          return current;
+        }
+        return {
+          ...current,
+          providers: current.providers.map((item) => (item.id === snapshot.id ? { ...item, models } : item)),
+        };
+      });
+      if (!stale && selectedProviderIdRef.current === snapshot.id) {
+        setFetchStatus(`Successfully fetched ${models.length} models.`);
+      }
     } catch (err) {
-      setFetchStatus(`Could not fetch models: ${String(err)}`);
+      if (selectedProviderIdRef.current === snapshot.id) {
+        setFetchStatus(`Could not fetch models: ${String(err)}`);
+      }
     } finally {
       setFetchingModels(false);
     }
@@ -156,22 +178,37 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   const handleTestConnection = async (provider: ProviderConfig) => {
     setTestingConnection(true);
     setTestConnectionResult(null);
+    const snapshot = { id: provider.id, baseUrl: provider.baseUrl, apiKey: provider.apiKey, kind: provider.kind };
     const start = performance.now();
     try {
       const models = await invoke<string[]>('fetch_provider_models', { provider });
       const elapsed = Math.round(performance.now() - start);
-      setTestConnectionResult({
-        ok: true,
-        message: `Connection successful: ${models.length} model(s) discovered (${elapsed}ms)`,
+      let stale = false;
+      setForm((current) => {
+        const target = current.providers.find((item) => item.id === snapshot.id);
+        if (!target || target.baseUrl !== snapshot.baseUrl || target.apiKey !== snapshot.apiKey || target.kind !== snapshot.kind) {
+          stale = true;
+          return current;
+        }
+        if (models.length === 0) return current;
+        return {
+          ...current,
+          providers: current.providers.map((item) => (item.id === snapshot.id ? { ...item, models } : item)),
+        };
       });
-      if (models.length > 0) {
-        updateProvider(provider.id, { models });
+      if (!stale && selectedProviderIdRef.current === snapshot.id) {
+        setTestConnectionResult({
+          ok: true,
+          message: `Connection successful: ${models.length} model(s) discovered (${elapsed}ms)`,
+        });
       }
     } catch (err) {
-      setTestConnectionResult({
-        ok: false,
-        message: `Connection failed: ${String(err)}`,
-      });
+      if (selectedProviderIdRef.current === snapshot.id) {
+        setTestConnectionResult({
+          ok: false,
+          message: `Connection failed: ${String(err)}`,
+        });
+      }
     } finally {
       setTestingConnection(false);
     }
@@ -390,7 +427,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
                 {form.providers.map((provider) => (
 
-                  <button key={provider.id} type="button" onClick={() => setSelectedProviderId(provider.id)} className={`mb-1 flex w-full items-center rounded-md border px-2.5 py-2 text-left ${provider.id === selectedProvider?.id ? 'border-[#58a6ff]/40 bg-[#1f6feb]/15' : 'border-transparent hover:bg-[#161b22]'}`}>
+                  <button key={provider.id} type="button" onClick={() => { setSelectedProviderId(provider.id); setFetchStatus(null); setTestConnectionResult(null); }} className={`mb-1 flex w-full items-center rounded-md border px-2.5 py-2 text-left ${provider.id === selectedProvider?.id ? 'border-[#58a6ff]/40 bg-[#1f6feb]/15' : 'border-transparent hover:bg-[#161b22]'}`}>
 
                     <span className="min-w-0 flex-1"><span className="block truncate text-xs">{provider.name}</span><span className="block truncate font-mono text-[9px] text-[#6e7681]">{provider.model || 'No model'}</span></span>
 

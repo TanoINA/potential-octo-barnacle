@@ -144,4 +144,15 @@ describe('MarkdownRenderer', () => {
     expect(getByText('1/1 completed')).toBeTruthy();
   });
 
+  it('blocks percent-encoded and control-character obfuscated javascript URLs', () => {
+    const markdown = [
+      '[encoded](j%61vascript:alert(1))',
+      '[whitespace](java\tscript:alert(2))',
+    ].join(' ');
+    const { container } = render(<MarkdownRenderer content={markdown} />);
+    for (const anchor of Array.from(container.querySelectorAll('a'))) {
+      expect(anchor.getAttribute('href')).toBe('');
+    }
+  });
+
 });

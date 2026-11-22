@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   BookOpen,
@@ -81,12 +81,13 @@ export const MessageRow = memo(function MessageRow({
     return calls;
   }, [isUser, message?.toolCalls, message?.segments]);
 
-  if (!message) return null;
-  const isSystem = message.role === 'system';
-  const isLongPrompt = isUser && ((message.content?.length || 0) > 320 || (message.content?.split('\n').length || 0) > 6);
-  const hasRenderableSegments = Boolean(message.segments?.some((segment) => segment.text?.trim() || segment.toolCalls?.length));
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
 
   const handleCopy = useCallback(() => {
+    if (!message) return;
     let fullText = '';
     if (message.segments && message.segments.length > 0) {
       fullText = message.segments.map((s) => s.text).filter(Boolean).join('\n\n');
@@ -95,24 +96,31 @@ export const MessageRow = memo(function MessageRow({
       fullText = [message.preamble, message.content].filter(Boolean).join('\n\n');
     }
     if (!fullText) return;
-    void navigator.clipboard.writeText(fullText).then(() => {
+    void navigator.clipboard?.writeText(fullText).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [message.content, message.preamble, message.segments]);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
+    }).catch(() => undefined);
+  }, [message]);
 
   const handleSaveEdit = useCallback(() => {
+    if (!message) return;
     const trimmed = (editText || '').trim();
     if (!trimmed || isStreaming || (!onEditAndResend && !onEditMessage)) return;
     setIsEditing(false);
     if (onEditMessage) onEditMessage(message.id, trimmed);
     else onEditAndResend?.(trimmed);
-  }, [editText, isStreaming, message.id, onEditAndResend, onEditMessage]);
+  }, [editText, isStreaming, message, onEditAndResend, onEditMessage]);
 
   const handleCancelEdit = useCallback(() => {
     setIsEditing(false);
-    setEditText(message.content || '');
-  }, [message.content]);
+    setEditText(message?.content || '');
+  }, [message?.content]);
+
+  if (!message) return null;
+  const isSystem = message.role === 'system';
+  const isLongPrompt = isUser && ((message.content?.length || 0) > 320 || (message.content?.split('\n').length || 0) > 6);
+  const hasRenderableSegments = Boolean(message.segments?.some((segment) => segment.text?.trim() || segment.toolCalls?.length));
 
   if (isSystem) {
     return (

@@ -199,9 +199,20 @@ pub fn review_creation_root(config: &ReviewConfig) -> Result<PathBuf, String> {
     #[cfg(feature = "shared-profile")]
     let base = super::storage::config_dir();
     #[cfg(not(feature = "shared-profile"))]
-    let base = dirs::home_dir()
-        .ok_or("Home directory unavailable")?
-        .join(".aether-agent");
+    let base = {
+        #[cfg(feature = "diagnostics")]
+        if let Some(root) = super::native_smoke::profile() {
+            root.clone()
+        } else {
+            dirs::home_dir()
+                .ok_or("Home directory unavailable")?
+                .join(".aether-agent")
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        dirs::home_dir()
+            .ok_or("Home directory unavailable")?
+            .join(".aether-agent")
+    };
     let Some(value) = config
         .create_dir
         .as_deref()
@@ -398,7 +409,7 @@ pub fn normalize_skill_instructions(content: &str) -> String {
     content
         .replace("`terminal`", "`run_command`")
         .replace("`delegate_task`", "`spawn_subagent`")
-        .replace("`web_search`", "`fetch_web_page`")
+        .replace("`web_search`", "`search_web`")
         .replace("`web_extract`", "`fetch_web_page`")
 }
 
@@ -411,6 +422,13 @@ async fn read_bounded_skill(path: &Path) -> Result<String, String> {
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_SKILL_BYTES
     {
         return Err("Skill must be a regular file no larger than 256 KiB".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("Skill cannot be a reparse point".into());
+        }
     }
     let file = tokio::fs::File::open(path)
         .await

@@ -23,6 +23,11 @@ All notable changes to AetherAgent are documented here.
 
 ### Fixed & Improved
 
+- SVG artifact previews now render inside a `<iframe sandbox="">` instead of raw inline DOM markup, HTML previews drop `allow-modals` and `allow-forms`, Tauri enforces an explicit Content Security Policy, and markdown and native file openers reject obfuscated script URLs and UNC/device targets.
+- Workspace and network checks now block local `64:ff9b:1::/48` NAT64 and Teredo client bypasses, reject dangling symlinks in `resolve_workspace_path`, preserve Windows cloud placeholders for valid image files, keep workspace symlinks intact in Git file actions, and tear down child process trees on both Windows and Unix.
+- SQLite search now indexes message segments and terminal output without attaching the session title to every message row, session recovery checks all corrupt checkpoints while clearing dirty projections cleanly, and session title updates serialize against persistence instead of racing saves.
+- History preview now blocks composer sends, file drops, pastes, and mutating context menu actions; `MessageRow`, `SettingsModal`, `ChatCanvas`, and `TimelineScrubber` fix hook ordering and skip redundant work on streaming updates.
+- Removed unused `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-shell`, `clsx`, and `tailwind-merge` packages along with their unused Rust Tauri plugins and capabilities, and added the Rust library test suite to the Windows CI quality job.
 - Duplicate clarification cards no longer appear when the same `ask_question` call is stored in both a message's tool list and its transcript segment.
 - Main-agent turns now default to unlimited, with an optional validated maximum in Settings. Explicit saved limits are preserved, including values above 200; cancellation, tool approvals, retries, and separate subagent limits remain unchanged.
 

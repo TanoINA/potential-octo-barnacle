@@ -21,8 +21,14 @@ const stripProseEmojis = (text: string) => {
 };
 
 const safeUrlTransform = (url: string) => {
-  const trimmed = url.trim();
-  if (/^(javascript|vbscript|data):/i.test(trimmed)) {
+  let candidate = url.trim().replace(/[\u0000-\u001f\u007f\s]+/g, '');
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {
+    // Keep collapsed candidate for scheme inspection.
+  }
+  candidate = candidate.replace(/[\u0000-\u001f\u007f\s]+/g, '');
+  if (/^(javascript|vbscript|data):/i.test(candidate)) {
     return '';
   }
   return url;
@@ -85,7 +91,7 @@ const markdownComponents: Components = {
         }).catch((err) => {
           setError(String(err));
         });
-      } else {
+      } else if (isWeb) {
         window.open(target, '_blank', 'noopener,noreferrer');
       }
     };

@@ -97,4 +97,39 @@ describe('ArtifactPane', () => {
     expect(container.querySelector('iframe')).toBeNull();
     expect(container.querySelector('.font-mono')).toBeTruthy();
   });
+
+  it('isolates SVG previews in an empty-sandbox iframe and closes nested code fences safely', () => {
+    const svgArtifact: Artifact = {
+      id: 'svg-1',
+      title: 'Diagram',
+      type: 'code',
+      language: 'svg',
+      content: '<svg><script>window.pwn=1</script><circle r="10"/></svg>',
+      timestamp: 4,
+    };
+    const fencedCodeArtifact: Artifact = {
+      id: 'code-1',
+      title: 'Snippet',
+      type: 'code',
+      language: 'ts',
+      content: 'const md = "```js\\nalert(1)\\n```";\nconst ok = true;',
+      timestamp: 5,
+    };
+    const props = { onSelectArtifact: vi.fn(), onClose: vi.fn() };
+    const { container, rerender } = render(
+      <ArtifactPane {...props} artifacts={[svgArtifact, fencedCodeArtifact]} activeArtifactId="svg-1" initialTab="code" />,
+    );
+
+    const svgFrame = container.querySelector('iframe');
+    expect(svgFrame).toBeTruthy();
+    expect(svgFrame?.getAttribute('sandbox')).toBe('');
+    expect(svgFrame?.getAttribute('srcDoc')).toContain('<svg>');
+    expect(svgFrame?.parentElement?.querySelector('svg')).toBeNull();
+    expect(container.querySelector('circle[r="10"]')).toBeNull();
+
+    rerender(
+      <ArtifactPane {...props} artifacts={[svgArtifact, fencedCodeArtifact]} activeArtifactId="code-1" initialTab="code" />,
+    );
+    expect(container.querySelector('pre code')?.textContent).toContain('const ok = true;');
+  });
 });

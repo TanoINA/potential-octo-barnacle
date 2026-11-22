@@ -172,29 +172,6 @@ pub struct GitRepoStatus {
     pub files: Vec<GitFileChange>,
 }
 
-/// Parses standard `git status --porcelain` text output into structured file change items.
-#[cfg(test)]
-pub fn parse_porcelain_output(raw: &str) -> Vec<GitFileChange> {
-    let mut files = Vec::new();
-    for line in raw.lines() {
-        if line.len() < 3 {
-            continue;
-        }
-        let status = line[..2].trim().to_string();
-        let raw_path = line[2..].trim();
-        // Handle potential git quote encapsulation
-        let path = raw_path.trim_matches('"').to_string();
-        if !path.is_empty() {
-            files.push(GitFileChange {
-                path,
-                status,
-                old_path: None,
-            });
-        }
-    }
-    files
-}
-
 fn ensure_success(output: &std::process::Output, operation: &str) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
@@ -445,6 +422,47 @@ pub async fn git_fetch(cwd: &str) -> Result<String, String> {
 fn validated_file_path(cwd: &str, requested: &str) -> Result<(std::path::PathBuf, String), String> {
     if requested.is_empty() || requested.starts_with(":(") {
         return Err("Expected one literal workspace file path".into());
+    }
+    if requested.contains('\0') || requested.starts_with(r"\\?\") || requested.starts_with(r"\\.\")
+    {
+        return Err("NT device/namespace paths are not allowed".into());
+    }
+    let raw = Path::new(requested);
+    if raw
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("Parent traversal is not allowed; use a workspace-contained path".into());
+    }
+    let root =
+        std::fs::canonicalize(cwd).map_err(|error| format!("Workspace is unavailable: {error}"))?;
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    if let (Some(parent), Some(name)) = (candidate.parent(), candidate.file_name()) {
+        if let Ok(resolved_parent) = std::fs::canonicalize(parent) {
+            if resolved_parent.starts_with(&root) {
+                let lexical = resolved_parent.join(name);
+                if let Ok(meta) = std::fs::symlink_metadata(&lexical) {
+                    if meta.file_type().is_symlink() {
+                        if meta.is_dir() {
+                            return Err(
+                                "Expected a file, not the workspace root or a directory".into(),
+                            );
+                        }
+                        let relative = super::tools::workspace_relative_path(cwd, &lexical)?;
+                        if relative.is_empty() {
+                            return Err(
+                                "Expected a file, not the workspace root or a directory".into(),
+                            );
+                        }
+                        return Ok((lexical, relative));
+                    }
+                }
+            }
+        }
     }
     let path = super::tools::resolve_workspace_path(cwd, requested)?;
     let relative = super::tools::workspace_relative_path(cwd, &path)?;
@@ -892,34 +910,6 @@ mod tests {
         assert_eq!(result.files[0].status, "R");
         assert_eq!(result.files[0].old_path.as_deref(), Some("a.txt"));
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn parses_porcelain_lines_correctly() {
-        let raw = "\
- M src/main.rs
-M  Cargo.toml
-?? new_file.txt
- D deleted.txt
-";
-        let changes = parse_porcelain_output(raw);
-        assert_eq!(changes.len(), 4);
-        assert_eq!(changes[0].path, "src/main.rs");
-        assert_eq!(changes[0].status, "M");
-        assert_eq!(changes[1].path, "Cargo.toml");
-        assert_eq!(changes[1].status, "M");
-        assert_eq!(changes[2].path, "new_file.txt");
-        assert_eq!(changes[2].status, "??");
-        assert_eq!(changes[3].path, "deleted.txt");
-        assert_eq!(changes[3].status, "D");
-    }
-
-    #[test]
-    fn parses_quoted_porcelain_paths() {
-        let raw = "?? \"path with spaces/file.txt\"\n";
-        let changes = parse_porcelain_output(raw);
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].path, "path with spaces/file.txt");
     }
 
     #[tokio::test]

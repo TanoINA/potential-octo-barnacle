@@ -37,7 +37,12 @@ interface PreviewNode {
   children?: PreviewNode[];
 }
 
+const previewCache = new Map<string, string>();
+const MAX_PREVIEW_CACHE = 256;
+
 function plainSessionPreview(markdown: string): string {
+  const cached = previewCache.get(markdown);
+  if (cached !== undefined) return cached;
   const text = (node: PreviewNode): string => {
     if (node.type === 'break') return ' ';
     const content = node.value ?? node.alt ?? node.children?.map(text).join('') ?? '';
@@ -46,7 +51,13 @@ function plainSessionPreview(markdown: string): string {
       : content;
   };
   // Keep HTML node values literal; React escapes the resulting plain string.
-  return text(fromMarkdown(markdown)).replace(/\s+/g, ' ').trim();
+  const rendered = text(fromMarkdown(markdown)).replace(/\s+/g, ' ').trim();
+  if (previewCache.size >= MAX_PREVIEW_CACHE) {
+    const oldest = previewCache.keys().next().value;
+    if (oldest !== undefined) previewCache.delete(oldest);
+  }
+  previewCache.set(markdown, rendered);
+  return rendered;
 }
 
 const SNIPPET_HIGHLIGHT_CLASS = 'bg-[#3f3f46] text-[#f4f4f5] font-medium px-0.5 rounded-lg';

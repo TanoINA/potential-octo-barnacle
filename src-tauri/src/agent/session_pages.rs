@@ -69,7 +69,10 @@ fn with_db<T>(
                path TEXT NOT NULL REFERENCES page_sessions(path) ON DELETE CASCADE,
                artifact_id TEXT NOT NULL, timestamp INTEGER NOT NULL, linked INTEGER NOT NULL,
                json TEXT NOT NULL, PRIMARY KEY(path, artifact_id));
-             CREATE TABLE IF NOT EXISTS checkpoint_message_ids (path TEXT NOT NULL, message_id TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(path,message_id));
+             CREATE TABLE IF NOT EXISTS checkpoint_message_ids (
+               path TEXT NOT NULL REFERENCES page_sessions(path) ON DELETE CASCADE,
+               message_id TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(path,message_id));
+             CREATE TABLE IF NOT EXISTS catalog_metadata(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,header TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS page_recent_artifacts
                ON page_artifacts(path, linked, timestamp DESC, artifact_id);",
             )
@@ -419,10 +422,12 @@ fn load_around_at(
     }
     with_db(db, |conn| {
         let cached = ensure_fresh(conn, path, session_id)?;
+        let key = path_key(path)?;
+        ensure_checkpoint_message_ids(conn, &key, cached.total)?;
         let ordinal: usize = conn
             .query_row(
                 "SELECT ordinal FROM checkpoint_message_ids WHERE path=?1 AND message_id=?2",
-                params![path_key(path)?, message_id],
+                params![key, message_id],
                 |row| row.get(0),
             )
             .optional()
@@ -492,18 +497,19 @@ fn read_window(
         .take(80)
         .map(str::to_owned)
         .collect();
-    for id in ids {
-        if let Some(json) = conn
-            .query_row(
-                "SELECT json FROM page_artifacts WHERE path=?1 AND artifact_id=?2",
-                params![key, id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(db_error)?
-        {
-            data.artifacts
-                .push(serde_json::from_str(&json).map_err(db_error)?);
+    if !ids.is_empty() {
+        let mut art_stmt = conn
+            .prepare_cached("SELECT json FROM page_artifacts WHERE path=?1 AND artifact_id=?2")
+            .map_err(db_error)?;
+        for id in ids {
+            if let Some(json) = art_stmt
+                .query_row(params![&key, id], |r| r.get::<_, String>(0))
+                .optional()
+                .map_err(db_error)?
+            {
+                data.artifacts
+                    .push(serde_json::from_str(&json).map_err(db_error)?);
+            }
         }
     }
     let mut query = conn.prepare("SELECT json FROM page_artifacts WHERE path=?1 AND linked=0 ORDER BY timestamp DESC,artifact_id ASC LIMIT 20").map_err(db_error)?;
@@ -545,10 +551,12 @@ fn read_message_image_inputs_at(
         return Err("Invalid message ID".into());
     }
     with_db(db, |conn| {
-        ensure_fresh(conn, path, session_id)?;
+        let cached = ensure_fresh(conn, path, session_id)?;
+        let key = path_key(path)?;
+        ensure_checkpoint_message_ids(conn, &key, cached.total)?;
         let json: String = conn.query_row(
             "SELECT m.json FROM checkpoint_message_ids i JOIN page_messages m ON m.path=i.path AND m.ordinal=i.ordinal WHERE i.path=?1 AND i.message_id=?2",
-            params![path_key(path)?, message_id], |row| row.get(0),
+            params![key, message_id], |row| row.get(0),
         ).optional().map_err(db_error)?.ok_or_else(|| format!("Message {message_id} was not found in session {session_id}"))?;
         let message: ChatMessage = serde_json::from_str(&json).map_err(db_error)?;
         Ok(message.image_inputs.unwrap_or_default())
@@ -662,7 +670,6 @@ fn metadata_at(db: &Path, path: &Path, id: &str) -> Result<Session, String> {
     let stamp = fingerprint(path)?;
     let key = path_key(path)?;
     let cached: Option<String> = with_db(db, |conn| {
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS catalog_metadata(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,header TEXT NOT NULL)").map_err(db_error)?;
         let indexed = conn
             .query_row(
                 "SELECT header FROM page_sessions WHERE path=?1 AND fingerprint=?2",
@@ -892,16 +899,39 @@ pub fn invalidate(path: &Path) -> Result<(), String> {
     invalidate_at(&db_path(), path)
 }
 
-fn invalidate_at(db: &Path, path: &Path) -> Result<(), String> {
-    with_db(db, |conn| {
-        conn.execute(
-            "DELETE FROM checkpoint_message_ids WHERE path=?1",
-            [path_key(path)?],
+fn ensure_checkpoint_message_ids(conn: &Connection, key: &str, total: usize) -> Result<(), String> {
+    if total == 0 {
+        return Ok(());
+    }
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM checkpoint_message_ids WHERE path=?1",
+            [key],
+            |r| r.get(0),
         )
         .map_err(db_error)?;
-        conn.execute("DELETE FROM page_sessions WHERE path=?1", [path_key(path)?])
+    if count == 0 {
+        // Migration reads IDs only inside SQLite once, not canonical JSON.
+        conn.execute(
+            "INSERT OR REPLACE INTO checkpoint_message_ids SELECT path,json_extract(json,'$.id'),ordinal FROM page_messages WHERE path=?1",
+            [key],
+        )
+        .map_err(db_error)?;
+    }
+    Ok(())
+}
+
+fn invalidate_at(db: &Path, path: &Path) -> Result<(), String> {
+    let key = path_key(path)?;
+    with_db(db, |conn| {
+        let tx = conn.transaction().map_err(db_error)?;
+        tx.execute("DELETE FROM checkpoint_message_ids WHERE path=?1", [&key])
             .map_err(db_error)?;
-        Ok(())
+        tx.execute("DELETE FROM page_sessions WHERE path=?1", [&key])
+            .map_err(db_error)?;
+        tx.execute("DELETE FROM catalog_metadata WHERE path=?1", [&key])
+            .map_err(db_error)?;
+        tx.commit().map_err(db_error)
     })
 }
 
@@ -915,17 +945,7 @@ pub(super) fn checkpoint_baseline(
     with_db(&db_path(), |conn| {
         let header = ensure_fresh(conn, path, id)?;
         let key = path_key(path)?;
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM checkpoint_message_ids WHERE path=?1",
-                [&key],
-                |r| r.get(0),
-            )
-            .map_err(db_error)?;
-        if count == 0 && header.total > 0 {
-            // Migration reads IDs only inside SQLite once, not canonical JSON.
-            conn.execute("INSERT OR REPLACE INTO checkpoint_message_ids SELECT path,json_extract(json,'$.id'),ordinal FROM page_messages WHERE path=?1",[&key]).map_err(db_error)?;
-        }
+        ensure_checkpoint_message_ids(conn, &key, header.total)?;
         let mut messages = Vec::new();
         for id in ids {
             let json: String=conn.query_row("SELECT m.json FROM checkpoint_message_ids i JOIN page_messages m ON m.path=i.path AND m.ordinal=i.ordinal WHERE i.path=?1 AND i.message_id=?2",params![key,id],|r|r.get(0)).map_err(db_error)?;

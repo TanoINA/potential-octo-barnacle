@@ -101,11 +101,12 @@ impl ReviewSkillStore {
         }
         let path = checked_path(Path::new(value))?;
         for skill in &self.skills {
-            let dir = checked_path(
-                Path::new(&skill.path)
-                    .parent()
-                    .ok_or("Missing skill directory")?,
-            )?;
+            let Some(parent) = Path::new(&skill.path).parent() else {
+                continue;
+            };
+            let Ok(dir) = checked_path(parent) else {
+                continue;
+            };
             if path.starts_with(dir) {
                 return Ok(path);
             }
@@ -127,12 +128,14 @@ impl ReviewSkillStore {
                             .eq_ignore_ascii_case(args["name"].as_str().unwrap_or(""))
                     })
                     .ok_or("Unknown skill")?;
-                let dir = Path::new(&skill.path)
-                    .parent()
-                    .ok_or("Skill has no directory")?;
+                let dir = checked_path(
+                    Path::new(&skill.path)
+                        .parent()
+                        .ok_or("Skill has no directory")?,
+                )?;
                 let path = match args["file_path"].as_str() {
-                    Some(p) => relative_target(dir, p)?,
-                    None => PathBuf::from(&skill.path),
+                    Some(p) => relative_target(&dir, p)?,
+                    None => checked_path(Path::new(&skill.path))?,
                 };
                 let content = raw_read(&path)?;
                 self.reads.insert(path.clone(), content.clone());
@@ -361,6 +364,7 @@ fn validate_slug(name: &str) -> Result<(), String> {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         || name.starts_with('-')
         || name.ends_with('-')
+        || name.contains("--")
     {
         return Err("Skill name must be a lowercase ASCII slug of 1..64 bytes".into());
     }
@@ -393,14 +397,27 @@ fn validate_content(content: &str) -> Result<(), String> {
 
 fn frontmatter(content: &str) -> Result<serde_yaml::Value, String> {
     let normalized = content.trim_start_matches('\u{feff}').replace("\r\n", "\n");
-    let yaml = normalized
-        .strip_prefix("---\n")
-        .and_then(|s| s.split_once("\n---").map(|p| p.0))
-        .ok_or("Missing YAML frontmatter")?;
-    if yaml.len() > 64 * 1024 {
-        return Err("Frontmatter exceeds 64 KiB".into());
+    let mut lines = normalized.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Err("Missing YAML frontmatter".into());
     }
-    serde_yaml::from_str(yaml).map_err(|e| e.to_string())
+    let mut yaml = String::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" {
+            closed = true;
+            break;
+        }
+        yaml.push_str(line);
+        yaml.push('\n');
+        if yaml.len() > 64 * 1024 {
+            return Err("Frontmatter exceeds 64 KiB".into());
+        }
+    }
+    if !closed {
+        return Err("Missing YAML frontmatter".into());
+    }
+    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())
 }
 
 fn validate_skill_update(old: &str, new: &str) -> Result<(), String> {
@@ -499,6 +516,17 @@ fn checked_path(path: &Path) -> Result<PathBuf, String> {
             return Err("Path traversal is forbidden".into());
         }
         current.push(component);
+        if let Component::Prefix(prefix) = component {
+            #[cfg(windows)]
+            {
+                use std::path::Prefix;
+                if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+                    return Err("Unsupported path prefix".into());
+                }
+            }
+            let _ = prefix;
+            continue;
+        }
         match std::fs::symlink_metadata(&current) {
             Ok(m) => {
                 if m.file_type().is_symlink() {

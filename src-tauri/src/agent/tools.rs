@@ -841,6 +841,7 @@ async fn list_directory(
         for entry in WalkBuilder::new(&path)
             .hidden(false)
             .max_depth(Some(if recursive { max_depth } else { 1 }))
+            .sort_by_file_name(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()))
             .build()
             .filter_map(Result::ok)
         {
@@ -882,7 +883,6 @@ async fn list_directory(
         });
     }
     let (mut rows, truncated) = result?;
-    rows.sort();
     if rows.is_empty() {
         rows.push("(empty directory)".into());
     }
@@ -1181,6 +1181,11 @@ async fn run_command(
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.as_std_mut().process_group(0);
+    }
     let mut child = process
         .spawn()
         .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
@@ -1393,6 +1398,17 @@ async fn terminate_child(child: &mut Child) {
         // bypass the command's timeout or cancellation deadline.
         let _ = tokio::time::timeout(Duration::from_millis(750), killer).await;
     }
+    #[cfg(unix)]
+    if let Some(id) = child.id() {
+        let killer = super::create_hidden_command("kill")
+            .kill_on_drop(true)
+            .args(["-KILL", "--", &format!("-{id}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = tokio::time::timeout(Duration::from_millis(750), killer).await;
+    }
     let _ = child.start_kill();
 }
 
@@ -1548,32 +1564,30 @@ async fn fetch_web_page(
     if !status.is_success() {
         return Err(format!("Web page returned HTTP {status}"));
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_WEB_BYTES as u64)
-    {
-        return Err("Web page exceeds 5 MiB".into());
-    }
     let content_type = response
         .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-    loop {
-        let next = tokio::select! {
-            _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Web fetch cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
-            item = stream.next() => item,
-        };
-        let Some(item) = next else { break };
-        let chunk = item.map_err(|error| format!("Web response stream failed: {error}"))?;
-        if bytes.len() + chunk.len() > MAX_WEB_BYTES {
-            return Err("Web page exceeded the 5 MiB response limit".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+    let Some(bytes) = read_limited_response_bytes(response, MAX_WEB_BYTES, &context.cancel)
+        .await
+        .map_err(|err| {
+            if err.contains("exceeds") {
+                "Web page exceeds 5 MiB".to_string()
+            } else {
+                "Web page exceeded the 5 MiB response limit".to_string()
+            }
+        })?
+    else {
+        return Ok(ToolExecutionResult {
+            output: "Web fetch cancelled".into(),
+            artifact: None,
+            success: false,
+            cancelled: true,
+            ..Default::default()
+        });
+    };
     let raw = String::from_utf8_lossy(&bytes).to_string();
     let raw_for_html = raw.clone();
     let extracted = if content_type.contains("text/html")
@@ -1619,7 +1633,36 @@ async fn fetch_web_page(
     ))
 }
 
-struct PublicDnsResolver;
+async fn read_limited_response_bytes(
+    response: reqwest::Response,
+    max_bytes: usize,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Option<Vec<u8>>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(format!("Response exceeds {max_bytes} bytes"));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    loop {
+        let next = tokio::select! {
+            _ = cancel.cancelled() => return Ok(None),
+            item = stream.next() => item,
+        };
+        let Some(item) = next else {
+            return Ok(Some(bytes));
+        };
+        let chunk = item.map_err(|error| format!("Web response stream failed: {error}"))?;
+        if bytes.len() + chunk.len() > max_bytes {
+            return Err("Response exceeded size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+}
+
+pub(super) struct PublicDnsResolver;
 
 impl reqwest::dns::Resolve for PublicDnsResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
@@ -1929,13 +1972,20 @@ async fn quick_fetch_snippet(
     if !resp.status().is_success() {
         return Ok(String::new());
     }
-    let Ok(raw) = resp.text().await else {
+    let Some(bytes) = read_limited_response_bytes(resp, 512 * 1024, &context.cancel)
+        .await
+        .ok()
+        .flatten()
+    else {
         return Ok(String::new());
     };
+    let raw = String::from_utf8_lossy(&bytes);
     let clean = clean_html_text(&raw);
     let trimmed = clean.chars().take(300).collect::<String>();
     Ok(trimmed)
 }
+
+const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 async fn search_web(
     args: &serde_json::Value,
@@ -1988,8 +2038,13 @@ async fn search_web(
 
     if let Ok(resp) = ddg_fetch {
         if resp.status().is_success() {
-            if let Ok(text) = resp.text().await {
-                results = parse_duckduckgo_results(&text, limit);
+            match read_limited_response_bytes(resp, MAX_SEARCH_RESPONSE_BYTES, &context.cancel).await {
+                Ok(None) => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+                Ok(Some(bytes)) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    results = parse_duckduckgo_results(&text, limit);
+                }
+                Err(_) => {}
             }
         }
     }
@@ -2003,8 +2058,13 @@ async fn search_web(
         };
         if let Ok(resp) = bing_fetch {
             if resp.status().is_success() {
-                if let Ok(text) = resp.text().await {
-                    results = parse_bing_results(&text, limit);
+                match read_limited_response_bytes(resp, MAX_SEARCH_RESPONSE_BYTES, &context.cancel).await {
+                    Ok(None) => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+                    Ok(Some(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        results = parse_bing_results(&text, limit);
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -2015,10 +2075,20 @@ async fn search_web(
         let ddg_api_url = format!(
             "https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"
         );
-        if let Ok(resp) = client.get(&ddg_api_url).send().await {
+        let api_fetch = tokio::select! {
+            _ = context.cancel.cancelled() => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+            res = client.get(&ddg_api_url).send() => res,
+        };
+        if let Ok(resp) = api_fetch {
             if resp.status().is_success() {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    results = parse_duckduckgo_api_results(&json, limit);
+                match read_limited_response_bytes(resp, MAX_SEARCH_RESPONSE_BYTES, &context.cancel).await {
+                    Ok(None) => return Ok(ToolExecutionResult { output: "Search cancelled".into(), artifact: None, success: false, cancelled: true, ..Default::default() }),
+                    Ok(Some(bytes)) => {
+                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                            results = parse_duckduckgo_api_results(&json, limit);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -2151,7 +2221,13 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 // 2001:db8::/32 is documentation-only.
                 return false;
             }
-            if segments[0] == 0x0064 && segments[1] == 0xff9b {
+            if segments[0] == 0x0064
+                && segments[1] == 0xff9b
+                && segments[2] == 0
+                && segments[3] == 0
+                && segments[4] == 0
+                && segments[5] == 0
+            {
                 // 64:ff9b::/96 (NAT64 well-known prefix) embeds an IPv4
                 // target, which must face the same filter.
                 let embedded = Ipv4Addr::new(
@@ -2162,6 +2238,10 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 );
                 return is_public_ip(IpAddr::V4(embedded));
             }
+            if segments[0] == 0x0064 && segments[1] == 0xff9b {
+                // 64:ff9b:1::/48 local NAT64 prefix is not globally routable.
+                return false;
+            }
             if segments[0] == 0x2002 {
                 let embedded = Ipv4Addr::new(
                     (segments[1] >> 8) as u8,
@@ -2171,14 +2251,24 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 );
                 return is_public_ip(IpAddr::V4(embedded));
             }
-            if segments[0] == 0x2001 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0 {
+            if segments[0] == 0x2001 && segments[1] == 0 {
+                // 2001::/32 (Teredo, RFC 4380): check both the embedded server
+                // IPv4 (words 2..3) and the inverted client IPv4 (words 6..7).
                 let server = Ipv4Addr::new(
-                    (segments[4] >> 8) as u8,
-                    segments[4] as u8,
-                    (segments[5] >> 8) as u8,
-                    segments[5] as u8,
+                    (segments[2] >> 8) as u8,
+                    segments[2] as u8,
+                    (segments[3] >> 8) as u8,
+                    segments[3] as u8,
                 );
-                return is_public_ip(IpAddr::V4(server));
+                let client_hi = segments[6] ^ 0xffff;
+                let client_lo = segments[7] ^ 0xffff;
+                let client = Ipv4Addr::new(
+                    (client_hi >> 8) as u8,
+                    client_hi as u8,
+                    (client_lo >> 8) as u8,
+                    client_lo as u8,
+                );
+                return is_public_ip(IpAddr::V4(server)) && is_public_ip(IpAddr::V4(client));
             }
             (segments[0] & 0xe000) == 0x2000
                 && !(ip.is_loopback()
@@ -2216,6 +2306,11 @@ pub fn resolve_workspace_path(cwd: &str, requested: &str) -> Result<PathBuf, Str
     }
     let raw = Path::new(requested);
     let candidate = if raw.is_absolute() {
+        for part in raw.components() {
+            if let Component::Normal(segment) = part {
+                validate_component(&segment.to_string_lossy())?;
+            }
+        }
         raw.to_path_buf()
     } else {
         validate_relative_path(requested)?;
@@ -2235,8 +2330,19 @@ pub fn resolve_workspace_path(cwd: &str, requested: &str) -> Result<PathBuf, Str
         }
         return Ok(resolved);
     }
-    let mut ancestor = candidate.parent().unwrap_or(&root);
+    if std::fs::symlink_metadata(&candidate).is_ok() {
+        return Err("Dangling symbolic links cannot be accessed or overwritten".into());
+    }
+    let mut suffix = Vec::new();
+    let mut ancestor = candidate.as_path();
     while !ancestor.exists() {
+        if std::fs::symlink_metadata(ancestor).is_ok() {
+            return Err("Dangling symbolic links cannot be accessed or overwritten".into());
+        }
+        let name = ancestor
+            .file_name()
+            .ok_or("Cannot find an existing target ancestor")?;
+        suffix.push(name.to_os_string());
         ancestor = ancestor
             .parent()
             .ok_or("Cannot find an existing target ancestor")?;
@@ -2245,7 +2351,48 @@ pub fn resolve_workspace_path(cwd: &str, requested: &str) -> Result<PathBuf, Str
     if !resolved_ancestor.starts_with(&root) {
         return Err("Target parent escapes the active workspace".into());
     }
-    Ok(candidate)
+    Ok(suffix
+        .into_iter()
+        .rev()
+        .fold(resolved_ancestor, |acc, part| acc.join(part)))
+}
+
+fn validate_component(part: &str) -> Result<(), String> {
+    if part == ".." {
+        return Err("Parent traversal is not allowed".into());
+    }
+    if part.contains(':') || part.ends_with('.') || part.ends_with(' ') {
+        return Err("Path contains a Windows-unsafe component".into());
+    }
+    let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return Err("Windows reserved device names are not allowed".into());
+    }
+    Ok(())
 }
 
 fn validate_relative_path(path: &str) -> Result<(), String> {
@@ -2253,40 +2400,7 @@ fn validate_relative_path(path: &str) -> Result<(), String> {
         if part.is_empty() || part == "." {
             continue;
         }
-        if part == ".." {
-            return Err("Parent traversal is not allowed".into());
-        }
-        if part.contains(':') || part.ends_with('.') || part.ends_with(' ') {
-            return Err("Path contains a Windows-unsafe component".into());
-        }
-        let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
-        if matches!(
-            stem.as_str(),
-            "CON"
-                | "PRN"
-                | "AUX"
-                | "NUL"
-                | "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-        ) {
-            return Err("Windows reserved device names are not allowed".into());
-        }
+        validate_component(part)?;
     }
     Ok(())
 }
@@ -3098,6 +3212,10 @@ mod tests {
         assert!(!is_public_ip("64:ff9b::7f00:1".parse().unwrap()));
         assert!(!is_public_ip("64:ff9b::a00:1".parse().unwrap()));
         assert!(is_public_ip("64:ff9b::808:808".parse().unwrap()));
+        assert!(!is_public_ip("64:ff9b:1::808:808".parse().unwrap()));
+        assert!(!is_public_ip("2001:0:808:808::ffff:fffe".parse().unwrap()));
+        assert!(!is_public_ip("2001:0:7f00:1::f7f7:f7f7".parse().unwrap()));
+        assert!(is_public_ip("2001:0:808:808::f7f7:f7f7".parse().unwrap()));
     }
 
     #[test]

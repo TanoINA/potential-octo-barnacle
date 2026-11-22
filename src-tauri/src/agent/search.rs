@@ -31,7 +31,8 @@ fn db_path() -> PathBuf {
 pub fn open_connection() -> Result<Connection, String> {
     let path = db_path();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create search directory: {e}"))?;
     }
     let conn =
         Connection::open(&path).map_err(|e| format!("Could not open search database: {e}"))?;
@@ -40,8 +41,10 @@ pub fn open_connection() -> Result<Connection, String> {
 }
 
 pub fn init_db(conn: &Connection) -> Result<(), String> {
-    let _ = conn.pragma_update(None, "journal_mode", "WAL");
-    let _ = conn.pragma_update(None, "busy_timeout", 5000);
+    conn.query_row("PRAGMA journal_mode=WAL;", [], |_| Ok(()))
+        .map_err(|e| format!("Could not configure search journal mode: {e}"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("Could not configure search busy timeout: {e}"))?;
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS fts_content USING fts5(
             session_id UNINDEXED,
@@ -98,38 +101,68 @@ fn index_session_into(conn: &mut Connection, data: &SessionData) -> Result<(), S
     .map_err(|e| e.to_string())?;
 
     // Index messages
-    for msg in &data.messages {
-        let mut full_body = msg.content.clone();
-        if let Some(preamble) = &msg.preamble {
-            full_body = format!("{}\n\n{}", preamble, full_body);
-        }
-        if let Some(tool_calls) = &msg.tool_calls {
-            for call in tool_calls {
-                full_body.push(' ');
-                full_body.push_str(&call.name);
-                if let Some(res) = &call.result {
-                    full_body.push(' ');
-                    full_body.push_str(bounded_str(res, 4000));
+    {
+        let mut msg_stmt = tx
+            .prepare(
+                "INSERT INTO fts_content (session_id, session_title, session_updated_at, content_type, source_id, title, body)
+                 VALUES (?1, ?2, ?3, 'message', ?4, '', ?5)",
+            )
+            .map_err(|e| e.to_string())?;
+        for msg in &data.messages {
+            let mut full_body = msg.content.clone();
+            if let Some(preamble) = &msg.preamble {
+                full_body = format!("{}\n\n{}", preamble, full_body);
+            }
+            if let Some(segments) = &msg.segments {
+                for seg in segments {
+                    if let Some(text) = &seg.text {
+                        if !text.is_empty() && !full_body.contains(text) {
+                            full_body.push('\n');
+                            full_body.push_str(text);
+                        }
+                    }
+                    if let Some(calls) = &seg.tool_calls {
+                        for call in calls {
+                            full_body.push(' ');
+                            full_body.push_str(&call.name);
+                            if let Some(res) = call.result.as_deref().or(call.terminal_output.as_deref()) {
+                                full_body.push(' ');
+                                full_body.push_str(bounded_str(res, 4000));
+                            }
+                        }
+                    }
                 }
             }
+            if let Some(tool_calls) = &msg.tool_calls {
+                for call in tool_calls {
+                    full_body.push(' ');
+                    full_body.push_str(&call.name);
+                    if let Some(res) = call.result.as_deref().or(call.terminal_output.as_deref()) {
+                        full_body.push(' ');
+                        full_body.push_str(bounded_str(res, 4000));
+                    }
+                }
+            }
+            msg_stmt
+                .execute(params![s_id, s_title, s_updated, msg.id, full_body])
+                .map_err(|e| e.to_string())?;
         }
-        tx.execute(
-            "INSERT INTO fts_content (session_id, session_title, session_updated_at, content_type, source_id, title, body)
-             VALUES (?1, ?2, ?3, 'message', ?4, ?2, ?5)",
-            params![s_id, s_title, s_updated, msg.id, full_body],
-        )
-        .map_err(|e| e.to_string())?;
     }
 
     // Index artifacts
-    for art in &data.artifacts {
-        let snippet_body = bounded_str(&art.content, 8000);
-        tx.execute(
-            "INSERT INTO fts_content (session_id, session_title, session_updated_at, content_type, source_id, title, body)
-             VALUES (?1, ?2, ?3, 'artifact', ?4, ?5, ?6)",
-            params![s_id, s_title, s_updated, art.id, art.title, snippet_body],
-        )
-        .map_err(|e| e.to_string())?;
+    {
+        let mut art_stmt = tx
+            .prepare(
+                "INSERT INTO fts_content (session_id, session_title, session_updated_at, content_type, source_id, title, body)
+                 VALUES (?1, ?2, ?3, 'artifact', ?4, ?5, ?6)",
+            )
+            .map_err(|e| e.to_string())?;
+        for art in &data.artifacts {
+            let snippet_body = bounded_str(&art.content, 8000);
+            art_stmt
+                .execute(params![s_id, s_title, s_updated, art.id, art.title, snippet_body])
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -234,7 +267,8 @@ pub(crate) fn search_query_with(
     use std::collections::BTreeMap;
     let mut session_map: BTreeMap<String, DeepSearchResult> = BTreeMap::new();
 
-    for r in rows.flatten() {
+    for row in rows {
+        let r = row.map_err(|e| e.to_string())?;
         let entry = session_map
             .entry(r.session_id.clone())
             .or_insert_with(|| DeepSearchResult {
@@ -532,5 +566,26 @@ mod tests {
             .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
             .unwrap();
         assert_eq!(timeout, 5000);
+    }
+
+    #[test]
+    fn title_only_query_does_not_match_every_message_row() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let mut data = sample_session("title-only", "Compiler Design", "hello world");
+        data.artifacts.clear();
+        data.messages = (0..5)
+            .map(|i| {
+                let mut m = data.messages[0].clone();
+                m.id = format!("msg_{i}");
+                m
+            })
+            .collect();
+        index_session_into(&mut conn, &data).unwrap();
+        let results = search_query_with(&conn, "compiler", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].match_count, 1);
+        assert!(results[0].match_message_id.is_none());
+        assert!(results[0].snippet.contains("<mark>Compiler</mark>"));
     }
 }

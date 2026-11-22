@@ -76,6 +76,15 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [agent.newSession, openModelPicker, openSettings, openArtifactsLibrary, toggleSidebar, isNarrowViewport, sidebarOpen]);
 
+  const hasRunningTasks = Boolean(agent.subagents?.some((s) => s.status === 'running'));
+  const canOpenInspector = (agent.artifacts?.length ?? 0) > 0 || hasRunningTasks;
+
+  useEffect(() => {
+    if (artifactOpen && !canOpenInspector) {
+      setArtifactOpen(false);
+    }
+  }, [artifactOpen, canOpenInspector]);
+
   const selectArtifact = useCallback((id: string) => {
     agent.setActiveArtifactId(id);
     setArtifactOpen(true);
@@ -125,7 +134,7 @@ export function App() {
       <main className="flex h-full min-w-0 flex-1 flex-col">
         {agent.isHistoryPreview && (
           <div role="status" className="flex items-center justify-between border-b border-[#30363d] bg-[#161b22] px-4 py-2 text-xs">
-            <span>History preview ? read-only ? live work continues in the background</span>
+            <span>History preview — read-only — live work continues in the background</span>
             <button type="button" onClick={agent.loadLatestMessages} className="rounded border border-[#58a6ff] px-3 py-1">Return to latest</button>
           </div>
         )}
@@ -155,7 +164,7 @@ export function App() {
           effectiveConfig={agent.effectiveConfig}
           sessionTitle={agent.sessionTitle}
           artifactCount={agent.artifacts.length}
-          isArtifactOpen={artifactOpen && agent.artifacts.length > 0}
+          isArtifactOpen={artifactOpen && canOpenInspector}
           onToggleArtifacts={() => setArtifactOpen((value) => !value)}
           onListFiles={agent.listWorkspaceFiles}
           onReviewSession={agent.isHistoryPreview ? undefined : agent.reviewSession}
@@ -188,7 +197,7 @@ export function App() {
           onToggleSidebar={toggleSidebar}
         />
       </main>
-      {artifactOpen && agent.artifacts.length > 0 && (
+      {artifactOpen && canOpenInspector && (
         <OptionalPanel label="Artifacts" onClose={() => setArtifactOpen(false)}>
           <ArtifactPane
             artifacts={agent.artifacts}
@@ -333,9 +342,9 @@ export function App() {
         onToggleSidebar={toggleSidebar}
         onExportSession={(format) => { void agent.exportSession(agent.currentSessionId, format); }}
         messages={agent.messages}
-        onRetryTurn={agent.retryTurn}
-        onEditAndResendMessage={agent.editAndResendMessage}
-        onRollbackToMessage={agent.rollbackToMessage}
+        onRetryTurn={agent.isHistoryPreview ? undefined : agent.retryTurn}
+        onEditAndResendMessage={agent.isHistoryPreview ? undefined : agent.editAndResendMessage}
+        onRollbackToMessage={agent.isHistoryPreview ? undefined : agent.rollbackToMessage}
         onRefreshGitStatus={agent.refreshGitStatus}
       />
     </div>

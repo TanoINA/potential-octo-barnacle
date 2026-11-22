@@ -355,6 +355,21 @@ describe('SettingsModal enhanced features', () => {
     expect(screen.getByText('You have unsaved changes. Click Save changes or Cancel.')).toBeTruthy();
   });
 
+  it('treats MCP env draft edits as unsaved changes on backdrop click', () => {
+    const onClose = vi.fn();
+    const settingsWithMcp: AgentSettings = {
+      ...baseSettings,
+      mcpServers: [{ id: 'test-mcp', name: 'Mock MCP', command: 'node', args: [], env: {}, enabled: true }],
+    };
+    const { container } = render(<SettingsModal settings={settingsWithMcp} onSave={vi.fn()} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills & MCP' }));
+    const envBox = screen.getByLabelText('Environment (KEY=value per line)');
+    fireEvent.change(envBox, { target: { value: 'FOO=bar' } });
+    fireEvent.mouseDown(container.firstChild as HTMLElement);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText('You have unsaved changes. Click Save changes or Cancel.')).toBeTruthy();
+  });
+
   it('strips Windows CRLF trailing carriage returns when parsing MCP env', () => {
     const raw = 'API_KEY=sk-test1234\r\nENDPOINT=https://api.example.com\r\nEMPTY=\r\nSPACES=val with spaces\r\n';
     const parsed = parseEnv(raw);

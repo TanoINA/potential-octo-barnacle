@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   Check,
@@ -129,12 +129,19 @@ export const ArtifactsLibraryModal = memo(function ArtifactsLibraryModal({
     );
   }, [filtered, selectedKey]);
 
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
+
   // Handle copy content
   const handleCopy = useCallback(() => {
     if (!selectedItem) return;
-    navigator.clipboard.writeText(selectedItem.artifact.content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    void navigator.clipboard?.writeText(selectedItem.artifact.content).then(() => {
+      setCopied(true);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
+    }).catch(() => undefined);
   }, [selectedItem]);
 
   // Handle navigate to session

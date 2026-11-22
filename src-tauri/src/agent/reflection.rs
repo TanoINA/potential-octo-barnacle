@@ -745,18 +745,39 @@ fn create_skill_parents(root: &Path, name: &str) -> Result<(), String> {
 
 /// Read only a named skill in the active workspace; no global fallback.
 pub async fn read_generated_skill(workspace_cwd: &str, name: &str) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+
     validate_name(name)?;
     let root = workspace_root(workspace_cwd)?;
     let path = checked_skill_path(&root, Some(name))?;
-    let metadata = tokio::fs::metadata(&path)
+    let metadata = tokio::fs::symlink_metadata(&path)
         .await
         .map_err(|_| "Generated skill is unavailable".to_string())?;
-    if !metadata.is_file() || metadata.len() > MAX_SKILL_FILE_BYTES as u64 {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_SKILL_FILE_BYTES as u64
+    {
         return Err("Generated skill is not a regular file within the 64 KiB limit".into());
     }
-    tokio::fs::read_to_string(path)
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("Generated skill cannot be a reparse point".into());
+        }
+    }
+    let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|_| "Could not read generated skill as UTF-8".into())
+        .map_err(|_| "Generated skill is unavailable".to_string())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SKILL_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| "Could not read generated skill".to_string())?;
+    if bytes.len() > MAX_SKILL_FILE_BYTES {
+        return Err("Generated skill exceeds the 64 KiB limit".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "Could not read generated skill as UTF-8".into())
 }
 
 #[cfg(test)]

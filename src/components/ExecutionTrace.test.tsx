@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolCallItem } from '../types/agent';
-import { ExecutionTrace } from './ExecutionTrace';
+import { ExecutionTrace, parseSearchLinks } from './ExecutionTrace';
 
 function tool(overrides: Partial<ToolCallItem> = {}): ToolCallItem {
   return { id: 'tool-1', name: 'write_file', args: { path: 'report.txt' }, status: 'error', result: 'Permission denied', ...overrides };
@@ -365,5 +365,15 @@ describe('ExecutionTrace truthful details', () => {
 
     const link = screen.getByTitle(/Asynchronous Programming in Rust/);
     expect(link.getAttribute('href')).toBe('https://rust-lang.github.io/async-book/');
+  });
+
+  it('drops non-http links from search results', () => {
+    const raw = [
+      '1. [Evil](javascript:alert(1))',
+      '2. [Safe](https://example.com/docs)',
+    ].join('\n');
+    expect(parseSearchLinks(raw)).toEqual([
+      { title: 'Safe', url: 'https://example.com/docs', snippet: undefined },
+    ]);
   });
 });

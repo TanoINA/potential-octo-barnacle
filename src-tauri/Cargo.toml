@@ -26,8 +26,6 @@ shared-profile = []
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.14.1"
 reqwest-updater = { package = "reqwest", version = "0.13", default-features = false }

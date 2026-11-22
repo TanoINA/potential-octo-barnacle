@@ -21,9 +21,13 @@ interface TimelineScrubberProps {
   onJumpToMessage: (index: number) => void;
 }
 
+const turnTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const turnDateFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const turnMetaCache = new WeakMap<ChatMessage, { timeStr: string; dateStr: string; snippet: string }>();
+
 function formatTurnTime(ts: number): string {
   try {
-    return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return turnTimeFormatter.format(ts);
   } catch {
     return '';
   }
@@ -31,10 +35,30 @@ function formatTurnTime(ts: number): string {
 
 function formatDate(ts: number): string {
   try {
-    return new Date(ts).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    return turnDateFormatter.format(ts);
   } catch {
     return '';
   }
+}
+
+function getTurnMeta(msg: ChatMessage) {
+  const cached = turnMetaCache.get(msg);
+  if (cached) return cached;
+  const text = (msg.content || '').trim();
+  const snippet = text
+    ? text.split('\n')[0].slice(0, 48)
+    : msg.attachments && msg.attachments.length > 0
+    ? `${msg.attachments.length} attachment${msg.attachments.length > 1 ? 's' : ''}`
+    : 'User prompt';
+  const meta = {
+    timeStr: formatTurnTime(msg.timestamp),
+    dateStr: formatDate(msg.timestamp),
+    snippet,
+  };
+  if (!msg.isStreaming) {
+    turnMetaCache.set(msg, meta);
+  }
+  return meta;
 }
 
 export const TimelineScrubber = memo(function TimelineScrubber({
@@ -52,6 +76,8 @@ export const TimelineScrubber = memo(function TimelineScrubber({
   const hasFocusRef = useRef(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<number | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   // Extract user turns
   const turns: TimelineTurn[] = useMemo(() => {
@@ -60,21 +86,15 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     messages.forEach((msg, idx) => {
       if (msg.role === 'user') {
         count += 1;
-        const text = (msg.content || '').trim();
-        const snippet = text
-          ? text.split('\n')[0].slice(0, 48)
-          : msg.attachments && msg.attachments.length > 0
-          ? `${msg.attachments.length} attachment${msg.attachments.length > 1 ? 's' : ''}`
-          : 'User prompt';
-
+        const meta = getTurnMeta(msg);
         list.push({
           id: msg.id,
           turnIndex: count,
           messageIndex: idx,
-          timeStr: formatTurnTime(msg.timestamp),
-          dateStr: formatDate(msg.timestamp),
+          timeStr: meta.timeStr,
+          dateStr: meta.dateStr,
           timestamp: msg.timestamp,
-          snippet,
+          snippet: meta.snippet,
         });
       }
     });
@@ -87,6 +107,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
 
     const onScroll = () => {
       if (activeMessageIndex === undefined) {
+        const currentMessages = messagesRef.current;
         const viewport = scrollElement.getBoundingClientRect();
         let firstIndex = Infinity;
         let firstId: string | null = null;
@@ -94,10 +115,10 @@ export const TimelineScrubber = memo(function TimelineScrubber({
         for (const row of scrollElement.querySelectorAll<HTMLElement>('[data-index][data-message-id]')) {
           const rect = row.getBoundingClientRect();
           if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;
-          const index = messages.findIndex((message) => message.id === row.dataset.messageId);
+          const index = currentMessages.findIndex((message) => message.id === row.dataset.messageId);
           if (index >= 0 && index < firstIndex) {
             firstIndex = index;
-            firstId = messages[index].id;
+            firstId = currentMessages[index].id;
           }
         }
         setVisibleMessageId(firstId);
@@ -115,7 +136,7 @@ export const TimelineScrubber = memo(function TimelineScrubber({
     onScroll();
     scrollElement.addEventListener('scroll', onScroll, { passive: true });
     return () => scrollElement.removeEventListener('scroll', onScroll);
-  }, [scrollElement, messages, activeMessageIndex]);
+  }, [scrollElement, activeMessageIndex]);
 
   useEffect(() => () => {
     if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);

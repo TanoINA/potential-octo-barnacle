@@ -202,10 +202,15 @@ fn checked_path(path: &Path) -> Result<PathBuf, String> {
             }
         }
         current.push(component);
-        // A canonical Windows profile uses a verbatim drive prefix. The prefix
-        // alone is not a filesystem path; inspect it once the root is appended.
-        #[cfg(feature = "shared-profile")]
-        if matches!(component, Component::Prefix(_)) {
+        if let Component::Prefix(prefix) = component {
+            #[cfg(windows)]
+            {
+                use std::path::Prefix;
+                if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+                    return Err("Unsupported path prefix".into());
+                }
+            }
+            let _ = prefix;
             continue;
         }
         match std::fs::symlink_metadata(&current) {
@@ -414,11 +419,24 @@ fn ensure_unlocked(skill: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n");
-    let yaml = text
-        .strip_prefix("---\n")
-        .and_then(|s| s.split_once("\n---").map(|p| p.0))
-        .ok_or("Invalid skill frontmatter")?;
-    let metadata: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Err("Invalid skill frontmatter".into());
+    }
+    let mut yaml = String::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" {
+            closed = true;
+            break;
+        }
+        yaml.push_str(line);
+        yaml.push('\n');
+    }
+    if !closed {
+        return Err("Invalid skill frontmatter".into());
+    }
+    let metadata: serde_yaml::Value = serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
     if metadata["metadata"]["aether"]["locked"].as_bool() == Some(true) {
         return Err("Skill metadata.aether.locked is true".into());
     }

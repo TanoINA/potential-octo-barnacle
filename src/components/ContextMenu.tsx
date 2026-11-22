@@ -76,7 +76,12 @@ function insertInputText(input: HTMLInputElement | HTMLTextAreaElement, text: st
   Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.focus();
-  input.setSelectionRange(start + text.length, start + text.length);
+  if (
+    input instanceof HTMLTextAreaElement ||
+    /^(text|search|url|tel|password)$/i.test(input.type || 'text')
+  ) {
+    input.setSelectionRange(start + text.length, start + text.length);
+  }
 }
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -102,6 +107,13 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
 
   const copyToClipboard = useCallback(async (text: string, id: string) => {
     try {
@@ -116,7 +128,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         document.body.removeChild(textarea);
       }
       setCopiedId(id);
-      setTimeout(() => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
         setCopiedId(null);
         setMenu(null);
       }, 350);
@@ -186,9 +199,15 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       const fileLinkEl = target.closest<HTMLAnchorElement>('[data-file-link="true"], a[href]');
       const messageEl = target.closest<HTMLElement>('[data-message-id]');
 
-      const codeContent = codeBlockEl
-        ? decodeURIComponent(codeBlockEl.getAttribute('data-code-content') || '')
-        : '';
+      const rawCode = codeBlockEl?.getAttribute('data-code-content') || '';
+      let codeContent = rawCode;
+      if (rawCode) {
+        try {
+          codeContent = decodeURIComponent(rawCode);
+        } catch {
+          codeContent = rawCode;
+        }
+      }
       const codeLang = codeBlockEl?.getAttribute('data-code-lang') || '';
 
       const rawFileHref = fileLinkEl?.getAttribute('data-file-path') || fileLinkEl?.getAttribute('href') || '';
@@ -200,7 +219,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       }
 
       const messageId = messageEl?.getAttribute('data-message-id');
-      const foundMessage = messageId ? messages.find((m) => m.id === messageId) : undefined;
+      const foundMessage = messageId ? messagesRef.current.find((m) => m.id === messageId) : undefined;
 
       const sections: MenuSectionDef[] = [];
 
@@ -404,16 +423,20 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 closeMenu();
               },
             },
-            {
-              id: 'input-clear',
-              label: 'Clear Composer',
-              icon: <Trash2 size={14} className="text-[#f85149]" />,
-              danger: true,
-              action: () => {
-                window.dispatchEvent(new CustomEvent('aether:clear-composer'));
-                closeMenu();
-              },
-            },
+            ...(inputEl.getAttribute('aria-label') === 'Message AetherAgent'
+              ? [
+                  {
+                    id: 'input-clear',
+                    label: 'Clear Composer',
+                    icon: <Trash2 size={14} className="text-[#f85149]" />,
+                    danger: true,
+                    action: () => {
+                      window.dispatchEvent(new CustomEvent('aether:clear-composer'));
+                      closeMenu();
+                    },
+                  },
+                ]
+              : []),
           ],
         });
       }
@@ -491,9 +514,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               icon: isWeb ? <ExternalLink size={14} className="text-[#58a6ff]" /> : <FileText size={14} className="text-[#a371f7]" />,
               action: () => {
                 if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                  void invoke('open_path_or_url', { pathOrUrl: filePath });
-                } else {
-                  window.open(filePath, '_blank');
+                  void Promise.resolve(invoke('open_path_or_url', { pathOrUrl: filePath })).catch(() => undefined);
+                } else if (isWeb) {
+                  window.open(filePath, '_blank', 'noopener,noreferrer');
                 }
                 closeMenu();
               },
@@ -506,7 +529,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                     icon: <FolderOpen size={14} className="text-[#d29922]" />,
                     action: () => {
                       if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                        void invoke('reveal_in_explorer', { path: filePath });
+                        void Promise.resolve(invoke('reveal_in_explorer', { path: filePath })).catch(() => undefined);
                       }
                       closeMenu();
                     },
@@ -517,7 +540,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                     icon: <Terminal size={14} className="text-[#3fb950]" />,
                     action: () => {
                       if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                        void invoke('open_terminal', { path: filePath });
+                        void Promise.resolve(invoke('open_terminal', { path: filePath })).catch(() => undefined);
                       }
                       closeMenu();
                     },
@@ -634,7 +657,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             disabled: !workspaceCwd,
             action: () => {
               if (workspaceCwd && typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                void invoke('reveal_in_explorer', { path: workspaceCwd });
+                void Promise.resolve(invoke('reveal_in_explorer', { path: workspaceCwd })).catch(() => undefined);
               }
               closeMenu();
             },
@@ -645,7 +668,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             icon: <Terminal size={14} className="text-[#3fb950]" />,
             action: () => {
               if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-                void invoke('open_terminal', { path: workspaceCwd || undefined });
+                void Promise.resolve(invoke('open_terminal', { path: workspaceCwd || undefined })).catch(() => undefined);
               }
               closeMenu();
             },
@@ -752,7 +775,6 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   }, [
     workspaceCwd,
     currentSessionId,
-    messages,
     onNewSession,
     onOpenSettings,
     onOpenModelPicker,

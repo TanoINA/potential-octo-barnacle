@@ -55,16 +55,52 @@ pub struct McpClient {
     reader: Arc<tokio::task::JoinHandle<()>>,
 }
 
+async fn kill_pid_tree(pid: u32) {
+    #[cfg(windows)]
+    let mut killer = {
+        let mut cmd = super::create_hidden_command("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        cmd
+    };
+    #[cfg(unix)]
+    let mut killer = {
+        let mut cmd = super::create_hidden_command("kill");
+        cmd.args(["-KILL", "--", &format!("-{pid}")]);
+        cmd
+    };
+    #[cfg(any(windows, unix))]
+    {
+        killer
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), killer.status()).await;
+    }
+}
+
+async fn kill_child_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        kill_pid_tree(pid).await;
+    }
+    let _ = child.kill().await;
+}
+
 impl Drop for McpClient {
     fn drop(&mut self) {
         if Arc::strong_count(&self.reader) == 1 {
             self.reader.abort();
             if let Ok(mut child) = self.child.try_lock() {
+                let pid = child.id();
                 let _ = child.start_kill();
+                if let (Some(pid), Ok(runtime)) = (pid, tokio::runtime::Handle::try_current()) {
+                    runtime.spawn(kill_pid_tree(pid));
+                }
             } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 let child = self.child.clone();
                 runtime.spawn(async move {
-                    let _ = child.lock().await.kill().await;
+                    let mut guard = child.lock().await;
+                    kill_child_tree(&mut guard).await;
                 });
             }
         }
@@ -88,15 +124,25 @@ impl McpClient {
         if config.command.trim().is_empty() {
             return Err("MCP server command must not be empty".into());
         }
+        let work_dir = if cwd.trim().is_empty() {
+            std::env::temp_dir()
+        } else {
+            std::path::PathBuf::from(cwd)
+        };
         let mut command = super::create_hidden_command(&config.command);
         command
             .args(&config.args)
             .envs(&config.env)
-            .current_dir(cwd)
+            .current_dir(work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| format!("Could not start MCP server '{}': {error}", config.name))?;
@@ -129,6 +175,9 @@ impl McpClient {
                 let Ok(message) = serde_json::from_slice::<serde_json::Value>(&line) else {
                     continue;
                 };
+                if message.get("method").is_some() {
+                    continue;
+                }
                 let Some(id) = message.get("id").and_then(|value| value.as_u64()) else {
                     continue;
                 };
@@ -160,7 +209,7 @@ impl McpClient {
                     let _ = sender.send(Err(failure.clone()));
                 }
             }
-            let _ = reader_child.lock().await.kill().await;
+            kill_child_tree(&mut *reader_child.lock().await).await;
         });
         let client = Self {
             shared,

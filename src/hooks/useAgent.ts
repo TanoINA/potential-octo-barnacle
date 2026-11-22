@@ -480,7 +480,7 @@ export function useAgent() {
         pruneCache();
       }
     });
-    persistenceQueueRef.current = queued.catch(() => undefined);
+    persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
     return queued;
   }, [refreshSessions, pruneCache]);
 
@@ -785,7 +785,7 @@ export function useAgent() {
           // The immutable snapshot baseline skips acknowledged versions only.
           live.journalSnapshot = { messages, artifacts: snapshot.artifacts, revision: ack.revision };
         });
-        persistenceQueueRef.current = queued.catch(() => undefined);
+        persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
         void queued.catch((error) => {
           retry = true;
           if (live.checkpointGeneration === generation && live.runId === runId && sessionIdRef.current === snapshot.session.id) {
@@ -869,6 +869,53 @@ export function useAgent() {
       () => invoke<{ remaining: number; errors: number }>('warm_session_index', { limit: 3, budgetMs: 75 }),
     );
   }, [isLoading, isSessionLoading, isStreaming, isReviewing]);
+
+  const runTitleGeneration = useCallback((
+    sid: string,
+    provider: ProviderConfig,
+    promptText: string,
+    replySnippet: string,
+    onlyIfUnrenamed: boolean,
+  ): Promise<string | null> => {
+    if (onlyIfUnrenamed && manualRenamesRef.current.has(sid)) {
+      return Promise.resolve(null);
+    }
+    const liveTarget = liveSessionsRef.current.get(sid);
+    if (liveTarget?.runId) flushPending(liveTarget);
+    const prepared = liveTarget && !liveTarget.persistenceBusy && (liveTarget.dirty || liveTarget.journalSnapshot || liveTarget.deltaBusy)
+      ? persistData(liveTarget.data)
+      : persistenceQueueRef.current;
+    const queued = prepared.then(async () => {
+      if (onlyIfUnrenamed && manualRenamesRef.current.has(sid)) return null;
+      const origin = liveSessionsRef.current.get(sid);
+      const baseline = origin?.committedData;
+      const newTitle = await invoke<string>('generate_session_title', {
+        sessionId: sid,
+        provider,
+        prompt: promptText,
+        responseSnippet: replySnippet || undefined,
+      });
+      if (onlyIfUnrenamed && manualRenamesRef.current.has(sid)) return null;
+      const cleanTitle = typeof newTitle === 'string' ? newTitle.trim() : '';
+      if (!cleanTitle) return null;
+      if (origin) {
+        mutateData((current) => {
+          if (onlyIfUnrenamed && manualRenamesRef.current.has(sid)) return current;
+          return { ...current, session: { ...current.session, title: cleanTitle } };
+        }, origin);
+        if (baseline) await refreshNativeWindow(origin, baseline, true);
+      } else if (sid === sessionIdRef.current) {
+        mutateData((current) => {
+          if (onlyIfUnrenamed && manualRenamesRef.current.has(sid)) return current;
+          return { ...current, session: { ...current.session, title: cleanTitle } };
+        });
+      }
+      await refreshSessions();
+      return cleanTitle;
+    });
+    persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
+    return queued.catch(() => null);
+  }, [flushPending, mutateData, persistData, refreshNativeWindow, refreshSessions]);
 
   useEffect(() => {
     const unlistenPromise = listen<AgentEvent>('agent-event', ({ payload }) => {
@@ -1176,28 +1223,7 @@ export function useAgent() {
             const currentProvider = resolveEffective(settingsRef.current, live.data.modelOverride)?.provider;
 
             if (promptText && currentProvider) {
-              void invoke<string>('generate_session_title', {
-                sessionId: sid,
-                provider: currentProvider,
-                prompt: promptText,
-                responseSnippet: replySnippet || undefined,
-              }).then((newTitle) => {
-                if (newTitle && typeof newTitle === 'string' && newTitle.trim()) {
-                  const cleanTitle = newTitle.trim();
-                  mutate((curr) => {
-                    if (curr.session.id === sid && !manualRenamesRef.current.has(sid)) {
-                      return {
-                        ...curr,
-                        session: { ...curr.session, title: cleanTitle },
-                      };
-                    }
-                    return curr;
-                  });
-                  void refreshSessions();
-                }
-              }).catch(() => {
-                // Non-blocking fallback: keeps original prompt snippet
-              });
+              void runTitleGeneration(sid, currentProvider, promptText, replySnippet, true);
             }
           }
           break;
@@ -1626,16 +1652,14 @@ export function useAgent() {
       live.messageId = null;
       live.starting = false;
     }
+    live.subagents = live.subagents.map((s) =>
+      s.status === 'running'
+        ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
+        : s
+    );
+    live.skills = [];
     publishLive(live);
     setStopRequested(live.stopRequested);
-    setSubagents((prev) =>
-      prev.map((s) =>
-        s.status === 'running'
-          ? { ...s, status: 'cancelled', completedAt: s.completedAt || Date.now() }
-          : s
-      )
-    );
-    setActiveSkills([]);
     mutateData((current) => ({
       ...current,
       messages: current.messages.map((message) =>
@@ -1885,7 +1909,7 @@ export function useAgent() {
         if (origin && baseline) await refreshNativeWindow(origin, baseline, true);
         await refreshSessions();
       });
-      persistenceQueueRef.current = queued.catch(() => undefined);
+      persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
       await queued;
     } catch (error) {
       if (navigationRef.current === navigation) setLastError('Could not rename session: ' + String(error));
@@ -1907,29 +1931,8 @@ export function useAgent() {
     const provider = resolveEffective(settingsRef.current, targetData.modelOverride)?.provider;
     if (!provider || !promptText) return null;
 
-    try {
-      const newTitle = await invoke<string>('generate_session_title', {
-        sessionId: sid,
-        provider,
-        prompt: promptText,
-        responseSnippet: replySnippet || undefined,
-      });
-      if (newTitle && typeof newTitle === 'string' && newTitle.trim()) {
-        const cleanTitle = newTitle.trim();
-        const origin = liveSessionsRef.current.get(sid);
-        if (origin) {
-          mutateData((current) => ({ ...current, session: { ...current.session, title: cleanTitle } }), origin);
-        } else if (sid === sessionIdRef.current) {
-          mutateData((current) => ({ ...current, session: { ...current.session, title: cleanTitle } }));
-        }
-        await refreshSessions();
-        return cleanTitle;
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  }, [mutateData, refreshSessions]);
+    return runTitleGeneration(sid, provider, promptText, replySnippet, false);
+  }, [runTitleGeneration]);
 
   const togglePinSession = useCallback(async (sessionId: string) => {
     const navigation = navigationRef.current;
@@ -1948,7 +1951,7 @@ export function useAgent() {
         if (origin && baseline) await refreshNativeWindow(origin, baseline, true);
         await refreshSessions();
       });
-      persistenceQueueRef.current = queued.catch(() => undefined);
+      persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
       await queued;
     } catch (error) {
       if (navigationRef.current === navigation) setLastError('Could not toggle pin on session: ' + String(error));
@@ -1956,7 +1959,7 @@ export function useAgent() {
   }, [mutateData, refreshSessions, refreshNativeWindow, flushPending, persistData]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
-    if (sessionId === sessionIdRef.current) { detachCurrentRun(); resetSession(false); }
+    if (sessionId === sessionIdRef.current) { preview.clear(); detachCurrentRun(); resetSession(false); }
     else {
       const live = liveSessionsRef.current.get(sessionId);
       if (live) {
@@ -1979,7 +1982,7 @@ export function useAgent() {
     } catch (error) {
       setLastError(`Could not delete session: ${String(error)}`);
     }
-  }, [refreshSessions, resetSession]);
+  }, [preview.clear, refreshSessions, resetSession]);
 
   const exportSession = useCallback(async (
     sessionId: string,
@@ -2193,7 +2196,7 @@ export function useAgent() {
       origin.dirty = false;
       publishLive(origin);
     });
-    persistenceQueueRef.current = queued.catch(() => undefined);
+    persistenceQueueRef.current = queued.then(() => undefined, () => undefined);
     try {
       await queued;
     } catch (error) {
@@ -2375,18 +2378,24 @@ export function useAgent() {
       artifacts,
     };
 
-    sessionOperationRef.current = true;
+    const operation = Symbol('rollback');
+    sessionOperationRef.current = operation;
     setIsLoading(true);
     mutateData(() => next);
     try {
       await persistData(next, false, isOrigin);
       return isOrigin();
     } catch (error) {
-      if (isOrigin()) setLastError(`Could not rollback session: ${String(error)}`);
+      if (isOrigin()) {
+        mutateData(() => previous);
+        setLastError(`Could not rollback session: ${String(error)}`);
+      }
       return false;
     } finally {
-      sessionOperationRef.current = false;
-      setIsLoading(false);
+      if (sessionOperationRef.current === operation) {
+        sessionOperationRef.current = false;
+        setIsLoading(false);
+      }
     }
   }, [ensureFullHistory, mutateData, persistData]);
 
@@ -2458,17 +2467,22 @@ export function useAgent() {
       artifacts,
     };
 
-    sessionOperationRef.current = true;
+    const isOrigin = () => navigationRef.current === navigation && sessionIdRef.current === previous.session.id;
+    const operation = Symbol('editAndResend');
+    sessionOperationRef.current = operation;
     mutateData(() => next);
     try {
-      await persistData(next);
+      await persistData(next, false, isOrigin);
     } catch (error) {
-      setLastError(`Could not prepare turn: ${String(error)}`);
-      sessionOperationRef.current = false;
+      if (isOrigin()) {
+        mutateData(() => previous);
+        setLastError(`Could not prepare turn: ${String(error)}`);
+      }
       return false;
+    } finally {
+      if (sessionOperationRef.current === operation) sessionOperationRef.current = false;
     }
-    sessionOperationRef.current = false;
-    if (navigationRef.current !== navigation || sessionIdRef.current !== previous.session.id) return false;
+    if (!isOrigin()) return false;
 
     const retainedInputs = replayImageInputs ?? targetMsg.imageInputs;
     return sendMessage(newContent, attachments, {

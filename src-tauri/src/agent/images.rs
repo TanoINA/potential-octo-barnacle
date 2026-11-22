@@ -26,21 +26,77 @@ fn signature(bytes: &[u8]) -> Result<&'static str, String> {
     }
 }
 
-fn regular_metadata(metadata: &fs::Metadata) -> bool {
+#[cfg(windows)]
+fn is_allowed_cloud_reparse_tag(tag: u32) -> bool {
+    const IO_REPARSE_TAG_NAME_SURROGATE_BIT: u32 = 0x2000_0000;
+    const IO_REPARSE_TAG_CLOUD: u32 = 0x9000_001A;
+    const IO_REPARSE_TAG_CLOUD_MASK: u32 = 0x0000_F000;
+    const IO_REPARSE_TAG_ONEDRIVE: u32 = 0x8000_0021;
+    (tag & IO_REPARSE_TAG_NAME_SURROGATE_BIT) == 0
+        && ((tag & !IO_REPARSE_TAG_CLOUD_MASK) == IO_REPARSE_TAG_CLOUD
+            || tag == IO_REPARSE_TAG_ONEDRIVE)
+}
+
+#[cfg(windows)]
+fn is_cloud_reparse_point(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    #[repr(C)]
+    struct Win32FindDataW {
+        file_attributes: u32,
+        creation_time: [u32; 2],
+        last_access_time: [u32; 2],
+        last_write_time: [u32; 2],
+        file_size_high: u32,
+        file_size_low: u32,
+        reserved0: u32,
+        reserved1: u32,
+        file_name: [u16; 260],
+        alternate_file_name: [u16; 14],
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FindFirstFileW(file_name: *const u16, find_file_data: *mut Win32FindDataW) -> isize;
+        fn FindClose(find_file: isize) -> i32;
+    }
+    let clean: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    if clean[..clean.len() - 1].contains(&0) {
+        return false;
+    }
+    let mut data = std::mem::MaybeUninit::<Win32FindDataW>::zeroed();
+    let handle = unsafe { FindFirstFileW(clean.as_ptr(), data.as_mut_ptr()) };
+    if handle == -1 {
+        return false;
+    }
+    let data = unsafe {
+        FindClose(handle);
+        data.assume_init()
+    };
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    (data.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        && is_allowed_cloud_reparse_tag(data.reserved0)
+}
+
+fn regular_metadata(path: &Path, metadata: &fs::Metadata) -> bool {
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return false;
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
+        if metadata.file_attributes() & 0x400 != 0 && !is_cloud_reparse_point(path) {
             return false;
         }
     }
+    #[cfg(not(windows))]
+    let _ = path;
     true
 }
 
-fn check_path(path: &Path) -> Result<(), String> {
+fn check_path(path: &Path) -> Result<bool, String> {
     // A selected image is a local regular file, not a UNC/network or device path.
     #[cfg(windows)]
     {
@@ -53,6 +109,7 @@ fn check_path(path: &Path) -> Result<(), String> {
             }
         }
     }
+    let mut has_cloud_reparse = false;
     let mut current = std::path::PathBuf::new();
     for component in path.components() {
         if matches!(component, Component::ParentDir) {
@@ -73,11 +130,15 @@ fn check_path(path: &Path) -> Result<(), String> {
         {
             use std::os::windows::fs::MetadataExt;
             if metadata.file_attributes() & 0x400 != 0 {
-                return Err("Image paths cannot contain reparse points".into());
+                if is_cloud_reparse_point(&current) {
+                    has_cloud_reparse = true;
+                } else {
+                    return Err("Image paths cannot contain reparse points".into());
+                }
             }
         }
     }
-    Ok(())
+    Ok(has_cloud_reparse)
 }
 
 /// Hydrate only explicit selected image paths. Non-image files are left to text tools.
@@ -100,10 +161,10 @@ pub fn prepare_attachments(attachments: &[AttachedContext]) -> Result<Vec<ImageI
         if inputs.len() >= MAX_IMAGES {
             return Err("Attach at most 4 images per message".into());
         }
-        check_path(path)?;
+        let cloud_reparse = check_path(path)?;
         let metadata = fs::symlink_metadata(path)
             .map_err(|e| format!("Cannot inspect selected image: {e}"))?;
-        if !regular_metadata(&metadata) {
+        if !regular_metadata(path, &metadata) {
             return Err("Selected image must be a regular file".into());
         }
         if metadata.len() > MAX_IMAGE_BYTES as u64 {
@@ -112,10 +173,12 @@ pub fn prepare_attachments(attachments: &[AttachedContext]) -> Result<Vec<ImageI
         let mut options = File::options();
         options.read(true);
         #[cfg(windows)]
-        {
+        if !cloud_reparse {
             use std::os::windows::fs::OpenOptionsExt;
             options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
         }
+        #[cfg(not(windows))]
+        let _ = cloud_reparse;
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -124,7 +187,7 @@ pub fn prepare_attachments(attachments: &[AttachedContext]) -> Result<Vec<ImageI
         let file = options
             .open(path)
             .map_err(|e| format!("Cannot open selected image: {e}"))?;
-        if !regular_metadata(&file.metadata().map_err(|e| e.to_string())?) {
+        if !regular_metadata(path, &file.metadata().map_err(|e| e.to_string())?) {
             return Err("Selected image must be a regular file".into());
         }
         check_path(path)?;
@@ -537,5 +600,15 @@ mod tests {
             let error = prepare_attachments(&[selected]).unwrap_err();
             assert!(error.contains("symbolic links") || error.contains("reparse points"));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_cloud_reparse_tags_distinguish_onedrive_from_surrogates() {
+        assert!(is_allowed_cloud_reparse_tag(0x9000_001A));
+        assert!(is_allowed_cloud_reparse_tag(0x9000_601A));
+        assert!(is_allowed_cloud_reparse_tag(0x8000_0021));
+        assert!(!is_allowed_cloud_reparse_tag(0xA000_000C));
+        assert!(!is_allowed_cloud_reparse_tag(0xA000_0003));
     }
 }

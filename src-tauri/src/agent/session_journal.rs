@@ -162,7 +162,10 @@ fn tool_grows(old: &super::types::ToolCallItem, new: &super::types::ToolCallItem
     let pending = old.status == "pending";
     let terminal = matches!(old.status.as_str(), "done" | "error" | "cancelled");
     if terminal {
-        return serde_json::to_value(old).ok() == serde_json::to_value(new).ok();
+        return serde_json::to_value(old)
+            .ok()
+            .zip(serde_json::to_value(new).ok())
+            .is_some_and(|(a, b)| a == b);
     }
     if !matches!(
         (old.status.as_str(), new.status.as_str()),
@@ -678,6 +681,7 @@ pub(super) async fn overlay(
         return Ok(true);
     }
     validate_messages(&record.run_id, &record.messages)?;
+    let mut changed = !committed;
     for message in record.messages {
         let old = data
             .messages
@@ -700,6 +704,7 @@ pub(super) async fn overlay(
             && (old.is_streaming == Some(true)
                 || old.run_status.as_deref().unwrap_or("").is_empty())
         {
+            changed = true;
             old.is_streaming = Some(false);
             old.run_status = Some("cancelled".into());
             for tool in old.tool_calls.iter_mut().flatten().chain(
@@ -730,7 +735,7 @@ pub(super) async fn overlay(
             }
         }
     }
-    Ok(true)
+    Ok(changed)
 }
 /// A final/legacy save may consume a sidecar only if it includes its complete
 /// progress. Never replace completed status with the sidecar's streaming flag.

@@ -137,8 +137,15 @@ pub async fn load_settings() -> Result<AgentSettings, String> {
     let content = match fs::read_to_string(settings_path()).await {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            save_settings(&defaults).await?;
-            return Ok(defaults);
+            let _guard = SETTINGS_LOCK.lock().await;
+            match fs::read_to_string(settings_path()).await {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    save_settings_unlocked(&defaults).await?;
+                    return Ok(defaults);
+                }
+                Err(error) => return Err(format!("Could not read settings: {error}")),
+            }
         }
         Err(error) => return Err(format!("Could not read settings: {error}")),
     };
@@ -203,6 +210,10 @@ static SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 
 pub async fn save_settings(settings: &AgentSettings) -> Result<(), String> {
     let _guard = SETTINGS_LOCK.lock().await;
+    save_settings_unlocked(settings).await
+}
+
+async fn save_settings_unlocked(settings: &AgentSettings) -> Result<(), String> {
     if settings.providers.is_empty() {
         return Err("At least one provider is required".into());
     }
@@ -315,6 +326,11 @@ async fn visit_session_directory(
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
+        let id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let _guard = session_io_lock(id).lock_owned().await;
         // Penanda penghapusan permanen mengalahkan sisa JSON, termasuk yang rusak.
         if fs::try_exists(path.with_extension("deleted"))
             .await
@@ -322,11 +338,6 @@ async fn visit_session_directory(
         {
             continue;
         }
-        let id = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        let _guard = session_io_lock(id).lock_owned().await;
         match read_session_file(&path, id).await {
             Ok(Some(session)) => {
                 #[cfg(test)]
@@ -411,6 +422,9 @@ async fn read_session_file(path: &Path, expected_id: &str) -> Result<Option<Sess
                 data.session.updated_at = chrono::Utc::now().timestamp_millis();
                 write_session_atomic(path, data).await?;
             }
+        } else if recover && !super::session_journal::is_active(path) {
+            repair_dirty_projections()?;
+            super::session_journal::clear(path).await?;
         }
     }
     Ok(data)
@@ -625,10 +639,26 @@ async fn recover_save_ack_file(
     {
         return Err("Committed save boundary mismatch; snapshot preserved".into());
     }
-    // Rebuild from hash-verified bytes, not a size/mtime cache hit. A real
-    // projection transaction and read must succeed before returning ANY cursor.
-    super::session_pages::cache_session(path, &data)?;
-    let page = super::session_pages::load_page(path, session_id, Some(0), 1, None)?;
+    // Claim recovery ownership before rebuilding so another session's
+    // repair_dirty_projections cannot invalidate this freshly built projection.
+    dirty_projections()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(path);
+    let rebuilt = (|| -> Result<SessionPage, String> {
+        super::session_pages::cache_session(path, &data)?;
+        super::session_pages::load_page(path, session_id, Some(0), 1, None)
+    })();
+    let page = match rebuilt {
+        Ok(page) => page,
+        Err(error) => {
+            dirty_projections()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(path.to_path_buf());
+            return Err(error);
+        }
+    };
     if path.with_extension("deleted").exists()
         || fs::read(path).await.map_err(|e| e.to_string())? != raw
     {
@@ -636,10 +666,6 @@ async fn recover_save_ack_file(
         return Err("Canonical changed during recovery; snapshot preserved".into());
     }
     super::session_journal::acknowledge_committed(path, &raw).await?;
-    dirty_projections()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(path);
     let window = SessionWindow {
         end: None,
         offset: proof.offset,
@@ -1062,6 +1088,13 @@ async fn save_session_unlocked_with_pin_policy(
 ) -> Result<(), String> {
     let path = session_path(&data.session.id)?;
     let stored = save_session_file(&path, data, pin_is_authoritative).await?;
+    if super::session_journal::path_for(&path).exists() {
+        page_at(&path, &stored.session.id, Some(0), 1, None)
+            .map_err(|e| CommittedSaveError::for_data(&stored, 0, e))?;
+        super::session_journal::clear(&path)
+            .await
+            .map_err(|e| CommittedSaveError::for_data(&stored, 0, e))?;
+    }
     let _ = super::search::index_session(&stored);
     Ok(())
 }
@@ -1236,14 +1269,17 @@ pub async fn rename_session(session_id: &str, title: &str) -> Result<SessionData
         return Err("Session title must not be empty".into());
     }
     let _guard = session_io_lock(session_id).lock_owned().await;
+    let path = session_path(session_id)?;
     let mut data = load_session_unlocked(session_id).await?;
     data.session.title = bounded_title(title);
-    save_session_unlocked_with_pin_policy(data, true).await?;
-    load_session_unlocked(session_id).await
+    let stored = save_session_file(&path, data, true).await?;
+    let _ = super::search::index_session(&stored);
+    Ok(stored)
 }
 
 pub async fn toggle_pin_session(session_id: &str) -> Result<Session, String> {
     let _guard = session_io_lock(session_id).lock_owned().await;
+    let path = session_path(session_id)?;
     let mut data = load_session_unlocked(session_id).await?;
     data.session.pinned = !data.session.pinned;
     if data.session.pinned {
@@ -1251,8 +1287,9 @@ pub async fn toggle_pin_session(session_id: &str) -> Result<Session, String> {
     } else {
         data.session.pinned_at = None;
     }
-    save_session_unlocked_with_pin_policy(data, true).await?;
-    Ok(load_session_unlocked(session_id).await?.session)
+    let stored = save_session_file(&path, data, true).await?;
+    let _ = super::search::index_session(&stored);
+    Ok(stored.session)
 }
 
 pub async fn delete_session(session_id: &str) -> Result<(), String> {
@@ -2398,6 +2435,9 @@ async fn save_session_page_file(
     let revision = page_at(path, &stored.session.id, Some(0), 1, None)
         .map(|p| p.window.revision)
         .map_err(|e| CommittedSaveError::for_data(&stored, window.offset, e))?;
+    super::session_journal::clear(path)
+        .await
+        .map_err(|e| CommittedSaveError::for_data(&stored, window.offset, e))?;
     Ok(SessionWindow {
         end: None,
         offset: window.offset,
@@ -2723,24 +2763,38 @@ async fn recover_session_journals(root: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.to_string()),
     };
+    let mut diagnostics = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("checkpoint") {
             continue;
         }
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or("Invalid checkpoint filename")?;
-        validate_safe_id(id)?;
-        let _guard = session_io_lock(id).lock_owned().await;
-        if path.with_extension("deleted").exists() {
-            super::session_journal::clear(&path.with_extension("json")).await?;
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            diagnostics.push(format!("{}: Invalid checkpoint filename", path.display()));
+            continue;
+        };
+        if let Err(error) = validate_safe_id(id) {
+            diagnostics.push(format!("{}: {error}", path.display()));
             continue;
         }
-        recover_session_journal_if_needed(&path.with_extension("json"), id).await?;
+        let _guard = session_io_lock(id).lock_owned().await;
+        if path.with_extension("deleted").exists() {
+            if let Err(error) = super::session_journal::clear(&path.with_extension("json")).await {
+                diagnostics.push(format!("{}: {error}", path.display()));
+            }
+            continue;
+        }
+        if let Err(error) =
+            recover_session_journal_if_needed(&path.with_extension("json"), id).await
+        {
+            diagnostics.push(format!("{}: {error}", path.display()));
+        }
     }
-    Ok(())
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics.join("\n"))
+    }
 }
 
 #[cfg(test)]
