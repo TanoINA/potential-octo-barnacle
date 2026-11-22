@@ -1,43 +1,33 @@
 # AetherAgent
 
-A desktop AI coding agent for Windows and Linux. You give it a folder on your machine, pick a model, and talk to it in chat. It can read and edit files, run shell commands, search the web, and render HTML previews in a sandbox pane.
+AetherAgent is a desktop coding agent for Windows and Linux built with Tauri 2, Rust, and React. You point it at a local project folder, pick an LLM provider, and work with the codebase from chat. The Rust backend runs file tools, shell commands, SQLite search and history storage, and MCP servers, while React drives the UI.
 
-The backend is written in Rust using Tauri 2. The frontend is a React single-page app with TypeScript and Tailwind CSS.
+## What it can do
 
-## Features
-
-- Local workspace tools: read, patch, create files, grep code, and execute terminal commands.
-- Live sandboxed preview: renders HTML and SVG artifacts in an isolated iframe.
-- Web search: searches the web and pulls page text directly into context when you need docs or external fixes.
-- Context mentions: type `@` in the composer to drop workspace files into context pills.
-- Auto-titling: automatically names new chat sessions after the first response.
-- Multiple providers: works with Anthropic, OpenAI, Ollama, Groq, OpenRouter, or any OpenAI-compatible API.
-- Extensibility: supports Model Context Protocol (MCP) servers, background subagents, and modular skills.
-- Local storage: conversations, prompt queues, and compaction summaries stay on your disk.
+- Work inside a local workspace: read, patch, create, and grep files, or run commands in an integrated shell.
+- Preview generated HTML and SVG artifacts in sandboxed iframes isolated from the app window.
+- Pull web search results and page text into the conversation, and use `@` mentions in the composer to attach workspace files or folders.
+- Talk to Anthropic, OpenAI, Ollama, Groq, OpenRouter, or custom OpenAI-compatible endpoints, with session auto-titling, prompt queues, and context compaction.
+- Add extra capabilities through stdio MCP servers, background subagents, and local `SKILL.md` skills. Starter guides seed into `~/.aether-agent/skills/` on first launch without overwriting anything you already have there.
 
 ## Requirements
 
 - Node.js 22.12 or newer
-- Rust stable
-- [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/) for your operating system
+- Stable Rust toolchain
+- [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/) for Windows or Linux
 
 ## Quick start
 
-Clone the repo and install dependencies:
+Clone the repo, install packages, and start the dev build:
 
 ```sh
 git clone https://github.com/TanoINA/potential-octo-barnacle.git
 cd potential-octo-barnacle
 npm ci
-```
-
-Run the desktop app in development mode:
-
-```sh
 npm run tauri -- dev
 ```
 
-Open Settings, choose an LLM provider (or point to local Ollama), pick a workspace folder, and start chatting.
+Once the window opens, go to Settings to pick a provider (or point at a local Ollama server), choose a workspace folder, and start a chat.
 
 ## Packaging
 
@@ -49,38 +39,36 @@ npm run tauri -- build --bundles nsis,msi -- --locked
 npm run tauri -- build --bundles deb,rpm,appimage -- --locked
 ```
 
-Binaries are placed in `src-tauri/target/release/`, and installer packages in `src-tauri/target/release/bundle/`. Local builds are unsigned. Details on signing and updates are in [docs/release.md](docs/release.md).
+Compiled binaries land in `src-tauri/target/release/`, and installers go to `src-tauri/target/release/bundle/`. Local builds are unsigned; see [docs/release.md](docs/release.md) for signing and auto-updater setup.
 
 ## Development and testing
 
 ```sh
-# Frontend unit tests
+# Frontend unit tests and production build
 npm test
-
-# Frontend build check
 npm run build
 
-# Backend unit tests
+# Backend Rust tests (on Windows, add -- --test-threads=1 if spawned shell tests time out under parallel load)
 cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
 ```
 
-### Directory layout
+Where things live:
 
-- `src/`: React UI, hooks, and test suites
-- `src-tauri/`: Rust runtime, Tauri commands, agent loop, tools, and SQLite storage
-- `scripts/`: Dev scripts and release checks
-- `docs/`: Architecture, conversation flow, and release guides
+- `src/`: React UI, hooks, and Vitest specs
+- `src-tauri/`: Rust backend, Tauri commands, agent loop, tools, and SQLite storage
+- `scripts/`: release policy checks and packaging verification scripts
+- `docs/`: architecture, UX, bundled skills, and release guides
+- `.aether/skills/`: source Markdown for starter skills bundled into the binary
 
 ## Data and privacy
 
-App configuration, keys, and session databases are stored in `~/.aether-agent/`. Workspace attachments stay inside `.aether-agent/` in the opened project folder. None of these folders or `.local/` build files are tracked by Git.
+Settings, provider credentials, global skills, and session databases stay on your machine in `~/.aether-agent/`. Workspace attachments stay in `.aether-agent/` inside the opened project. Git ignores both of those along with `.local/` (used for local test logs, fixture snapshots, and retained installers).
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Bundled skills](docs/bundled-skills.md)
 - [Conversation UX](docs/conversation-ux.md)
-- [Release guide](docs/release.md)
 - [Documentation index](docs/README.md)
+- [Release guide](docs/release.md)
 - [Changelog](CHANGELOG.md)
-
-New installations receive lightweight quality and web-development guides, including verification before completion, frontend design, browser testing, accessibility review, and React practices. Existing user skills are preserved. See [bundled skills](docs/bundled-skills.md) for the default set and tooling requirements.
