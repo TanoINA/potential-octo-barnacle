@@ -3,6 +3,7 @@ name = "aether-agent"
 version = "0.3.0"
 description = "Next-generation autonomous AI agent powered by Rust and Tauri 2"
 authors = ["Tano"]
+license = "MIT"
 edition = "2021"
 
 [lib]

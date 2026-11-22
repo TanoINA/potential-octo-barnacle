@@ -3,6 +3,7 @@
   "version": "0.3.0",
   "description": "Native Windows desktop AI coding agent built with Rust, Tauri 2, and React",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

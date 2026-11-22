@@ -1,62 +1,44 @@
 # Changelog
 
-All notable changes to AetherAgent are documented here.
+Notable changes to AetherAgent are listed here.
 
 ## [Unreleased]
 
+## [0.3.0-beta.1] - 2026-11-23
+
+Unsigned Windows pre-release focusing on security hardening, persistence reliability, and UI polish.
+
 ### Added
 
-- Bundled five lightweight quality and web guides: verification before completion, frontend design, web application testing, accessibility/usability review, and React best practices. Missing guides are seeded locally on startup without network downloads or new runtime dependencies; existing user skill files are preserved.
-
-- Per-session, per-workspace composer drafts retain text, selected skills, and attachments while the app stays open. Late send acknowledgements only clear the originating, unchanged draft.
-- Selected skill chips open an accessible preview with description, source, and path; missing metadata is explained without inventing instructions.
-- Background task cards can copy the original command, with clipboard success and error feedback.
-
-- **Web search improvements**: Domain scoping (`site:...`), direct page text extraction via `fetch_content`, instant-answer fallbacks, source chips in chat, and a `/search` slash command.
-- **Interactive questions**: An `ask_question` tool that renders multi-choice prompt cards directly in chat when the agent needs clarification.
-- **Auto-titling**: Sessions are automatically named after the first model response, with manual renames protected and `/title` available on demand.
-- **Context meter**: A visual gauge in the composer showing estimated context window usage.
-- **In-chat search**: In-session search (`Ctrl+F`) with match highlighting and keyboard navigation.
-- **Sidebar pinning**: Pin important chat sessions to the top of the sidebar.
-- **New slash commands**: Added `/goal` for unattended task runs and `/grill-me` for design alignment interviews.
-- **Settings enhancements**: Provider setup improvements, agent defaults, live MCP server connection testing, and dirty guards for unsaved changes.
+- Five bundled quality and web guides (`verification-before-completion`, `frontend-design`, `webapp-testing`, `web-design-guidelines`, and `react-best-practices`) seeded on first launch without touching existing user skills or downloading extra tools.
+- Per-session, per-workspace composer drafts that retain text, selected skills, and attachments until their originating send finishes, along with clickable skill metadata popovers and command copy buttons on background task cards.
+- Domain scoping (`site:...`), optional `fetch_content` page text extraction, instant-answer fallbacks, clickable source chips, and `/search` for web lookups.
+- Multi-choice `ask_question` cards in chat, session auto-titling after the first model reply (leaving manual renames intact) plus `/title`, a context usage meter, `Ctrl+F` in-chat search, sidebar pinning, `/goal`, and `/grill-me`.
+- Settings controls for provider presets, optional main-agent turn limits, live MCP server checks, and unsaved-change guards.
 
 ### Fixed & Improved
 
-- SVG artifact previews now render inside a `<iframe sandbox="">` instead of raw inline DOM markup, HTML previews drop `allow-modals` and `allow-forms`, Tauri enforces an explicit Content Security Policy, and markdown and native file openers reject obfuscated script URLs and UNC/device targets.
-- Workspace and network checks now block local `64:ff9b:1::/48` NAT64 and Teredo client bypasses, reject dangling symlinks in `resolve_workspace_path`, preserve Windows cloud placeholders for valid image files, keep workspace symlinks intact in Git file actions, and tear down child process trees on both Windows and Unix.
-- SQLite search now indexes message segments and terminal output without attaching the session title to every message row, session recovery checks all corrupt checkpoints while clearing dirty projections cleanly, and session title updates serialize against persistence instead of racing saves.
-- History preview now blocks composer sends, file drops, pastes, and mutating context menu actions; `MessageRow`, `SettingsModal`, `ChatCanvas`, and `TimelineScrubber` fix hook ordering and skip redundant work on streaming updates.
-- Removed unused `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-shell`, `clsx`, and `tailwind-merge` packages along with their unused Rust Tauri plugins and capabilities, and added the Rust library test suite to the Windows CI quality job.
-- Duplicate clarification cards no longer appear when the same `ask_question` call is stored in both a message's tool list and its transcript segment.
-- Main-agent turns now default to unlimited, with an optional validated maximum in Settings. Explicit saved limits are preserved, including values above 200; cancellation, tool approvals, retries, and separate subagent limits remain unchanged.
-
-- Refined the chat welcome layout, grouped the empty prompt with its composer, and added workspace-aware folder opening. Removed duplicate model labels, clarified reasoning and execution controls, and cleaned Markdown from sidebar previews while preserving safe search highlights.
-
-- Background tasks remain `stopping` until process-tree cleanup completes; repeated stop requests stay idempotent and stopping tasks still count as active.
-- Selecting a slash skill removes only its token, preserving surrounding draft text and cursor position.
-- Activity tray interaction tests use small fixtures separately from the 100-item stress and navigation checks.
-- **Concurrent MCP startup**: MCP servers now initialize concurrently at launch rather than sequentially.
-- **SQLite WAL mode**: Enabled Write-Ahead Logging and busy timeouts for smoother database read and write concurrency.
-- **Session cleanup**: Deleting a session now cancels its active background tasks and cleans up task tracking.
-- **Session titles**: Manually edited session names are flagged so auto-titling will not overwrite them.
-- **Environment file parsing**: Improved `.env` parser to cleanly handle Windows CRLF line endings and escaped characters.
-- **Search performance**: Added limits and pagination to SQLite full-text search queries.
-- **Codebase cleanup**: Modularized the chat header into a dedicated component and cached compiled regexes in tools.
-- **Documentation**: Refined and simplified guides across the repository for clearer developer onboarding and release procedures.
+- SVG artifact previews now render inside an empty-sandbox iframe instead of raw DOM markup, HTML previews drop `allow-modals` and `allow-forms`, Tauri enforces an explicit Content Security Policy, and markdown and native openers block obfuscated script URLs and UNC/device targets.
+- Network and filesystem validation now blocks local `64:ff9b:1::/48` NAT64 and Teredo client IPv6 bypasses, rejects dangling symlinks in `resolve_workspace_path`, accepts Windows cloud-placeholder tags on real image files, keeps workspace symlinks intact during Git file actions, and tears down full child process trees on both Windows and Unix.
+- SQLite full-text search uses WAL mode with busy timeouts, indexes message segments and terminal output without attaching the session title to every message row, and paginates queries within a bounded result budget.
+- Session recovery checks every `.checkpoint` file and repairs dirty projections without bumping timestamps, serialized persistence stops auto-title updates from racing final saves, and deleting a session cancels its running background tasks.
+- History preview blocks composer sends, drops, pastes, and mutating context menu actions; `MessageRow`, `SettingsModal`, `ChatCanvas`, and `TimelineScrubber` fix hook ordering, track MCP env edits as dirty, and trim redundant work during streaming.
+- MCP stdio servers initialize concurrently at launch, `.env` parsing handles CRLF line endings and escapes, `ask_question` calls no longer duplicate between tool lists and segments, background tasks stay `stopping` until process-tree cleanup completes, and main-agent turns default to unlimited (`maxTurns = 0`).
+- Removed unused `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-shell`, `clsx`, `tailwind-merge`, and their unused Rust plugins and capabilities; added Rust unit tests to the Windows CI quality matrix, added an MIT `LICENSE` and `SECURITY.md`, and simplified documentation.
 
 ## [0.3.0] - 2026-11-09
 
 ### Added
-- **Session history pagination**: Large sessions load lazily with virtualized scroll anchors, keeping initial load times fast without truncating disk history or context.
-- **Self-improvement reviews**: Native Rust review loop that inspects completed sessions and patches or creates local skills, with optional user approval.
-- **Multimodal attachments**: Native image pickers, drag-and-drop, clipboard paste, and image previews with provider-specific payload formatting.
-- **LaTeX math support**: Clean math rendering using remark-math and KaTeX for inline and block formulas.
-- **Queue and controls**: Prompt queue with immediate send, editing, and removal controls, plus per-session status indicators.
-- **Offline release verification**: Tools to verify Windows Authenticode signatures, minisign updater signatures, and SHA-256 hashes before installation.
+
+- Lazy session history pagination with virtualized scroll anchors so long sessions open quickly without dropping disk history or model context.
+- Native Rust self-improvement review loop that inspects completed sessions and proposes or updates local skills with optional approval.
+- Native image pickers, drag-and-drop, clipboard paste, and image previews formatted per provider.
+- Inline and block math rendering via `remark-math` and KaTeX.
+- Prompt queue controls for immediate send, editing, and removal alongside per-session activity status.
+- Release verification scripts checking Windows Authenticode signatures, minisign updater signatures, and SHA-256 hashes before installation.
 
 ### Changed
 
-- Refined the UI layout: simplified header hierarchy, cleaner composer footer, and reduced motion options.
-- Switched session persistence to atomic replacement writes with recovery checkpoint sidecars.
-- Hardened tool execution against directory traversal and symlink escapes.
+- Simplified the chat header hierarchy, composer footer, and reduced-motion styles.
+- Switched session writes to atomic replacement with checkpoint sidecars.
+- Tightened tool path checks against directory traversal and symlink escapes.

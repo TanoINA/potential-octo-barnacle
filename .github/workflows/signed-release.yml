@@ -1,7 +1,9 @@
 name: Signed release candidate
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
+      - '!v*-*'
   workflow_dispatch:
     inputs:
       tag:
