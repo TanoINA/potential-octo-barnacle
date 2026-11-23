@@ -52,6 +52,7 @@ jobs:
             libfuse2t64
       - run: npm ci
       - run: npm test
+      - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
       - name: Build unsigned Linux packages (AppImage, DEB, RPM)
         env:
