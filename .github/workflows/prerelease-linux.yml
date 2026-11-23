@@ -1,0 +1,89 @@
+name: Pre-release Linux bundles
+on:
+  push:
+    tags:
+      - 'v*-*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref or commit SHA to build (defaults to triggering ref)
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: prerelease-linux-${{ github.event.inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  linux:
+    if: github.repository == 'TanoINA/potential-octo-barnacle'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Ubuntu 24.04 Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm \
+            squashfs-tools \
+            xdg-utils \
+            desktop-file-utils \
+            libfuse2t64
+      - run: npm ci
+      - run: npm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+      - name: Build unsigned Linux packages (AppImage, DEB, RPM)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
+        run: npm run tauri -- build --config src-tauri/tauri.linux.conf.json --bundles appimage,deb,rpm -- --locked
+      - name: Verify package metadata and collect Linux artifacts
+        shell: bash
+        env:
+          OUT_DIR: ${{ runner.temp }}/prerelease-linux-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { expectedArtifacts, inspectLinux } from './scripts/release-pipeline.mjs';
+          const out = process.env.OUT_DIR;
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+          for (const { kind, file } of expectedArtifacts(tauri.productName, pkg.version, 'linux-x86_64')) {
+            const src = path.join('src-tauri/target/release/bundle', kind, file);
+            const meta = inspectLinux(src, kind, pkg.version);
+            console.log(`${file}:`, JSON.stringify(meta));
+            fs.copyFileSync(src, path.join(out, file));
+            if (kind === 'appimage') fs.chmodSync(path.join(out, file), 0o755);
+          }
+          JS
+          (cd "$OUT_DIR" && LC_ALL=C sha256sum AetherAgent* > SHA256SUMS-linux.txt && cat SHA256SUMS-linux.txt)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prerelease-linux-x86_64
+          path: ${{ runner.temp }}/prerelease-linux-${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: error
+          retention-days: 30

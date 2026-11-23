@@ -6,7 +6,7 @@ Notable changes to AetherAgent are listed here.
 
 ## [0.3.0-beta.1] - 2026-11-23
 
-Unsigned Windows pre-release focusing on security hardening, persistence reliability, and UI polish.
+Unsigned Windows and Linux pre-release focusing on security hardening, persistence reliability, and UI polish.
 
 ### Added
 

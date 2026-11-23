@@ -8,5 +8,5 @@ Include the affected file or feature, reproduction steps, and what happens versu
 
 ## Scope notes for pre-release builds
 
-- Pre-release Windows installers (`v*-beta*`) are built unsigned, so Windows SmartScreen will show an unknown-publisher warning. Compare the downloaded file's SHA-256 hash against the checksum published with the release before running it.
+- Pre-release installers (`v*-beta*`) on Windows and Linux are built unsigned; Windows SmartScreen will show an unknown-publisher warning. Compare downloaded files against the `SHA256SUMS.txt` checksums published with the release before installing or running them.
 - Code inside the experimental `rune/` directory is not part of the Tauri desktop release build.
