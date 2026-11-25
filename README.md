@@ -5,7 +5,8 @@ AetherAgent is a desktop coding agent for Windows and Linux built with Tauri 2, 
 ## What it can do
 
 - Work inside a local workspace: read, patch, create, and grep files, or run commands in an integrated shell.
-- Preview generated HTML and SVG artifacts in sandboxed iframes isolated from the app window.
+- Dock and resize the side pane on desktop to read code, inspect diffs, or run commands side by side, and preview HTML and SVG artifacts in sandboxed iframes isolated from the app window.
+- Switch between five built-in dark and light themes from Settings, the sidebar, or the bottom status bar.
 - Pull web search results and page text into the conversation, and use `@` mentions in the composer to attach workspace files or folders.
 - Talk to Anthropic, OpenAI, Ollama, Groq, OpenRouter, or custom OpenAI-compatible endpoints, with session auto-titling, prompt queues, and context compaction.
 - Add extra capabilities through stdio MCP servers, background subagents, and local `SKILL.md` skills. Starter guides seed into `~/.aether-agent/skills/` on first launch without overwriting anything you already have there.

@@ -118,7 +118,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
             type="button"
             onClick={requestClose}
             aria-label="Close workspace memory"
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-white"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[var(--ui-text-primary)]"
           >
             <X size={14} />
           </button>
@@ -147,7 +147,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-[#30363d] rounded-xl p-8 text-center bg-[#0d1117]/50 space-y-3">
               <FileEdit size={32} className="text-[#6e7681]" />
-              <div className="text-sm font-medium text-white">No AGENTS.md instructions found</div>
+              <div className="text-sm font-medium text-[var(--ui-text-primary)]">No AGENTS.md instructions found</div>
               <p className="max-w-md text-xs text-[#8b949e]">
                 {workspaceCwd
                   ? `Your workspace (${workspaceCwd}) does not have an AGENTS.md instruction file yet. Generate one tailored to your tech stack.`
@@ -176,7 +176,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({
             <button
               type="button"
               onClick={requestClose}
-              className="rounded-md border border-[#30363d] bg-[#161b22] px-3 py-1.5 text-xs text-[#8b949e] hover:text-white"
+              className="rounded-md border border-[#30363d] bg-[#161b22] px-3 py-1.5 text-xs text-[#8b949e] hover:text-[var(--ui-text-primary)]"
             >
               Close
             </button>

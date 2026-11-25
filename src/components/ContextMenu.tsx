@@ -1035,8 +1035,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                           ? 'bg-[#b62324]/30 text-[#ff7b72]'
                           : 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
                         : isActiveSub || isFocused
-                        ? 'bg-[#21262d] text-white'
-                        : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-white'
+                        ? 'bg-[#21262d] text-[var(--ui-text-primary)]'
+                        : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-[var(--ui-text-primary)]'
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0">
@@ -1099,8 +1099,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                         ? 'bg-[#b62324]/30 text-[#ff7b72]'
                         : 'text-[#f85149] hover:bg-[#b62324]/20 hover:text-[#ff7b72]'
                       : isSubFocused
-                      ? 'bg-[#21262d] text-white'
-                      : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-white'
+                      ? 'bg-[#21262d] text-[var(--ui-text-primary)]'
+                      : 'text-[#c9d1d9] hover:bg-[#21262d] hover:text-[var(--ui-text-primary)]'
                   }`}
                 >
                 <div className="flex items-center gap-2 min-w-0">

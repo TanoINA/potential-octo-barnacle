@@ -43,23 +43,23 @@ const markdownComponents: Components = {
     return <p className="mb-2.5 last:mb-0 leading-6">{children}</p>;
   },
   strong({ children }) {
-    return <strong className="font-semibold text-white">{children}</strong>;
+    return <strong className="font-semibold text-[var(--ui-text-primary)]">{children}</strong>;
   },
   em({ children }) {
-    return <em className="italic text-[#c9d1d9]">{children}</em>;
+    return <em className="italic text-[var(--ui-text-secondary)]">{children}</em>;
   },
   ul({ children }) {
-    return <ul className="list-disc list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ul>;
+    return <ul className="mb-2.5 ml-5 list-disc list-outside space-y-1 text-[var(--ui-text-primary)]">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="list-decimal list-outside ml-5 mb-2.5 space-y-1 text-[#e6edf3]">{children}</ol>;
+    return <ol className="mb-2.5 ml-5 list-decimal list-outside space-y-1 text-[var(--ui-text-primary)]">{children}</ol>;
   },
   li({ children }) {
     return <li className="leading-6 pl-1">{children}</li>;
   },
   blockquote({ children }) {
     return (
-      <blockquote className="border-l-2 border-[#58a6ff] pl-3 py-1 italic text-[#8b949e] my-2.5 bg-[#0d1117]/50 rounded-r">
+      <blockquote className="my-2.5 rounded-r border-l-2 border-[var(--ui-accent)] bg-[var(--ui-widget-bg)] py-1.5 pl-3 pr-2 italic text-[var(--ui-text-secondary)]">
         {children}
       </blockquote>
     );
@@ -103,60 +103,60 @@ const markdownComponents: Components = {
         onClick={handleClick}
         data-file-link="true"
         data-file-path={href}
-        className="inline-flex items-center gap-1 font-medium text-[#58a6ff] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[#79c0ff]"
+        className="inline-flex items-center gap-1 font-medium text-[var(--ui-accent)] hover:underline underline-offset-2 break-all cursor-pointer transition-colors hover:text-[var(--ui-accent-hover)]"
         title={isWeb ? `Open web link: ${href ?? ''}` : `Open file: ${href ?? ''}`}
       >
         {children}
         {isWeb ? (
           <ExternalLink size={11} className="shrink-0 opacity-70" />
         ) : (
-          <FileText size={11} className="shrink-0 opacity-70 text-[#a371f7]" />
+          <FileText size={11} className="shrink-0 opacity-70 text-[var(--ui-purple)]" />
         )}
       </a>
-      {error && <span role="alert" className="block text-xs text-[#f85149]">Could not open link: {error}</span>}
+      {error && <span role="alert" className="block text-xs text-[var(--ui-red)]">Could not open link: {error}</span>}
       </>
     );
   },
   h1({ children }) {
-    return <h1 className="text-base font-bold text-white mt-4 mb-2 pb-1 border-b border-[#30363d]">{children}</h1>;
+    return <h1 className="mt-4 mb-2 border-b border-[var(--ui-stroke-tertiary)] pb-1 text-base font-bold text-[var(--ui-text-primary)]">{children}</h1>;
   },
   h2({ children }) {
-    return <h2 className="text-sm font-semibold text-white mt-3.5 mb-1.5">{children}</h2>;
+    return <h2 className="mt-3.5 mb-1.5 text-sm font-semibold text-[var(--ui-text-primary)]">{children}</h2>;
   },
   h3({ children }) {
-    return <h3 className="text-xs font-semibold text-[#58a6ff] mt-3 mb-1">{children}</h3>;
+    return <h3 className="mt-3 mb-1 text-xs font-semibold text-[var(--ui-accent)]">{children}</h3>;
   },
   hr() {
-    return <hr className="border-t border-[#30363d] my-3" />;
+    return <hr className="my-3 border-t border-[var(--ui-stroke-tertiary)]" />;
   },
   table({ children }) {
     return (
-      <div className="overflow-x-auto my-3 rounded-lg border border-[#30363d] bg-[#0d1117] shadow-sm">
+      <div className="my-3 overflow-x-auto rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-code-bg)]">
         <table className="w-full text-left border-collapse text-xs select-text">{children}</table>
       </div>
     );
   },
   thead({ children }) {
-    return <thead className="bg-[#161b22] border-b border-[#30363d] text-[#8b949e] font-semibold tracking-wider text-[11px] uppercase">{children}</thead>;
+    return <thead className="border-b border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] text-[11px] font-semibold uppercase tracking-wider text-[var(--ui-text-tertiary)]">{children}</thead>;
   },
   tbody({ children }) {
-    return <tbody className="divide-y divide-[#30363d]/50 bg-[#0d1117]">{children}</tbody>;
+    return <tbody className="divide-y divide-[var(--ui-stroke-quaternary)] bg-[var(--ui-code-bg)]">{children}</tbody>;
   },
   tr({ children }) {
-    return <tr className="even:bg-[#161b22]/30 hover:bg-[#1f242c]/50 transition-colors">{children}</tr>;
+    return <tr className="transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)]">{children}</tr>;
   },
   th({ children, style }) {
-    return <th style={style} className="px-3.5 py-2.5 text-xs font-semibold text-[#c9d1d9] border-b border-[#30363d]">{children}</th>;
+    return <th style={style} className="border-b border-[var(--ui-stroke-tertiary)] px-3.5 py-2.5 text-xs font-semibold text-[var(--ui-text-secondary)]">{children}</th>;
   },
   td({ children, style }) {
-    return <td style={style} className="px-3.5 py-2 text-xs text-[#e6edf3] leading-5">{children}</td>;
+    return <td style={style} className="px-3.5 py-2 text-xs leading-5 text-[var(--ui-text-primary)]">{children}</td>;
   },
   code({ className, children, ...props }) {
     const isInline = !className && !String(children).includes('\n');
     if (isInline) {
       return (
         <code
-          className="bg-[#0d1117] text-[#79c0ff] px-1.5 py-0.5 rounded font-mono text-[12px] border border-[#30363d]/70 font-normal"
+          className="rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-1.5 py-0.5 font-mono text-[12px] font-normal text-[var(--ui-accent)]"
           {...props}
         >
           {children}
@@ -173,7 +173,7 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
   const cleanedContent = useMemo(() => normalizeMathDelimiters(stripProseEmojis(content)), [content]);
 
   return (
-    <div className="markdown-content text-[13px] leading-6 select-text text-[#e6edf3]">
+    <div className="markdown-content text-[13.5px] leading-[1.65] select-text text-[var(--ui-text-primary)]">
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
@@ -224,20 +224,20 @@ function CodeBlock({ codeText, className }: { codeText: string; className?: stri
       data-code-block="true"
       data-code-lang={lang}
       data-code-content={safeEncodeURIComponent(codeText)}
-      className="relative my-3 rounded-xl bg-[#0d1117] border border-[#30363d] overflow-hidden group shadow-sm"
+      className="group relative my-3 overflow-hidden rounded-xl border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-code-bg)]"
     >
-      <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#161b22] border-b border-[#30363d] text-[11px] text-[#8b949e] font-mono">
+      <div className="flex items-center justify-between border-b border-[var(--ui-stroke-quaternary)] bg-[var(--ui-widget-bg)] px-3.5 py-1.5 font-mono text-[11px] text-[var(--ui-text-tertiary)]">
         <span>{lang || 'code'}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 text-[#8b949e] hover:text-[#e6edf3] transition-colors"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[var(--ui-text-tertiary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]"
           title="Copy code"
         >
-          {copied ? <Check className="w-3.5 h-3.5 text-[#3fb950]" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? <Check className="w-3.5 h-3.5 text-[var(--ui-green)]" /> : <Copy className="w-3.5 h-3.5" />}
           <span>{copied ? 'Copied' : 'Copy'}</span>
         </button>
       </div>
-      <pre className="p-3.5 overflow-x-auto text-xs font-mono leading-5 text-[#e6edf3]">
+      <pre className="p-3.5 overflow-x-auto text-xs font-mono leading-5 text-[var(--ui-text-primary)]">
         <code>{codeText}</code>
       </pre>
     </div>

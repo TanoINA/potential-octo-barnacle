@@ -170,7 +170,7 @@ export const InteractiveTerminal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => copyEntry(entry.id, entry.stdout || entry.stderr)}
-                  className="rounded p-0.5 text-[#8b949e] opacity-0 transition-opacity hover:text-white focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#58a6ff] group-hover:opacity-100"
+                  className="rounded p-0.5 text-[#8b949e] opacity-0 transition-opacity hover:text-[var(--ui-text-primary)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#58a6ff] group-hover:opacity-100"
                   title={copiedId === entry.id ? 'Output copied' : 'Copy output'}
                   aria-label={copiedId === entry.id ? 'Output copied' : `Copy output for ${entry.command}`}
                 >

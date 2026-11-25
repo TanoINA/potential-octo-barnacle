@@ -54,26 +54,26 @@ export const InteractiveQuestionCard: React.FC<InteractiveQuestionCardProps> = (
 
   return (
     <div
-      className="my-3 overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] shadow-sm max-w-2xl text-xs"
+      className="my-3 overflow-hidden rounded-xl border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] max-w-2xl text-xs"
       data-testid="interactive-question-card"
     >
-      <div className="flex items-center gap-2 border-b border-[#30363d]/60 bg-[#161b22] px-3.5 py-2.5">
-        <HelpCircle size={14} className="text-[#58a6ff] shrink-0" />
-        <span className="font-semibold text-[#f0f6fc]">Clarification Needed</span>
-        <span className="rounded-full bg-[#21262d] px-2 py-0.5 font-mono text-[10px] text-[#8b949e]">
+      <div className="flex items-center gap-2 border-b border-[var(--ui-stroke-quaternary)] bg-[var(--ui-widget-bg)] px-3.5 py-2.5">
+        <HelpCircle size={14} className="text-[var(--ui-accent)] shrink-0" />
+        <span className="font-semibold text-[var(--ui-text-primary)]">Clarification Needed</span>
+        <span className="rounded-full bg-[var(--ui-control-fill)] px-2 py-0.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
           {questions.length} {questions.length === 1 ? 'question' : 'questions'}
         </span>
       </div>
 
-      <div className="divide-y divide-[#30363d]/40 p-3.5 space-y-3.5">
+      <div className="divide-y divide-[var(--ui-stroke-quaternary)] p-3.5 space-y-3.5">
         {questions.map((q, qIndex) => {
           const isMulti = Boolean(q.is_multi_select);
           const chosen = selectedAnswers[qIndex] || [];
 
           return (
             <div key={qIndex} className={qIndex > 0 ? 'pt-3' : ''}>
-              <div className="mb-2 font-medium text-[#e6edf3] text-[13px] leading-snug">
-                {questions.length > 1 && <span className="text-[#8b949e] mr-1.5">{qIndex + 1}.</span>}
+              <div className="mb-2 font-medium text-[var(--ui-text-primary)] text-[13px] leading-snug">
+                {questions.length > 1 && <span className="text-[var(--ui-text-tertiary)] mr-1.5">{qIndex + 1}.</span>}
                 {q.question}
               </div>
 
@@ -87,13 +87,13 @@ export const InteractiveQuestionCard: React.FC<InteractiveQuestionCardProps> = (
                       type="button"
                       disabled={disabled || submitted}
                       onClick={() => handleToggleOption(qIndex, opt, isMulti)}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all ${
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors duration-100 hover:transition-none ${
                         isSelected
-                          ? 'border-[#58a6ff] bg-[#1f6feb]/20 text-[#58a6ff] shadow-sm'
-                          : 'border-[#30363d] bg-[#21262d] text-[#c9d1d9] hover:border-[#58a6ff]/60 hover:bg-[#30363d] hover:text-[#f0f6fc]'
+                          ? 'border-[var(--ui-accent)] bg-[var(--ui-row-active)] text-[var(--ui-accent)]'
+                          : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] text-[var(--ui-text-secondary)] hover:border-[var(--ui-accent)]/60 hover:bg-[var(--ui-control-hover)] hover:text-[var(--ui-text-primary)]'
                       } ${disabled || submitted ? 'opacity-70 cursor-default' : 'cursor-pointer active:scale-[0.98]'}`}
                     >
-                      {isSelected && <Check size={12} className="shrink-0 text-[#58a6ff]" />}
+                      {isSelected && <Check size={12} className="shrink-0 text-[var(--ui-accent)]" />}
                       <span>{opt}</span>
                     </button>
                   );
@@ -106,7 +106,7 @@ export const InteractiveQuestionCard: React.FC<InteractiveQuestionCardProps> = (
                     type="button"
                     disabled={disabled || submitted || chosen.length === 0}
                     onClick={() => handleMultiSubmit(qIndex)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#238636] px-3 py-1 text-xs font-medium text-white hover:bg-[#2ea043] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--ui-accent)] px-3 py-1 text-xs font-medium text-[var(--ui-accent-fg)] transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Send size={12} />
                     <span>Submit selection</span>
@@ -119,7 +119,7 @@ export const InteractiveQuestionCard: React.FC<InteractiveQuestionCardProps> = (
       </div>
 
       {submitted && (
-        <div className="border-t border-[#30363d]/60 bg-[#0d1117] px-3.5 py-1.5 text-[11px] text-[#3fb950] font-medium flex items-center gap-1.5">
+        <div className="border-t border-[var(--ui-stroke-quaternary)] bg-[var(--ui-bg-chrome)] px-3.5 py-1.5 text-[11px] text-[var(--ui-green)] font-medium flex items-center gap-1.5">
           <Check size={12} />
           <span>Choice submitted to agent</span>
         </div>

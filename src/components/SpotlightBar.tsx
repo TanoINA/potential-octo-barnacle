@@ -65,10 +65,10 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
       {/* Click outside to close */}
       <div className="absolute inset-0" onClick={onClose} />
 
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Spotlight command prompt" tabIndex={-1} className="ui-panel-enter relative w-full max-w-xl mx-4 overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22] shadow-lg ring-1 ring-white/10">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Spotlight command prompt" tabIndex={-1} className="ui-panel-enter relative w-full max-w-xl mx-4 overflow-hidden rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] shadow-lg">
         {/* Top Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-[#30363d]/80 bg-[#0d1117]/80">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#30363d] bg-[#161b22]">
+        <div className="flex items-center gap-3 border-b border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-chrome)] px-4 py-3.5">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)]">
             <AetherLogo size={16} />
           </div>
           <input
@@ -78,19 +78,19 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask AetherAgent anything or quick command... (Alt+Space)"
-            className="flex-1 bg-transparent text-sm text-[#e6edf3] placeholder:text-[#6e7681] outline-none"
+            className="flex-1 bg-transparent text-sm text-[var(--ui-text-primary)] placeholder:text-[var(--ui-text-quaternary)] outline-none"
           />
           {query ? (
             <button
               type="button"
               onClick={() => void handleSubmit()}
-              className="flex items-center gap-1 rounded bg-[#1f6feb] px-2.5 py-1 text-xs font-medium text-white hover:bg-[#388bfd]"
+              className="flex items-center gap-1 rounded bg-[var(--ui-accent)] px-2.5 py-1 text-xs font-medium text-[var(--ui-accent-fg)] hover:opacity-90"
             >
               <span>Ask</span>
               <CornerDownLeft size={11} />
             </button>
           ) : (
-            <span className="rounded bg-[#21262d] px-1.5 py-0.5 font-mono text-[10px] text-[#8b949e]">
+            <span className="rounded bg-[var(--ui-control-fill)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
               ESC to close
             </span>
           )}
@@ -98,7 +98,7 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
 
         {/* Quick Action List */}
         <div className="p-2 space-y-1">
-          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e7681]">
+          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-quaternary)]">
             Suggested Actions
           </div>
           {QUICK_ACTIONS.map((action, idx) => {
@@ -110,17 +110,17 @@ export const SpotlightBar: React.FC<SpotlightBarProps> = ({
                 type="button"
                 onClick={() => void handleSubmit(action.prompt)}
                 onMouseEnter={() => setSelectedIndex(idx)}
-                className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${
+                className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors duration-100 hover:transition-none ${
                   isSelected
-                    ? 'bg-[#1f6feb]/15 text-[#58a6ff]'
-                    : 'text-[#c9d1d9] hover:bg-[#21262d]'
+                    ? 'bg-[var(--ui-row-active)] text-[var(--ui-accent)]'
+                    : 'text-[var(--ui-text-secondary)] hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]'
                 }`}
               >
                 <div className="flex items-center gap-2.5">
-                  <Icon size={14} className={isSelected ? 'text-[#58a6ff]' : 'text-[#8b949e]'} />
+                  <Icon size={14} className={isSelected ? 'text-[var(--ui-accent)]' : 'text-[var(--ui-text-tertiary)]'} />
                   <span>{action.label}</span>
                 </div>
-                <div className="flex items-center gap-1 text-[10px] text-[#6e7681]">
+                <div className="flex items-center gap-1 text-[10px] text-[var(--ui-text-quaternary)]">
                   <span>Run</span>
                   <ArrowRight size={10} />
                 </div>

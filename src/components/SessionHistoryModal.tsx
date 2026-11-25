@@ -137,7 +137,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close session history"
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-white"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-[#30363d] bg-[#161b22] text-[#8b949e] hover:text-[var(--ui-text-primary)]"
           >
             <X size={14} />
           </button>
@@ -173,7 +173,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
           {/* Session Overview */}
           <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3 space-y-1.5">
             <div className="text-[11px] font-semibold text-[#8b949e]">SESSION TITLE</div>
-            <div className="font-mono text-sm text-white font-medium truncate">{sessionTitle || 'New Chat'}</div>
+            <div className="font-mono text-sm text-[var(--ui-text-primary)] font-medium truncate">{sessionTitle || 'New Chat'}</div>
             <div className="text-[10px] text-[#6e7681] font-mono">ID: {sessionId}</div>
           </div>
 
@@ -181,7 +181,7 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3 text-center">
               <div className="text-[10px] text-[#8b949e] uppercase font-semibold">Total Turns</div>
-              <div className="mt-1 font-mono text-xl font-bold text-white">{stats.userTurns}</div>
+              <div className="mt-1 font-mono text-xl font-bold text-[var(--ui-text-primary)]">{stats.userTurns}</div>
               <div className="text-[9px] text-[#6e7681]">{stats.userTurns} user · {stats.assistantTurns} agent</div>
             </div>
             <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3 text-center">
@@ -256,21 +256,21 @@ export const SessionHistoryModal: React.FC<SessionHistoryModalProps> = ({
             <button
               type="button"
               onClick={() => { onClose(); onExport('html'); }}
-              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-white transition-colors"
+              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-[var(--ui-text-primary)] transition-colors"
             >
               <Download size={12} /> HTML
             </button>
             <button
               type="button"
               onClick={() => { onClose(); onExport('markdown'); }}
-              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-white transition-colors"
+              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-[var(--ui-text-primary)] transition-colors"
             >
               <Download size={12} /> Markdown
             </button>
             <button
               type="button"
               onClick={() => { onClose(); onExport('json'); }}
-              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-white transition-colors"
+              className="flex items-center gap-1 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 py-1.5 text-xs text-[#8b949e] hover:text-[var(--ui-text-primary)] transition-colors"
             >
               <Download size={12} /> JSON
             </button>

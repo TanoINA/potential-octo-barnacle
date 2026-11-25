@@ -33,6 +33,42 @@ export function App() {
   const [liveShellOpen, setLiveShellOpen] = useState(false);
   const isNarrowViewport = useIsNarrowViewport();
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowViewport);
+  const [rightPaneWidth, setRightPaneWidth] = useState<number>(() => {
+    try {
+      const saved = Number(window.localStorage.getItem('aether.rightPaneWidth'));
+      return Number.isFinite(saved) && saved >= 280 ? Math.min(720, saved) : 420;
+    } catch {
+      return 420;
+    }
+  });
+  const [isResizingRightPane, setIsResizingRightPane] = useState(false);
+
+  useEffect(() => {
+    if (!isResizingRightPane) return;
+    const onMove = (event: MouseEvent) => {
+      const max = Math.min(720, Math.floor(window.innerWidth * 0.55));
+      const next = Math.max(280, Math.min(max, window.innerWidth - event.clientX));
+      setRightPaneWidth(Math.round(next));
+    };
+    const onUp = () => setIsResizingRightPane(false);
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizingRightPane]);
+
+  useEffect(() => {
+    if (isResizingRightPane) return;
+    try {
+      window.localStorage.setItem('aether.rightPaneWidth', String(rightPaneWidth));
+    } catch {
+      // Ignore restricted storage in sandboxed environments.
+    }
+  }, [rightPaneWidth, isResizingRightPane]);
 
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const openModelPicker = useCallback(() => setModelOpen(true), []);
@@ -96,7 +132,7 @@ export function App() {
   }, [agent.switchSession, isNarrowViewport]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3]">
+    <div className="flex h-screen w-screen overflow-hidden bg-background text-ink-primary">
       {sidebarOpen && isNarrowViewport && (
         <button
           type="button"
@@ -133,9 +169,9 @@ export function App() {
       )}
       <main className="flex h-full min-w-0 flex-1 flex-col">
         {agent.isHistoryPreview && (
-          <div role="status" className="flex items-center justify-between border-b border-[#30363d] bg-[#161b22] px-4 py-2 text-xs">
+          <div role="status" className="flex items-center justify-between border-b border-hairline bg-surface px-4 py-2 text-xs">
             <span>History preview — read-only — live work continues in the background</span>
-            <button type="button" onClick={agent.loadLatestMessages} className="rounded border border-[#58a6ff] px-3 py-1">Return to latest</button>
+            <button type="button" onClick={agent.loadLatestMessages} className="rounded border border-accent px-3 py-1">Return to latest</button>
           </div>
         )}
         <ChatCanvas
@@ -197,6 +233,34 @@ export function App() {
           onToggleSidebar={toggleSidebar}
         />
       </main>
+      {artifactOpen && canOpenInspector && !isNarrowViewport && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize side pane"
+          aria-valuenow={rightPaneWidth}
+          aria-valuemin={280}
+          aria-valuemax={720}
+          tabIndex={0}
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            setIsResizingRightPane(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setRightPaneWidth((w) => Math.min(720, w + 24));
+            }
+            if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              setRightPaneWidth((w) => Math.max(280, w - 24));
+            }
+          }}
+          className={`w-1 shrink-0 cursor-col-resize transition-colors ${isResizingRightPane ? 'bg-[var(--ui-accent)]' : 'bg-transparent hover:bg-[var(--ui-accent)]/60'}`}
+          title="Drag to resize side pane"
+        />
+      )}
       {artifactOpen && canOpenInspector && (
         <OptionalPanel label="Artifacts" onClose={() => setArtifactOpen(false)}>
           <ArtifactPane
@@ -204,7 +268,8 @@ export function App() {
             activeArtifactId={agent.activeArtifactId}
             onSelectArtifact={agent.setActiveArtifactId}
             onClose={() => setArtifactOpen(false)}
-            overlay={true}
+            overlay={isNarrowViewport}
+            width={isNarrowViewport ? undefined : rightPaneWidth}
           />
         </OptionalPanel>
       )}
@@ -299,7 +364,7 @@ export function App() {
       )}
 
       {liveShellOpen && (
-        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-[#30363d] bg-[#0d1117] shadow-2xl">
+        <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-[var(--stroke-nous)] bg-[var(--ui-bg-chrome)] shadow-nous">
           <button
             type="button"
             aria-label="Close live shell"
@@ -315,7 +380,7 @@ export function App() {
       )}
 
       {agent.lastError && (
-        <div role="alert" className="fixed bottom-4 right-4 z-50 flex max-w-md items-center gap-3 rounded-lg border border-[#f85149]/40 bg-[#161b22] px-4 py-3 text-sm text-[#f85149] shadow-xl">
+        <div role="alert" className="fixed bottom-4 right-4 z-50 flex max-w-md items-center gap-3 rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-4 py-3 text-sm text-[var(--ui-red)] shadow-nous">
           <AlertCircle size={18} className="shrink-0" />
           <p className="flex-1 text-xs leading-relaxed">{agent.lastError}</p>
           <button
@@ -328,7 +393,7 @@ export function App() {
         </div>
       )}
       {agent.isLoading && (
-        <div className="fixed bottom-3 left-1/2 z-40 -translate-x-1/2 rounded-md border border-[#30363d] bg-[#161b22] px-3 py-1.5 text-[10px] text-[#8b949e]">
+        <div className="fixed bottom-3 left-1/2 z-40 -translate-x-1/2 rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-3 py-1.5 text-[10px] text-[var(--ui-text-tertiary)] shadow-nous">
           Loading local state…
         </div>
       )}

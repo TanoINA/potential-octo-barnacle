@@ -20,7 +20,7 @@ The OpenAI-compatible adapter covers GutsAI, DeepSeek, Ollama's compatibility AP
 
 ## Artifact routing
 
-| Producer | Compact chat representation | Sidecar representation |
+| Producer | Compact chat summary | Docked side pane |
 | --- | --- | --- |
 | `read_file` | path and line-range summary | numbered code viewer |
 | `edit_file` | replacement summary | unified diff viewer |
@@ -28,16 +28,16 @@ The OpenAI-compatible adapter covers GutsAI, DeepSeek, Ollama's compatibility AP
 | `fetch_web_page` | URL and extraction summary | Markdown/text viewer |
 | directory/search tools | result count | bounded tree/search output |
 
+On desktop viewports, the side pane docks next to the transcript and remembers its resized width (`280px`–`720px`); on narrow viewports it opens as an overlay drawer.
+
 ## Persistence
 
-Configuration and sessions use version-tolerant Serde structures and atomic replacement writes. Existing early AetherAgent session files are migrated when loaded. Session IDs are validated before becoming filenames, and workspace selection is persisted separately from provider credentials.
+Configuration and session files use version-tolerant Serde schemas with atomic file replacement. Older session files migrate automatically on load, session IDs undergo filename validation before touching disk, and workspace folders stay stored separately from provider API keys.
 
 ## Rendering discipline
 
-Chat rows and large artifact line collections are windowed. Event payloads are scoped, and streaming text is coalesced to animation frames rather than triggering a React commit for every individual token. The app avoids continuous canvas or GPU-animation loops.
-
-Virtualizing the DOM keeps mounted nodes under control, but overall WebView2 memory and frame rates still depend on host hardware and should be tested on target Windows machines.
+Long chat transcripts and large artifact files virtualize their visible rows in the DOM. Streamed tokens batch onto animation frames instead of forcing a full React re-render per chunk, and the UI avoids continuous background GPU loops or heavy blur filters. DOM windowing keeps node counts low, though actual WebView2 memory and frame times still vary by hardware and deserve quick checks on target Windows and Linux setups.
 
 ## Cancellation and cleanup
 
-Cancellation is scoped to a run. It interrupts provider streaming and terminal execution, marks unfinished tool calls appropriately, emits a final done event, and cleans up MCP child processes. A stale run cannot mutate a newly selected session in the UI.
+Cancelling a run targets only that run's ID: it aborts provider streams and child shells, marks interrupted tools as cancelled, emits a final completion event, and cleans up MCP child processes. Background events from an older session cannot mutate whichever thread you switched to.

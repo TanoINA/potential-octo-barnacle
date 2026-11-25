@@ -10,19 +10,19 @@ AetherAgent embeds starter skill text in its Rust binary. On startup, it creates
 | Minimal implementation and review | `ponytail`, `ponytail-audit`, `ponytail-debt`, `ponytail-gain`, `ponytail-help`, `ponytail-review` |
 | Web development | `frontend-design`, `webapp-testing`, `web-design-guidelines`, `react-best-practices` |
 
-The five quality/web additions are original AetherAgent guides in `.aether/skills/`. They are not copies of the Anthropic, Vercel, or Superpowers packages with similar names. In particular, they do not redistribute third-party document skills or imply an upstream endorsement. Their frontmatter describes task-specific triggers; React guidance applies only to React projects. The local web review checklist requires no remote rules download.
+The five quality and web guides in `.aether/skills/` were written directly for AetherAgent. They do not bundle Anthropic, Vercel, or Superpowers files or imply any upstream affiliation. Each guide sets its own activation description in frontmatter (React rules trigger only in React projects), and the web review checklist runs locally without fetching remote rules.
 
-These guides add no runtime dependency. Browser tests still require the project's own browser tooling and installed browser runtime. Installing a skill does not install Playwright, Node.js, Python, or other tools.
+None of these guides pull in extra runtime dependencies. If you run browser checks, you still need your project's own browser setup and runtime; seeding a skill does not install Playwright, Node.js, or Python.
 
 ## Existing installations and customization
 
-- Only missing skill files are created. Existing files are preserved byte-for-byte, including edited guides and upstream packages using the same names.
-- Updating AetherAgent therefore adds missing guides but does not upgrade or replace an existing guide with a matching name.
-- Workspace skills under `.aether/skills/` take precedence over global skills with the same name. Other discovered skill sources retain their existing precedence.
-- Optional skills, references, scripts, and user-created files are not removed or rewritten.
-- If a skill directory cannot be written, startup continues without surfacing that write error. The skill may be absent; seeding is not a transactional package installation.
+- Startup only writes missing skill folders and leaves existing files untouched byte-for-byte, including customized guides or upstream skills sharing the same name.
+- App updates add newly bundled guides without overwriting any existing folder that already has that name.
+- Project skills under `.aether/skills/` override global skills with the same name, while other discovered roots keep their existing priority order.
+- User scripts, reference files, and custom skills never get deleted or rewritten during seeding.
+- If ~/.aether-agent/skills/ cannot be written on startup, the app logs nothing blocking and continues launching without that starter guide.
 
-REA, specialist security tools, document suites, cloud integrations, and large artifact toolchains remain optional. Review their licenses, scripts, runtime requirements, and update policies before distributing them in an installer.
+REA, specialist security suites, document tools, cloud plugins, and heavy artifact toolchains stay optional. Check their licenses, scripts, runtimes, and update terms before bundling them into a custom build.
 
 ## Maintenance
 

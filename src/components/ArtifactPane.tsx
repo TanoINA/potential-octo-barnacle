@@ -15,6 +15,7 @@ interface ArtifactPaneProps {
   onClose: () => void;
   initialTab?: ViewerTab;
   overlay?: boolean;
+  width?: number;
 }
 
 function matchesTab(artifact: Artifact, tab: ViewerTab): boolean {
@@ -38,7 +39,7 @@ function fencedCodeMarkdown(language: string, content: string): string {
   return `${fence}${lang}\n${content}\n${fence}`;
 }
 
-export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, onClose, initialTab, overlay = false }: ArtifactPaneProps) {
+export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, onClose, initialTab, overlay = false, width }: ArtifactPaneProps) {
   const initial = artifacts.find((artifact) => artifact.id === activeArtifactId) || artifacts[0];
   const [tab, setTab] = useState<ViewerTab>(initialTab || (artifacts.length === 0 ? 'shell' : (initial?.type === 'diff' || initial?.type === 'terminal' ? initial.type : 'code')));
   const [diffViewMode, setDiffViewMode] = useState<'unified' | 'side-by-side'>('side-by-side');
@@ -116,23 +117,27 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
   ];
 
   return (
-    <aside className={overlay
-      ? 'ui-drawer-enter fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,420px)] min-w-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3] shadow-lg'
-      : 'ui-drawer-enter relative flex h-full w-[min(38vw,420px)] min-w-[260px] max-w-[460px] shrink-0 flex-col border-l border-[#30363d] bg-[#0d1117] text-[#e6edf3]'}>
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-[#30363d] bg-[#161b22] px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+    <aside
+      style={!overlay && width ? { width: `${width}px`, maxWidth: '55vw' } : undefined}
+      className={overlay
+        ? 'ui-drawer-enter fixed inset-y-0 right-0 z-40 flex h-full w-[min(90vw,420px)] min-w-0 flex-col border-l border-[var(--stroke-nous)] bg-[var(--ui-bg-chrome)] text-[var(--ui-text-primary)] shadow-lg'
+        : 'ui-drawer-enter relative flex h-full min-w-[280px] shrink-0 flex-col border-l border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-chrome)] text-[var(--ui-text-primary)]'
+      }
+    >
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-sidebar)] px-3">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--ui-text-primary)]">
           {tab === 'shell' ? 'Live Shell' : active?.title || (tab === 'diff' ? 'Diff Viewer' : tab === 'terminal' ? 'Tool Output' : 'Code Viewer')}
         </span>
         {active && (
           <button type="button" onClick={() => void copy()} className="icon-button" aria-label="Copy artifact content" title="Copy content">
-            {copied ? <Check size={15} className="text-[#3fb950]" /> : <Copy size={15} />}
+            {copied ? <Check size={15} className="text-[var(--ui-green)]" /> : <Copy size={15} />}
           </button>
         )}
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close artifact sidecar">
           <X size={16} />
         </button>
       </header>
-      <div className="flex shrink-0 overflow-x-auto border-b border-[#30363d] px-2 pt-2">
+      <div className="flex shrink-0 overflow-x-auto border-b border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-sidebar)] px-2 pt-1">
         {tabs.map((item) => {
           const enabled = item.id === 'shell' || artifacts.some((artifact) => matchesTab(artifact, item.id));
           const Icon = item.icon;
@@ -143,8 +148,8 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               disabled={!enabled}
               title={item.label}
               onClick={() => selectTab(item.id)}
-              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-[10px] disabled:cursor-not-allowed disabled:opacity-30 ${
-                tab === item.id ? 'border-[#58a6ff] text-[#58a6ff]' : 'border-transparent text-[#8b949e] hover:text-[#e6edf3]'
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-[10.5px] transition-colors duration-100 hover:transition-none disabled:cursor-not-allowed disabled:opacity-30 ${
+                tab === item.id ? 'border-[var(--ui-accent)] text-[var(--ui-accent)] font-medium' : 'border-transparent text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)]'
               }`}
             >
               <Icon size={12} /> {item.label}
@@ -153,11 +158,11 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
         })}
       </div>
       {tab !== 'shell' && active && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[#30363d] bg-[#0d1117] px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--ui-stroke-quaternary)] bg-[var(--ui-bg-chrome)] px-3 py-2">
           <select
             value={active.id}
             onChange={(event) => onSelectArtifact(event.target.value)}
-            className="h-7 min-w-0 flex-1 rounded border border-[#30363d] bg-[#161b22] px-2 text-[10px] outline-none"
+            className="h-7 min-w-0 flex-1 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg-editor)] px-2 text-[10.5px] text-[var(--ui-text-primary)] outline-none"
             aria-label="Select artifact"
           >
             {tabArtifacts.map((artifact) => (
@@ -167,12 +172,12 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
             ))}
           </select>
           {tab === 'diff' && (
-            <div className="flex items-center rounded border border-[#30363d] bg-[#161b22] p-0.5 text-[10px]">
+            <div className="flex items-center rounded-md bg-[var(--ui-control-fill)] p-0.5 text-[10px]">
               <button
                 type="button"
                 onClick={() => setDiffViewMode('unified')}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
-                  diffViewMode === 'unified' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors duration-100 hover:transition-none ${
+                  diffViewMode === 'unified' ? 'bg-[var(--ui-bg-elevated)] text-[var(--ui-accent)] font-medium' : 'text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)]'
                 }`}
                 title="Unified single-column diff"
               >
@@ -182,8 +187,8 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               <button
                 type="button"
                 onClick={() => setDiffViewMode('side-by-side')}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
-                  diffViewMode === 'side-by-side' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors duration-100 hover:transition-none ${
+                  diffViewMode === 'side-by-side' ? 'bg-[var(--ui-bg-elevated)] text-[var(--ui-accent)] font-medium' : 'text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)]'
                 }`}
                 title="Side-by-side split visual diff"
               >
@@ -193,12 +198,12 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
             </div>
           )}
           {tab === 'code' && (
-            <div className="flex items-center rounded border border-[#30363d] bg-[#161b22] p-0.5 text-[10px]">
+            <div className="flex items-center rounded-md bg-[var(--ui-control-fill)] p-0.5 text-[10px]">
               <button
                 type="button"
                 onClick={() => setCodeViewMode('preview')}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
-                  codeViewMode === 'preview' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors duration-100 hover:transition-none ${
+                  codeViewMode === 'preview' ? 'bg-[var(--ui-bg-elevated)] text-[#58a6ff] font-medium' : 'text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)]'
                 }`}
                 title="Rendered preview"
                 aria-label="Preview"
@@ -209,8 +214,8 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               <button
                 type="button"
                 onClick={() => setCodeViewMode('raw')}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 ${
-                  codeViewMode === 'raw' ? 'bg-[#21262d] text-[#58a6ff] font-medium' : 'text-[#8b949e] hover:text-white'
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors duration-100 hover:transition-none ${
+                  codeViewMode === 'raw' ? 'bg-[var(--ui-bg-elevated)] text-[#58a6ff] font-medium' : 'text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)]'
                 }`}
                 title="Raw source"
                 aria-label="Raw"
@@ -220,11 +225,11 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               </button>
             </div>
           )}
-          <span className="shrink-0 text-[9px] text-[#6e7681]">{lines.length} lines</span>
+          <span className="shrink-0 font-mono text-[9.5px] text-[var(--ui-text-quaternary)]">{lines.length} lines</span>
         </div>
       )}
       {tab !== 'shell' && active?.filePath && (
-        <div className="shrink-0 truncate border-b border-[#30363d] px-3 py-1.5 font-mono text-[9px] text-[#6e7681]" title={active.filePath}>
+        <div className="shrink-0 truncate border-b border-[var(--ui-stroke-tertiary)] px-3 py-1.5 font-mono text-[9px] text-[var(--ui-text-quaternary)]" title={active.filePath}>
           {active.filePath}
         </div>
       )}
@@ -272,7 +277,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
           }
 
           return (
-            <div className="min-h-0 flex-1 select-text overflow-auto bg-[#0d1117] p-4 text-xs leading-relaxed text-[#e6edf3]">
+            <div className="min-h-0 flex-1 select-text overflow-auto bg-[var(--ui-bg-chrome)] p-4 text-xs leading-relaxed text-[var(--ui-text-primary)]">
               {active.type === 'markdown' || active.language === 'markdown' || active.filePath?.endsWith('.md') || !active.language ? (
                 <MarkdownRenderer content={active.content} />
               ) : (
@@ -289,7 +294,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
             const element = event.currentTarget;
             stickTerminalToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
           }}
-          className="min-h-0 flex-1 select-text overflow-auto bg-[#0d1117] py-2 font-mono text-[11px] leading-5"
+          className="min-h-0 flex-1 select-text overflow-auto bg-[var(--ui-bg-chrome)] py-2 font-mono text-[11px] leading-5"
         >
           <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((virtualLine) => {
@@ -297,13 +302,13 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
               const diffClass =
                 tab === 'diff'
                   ? line.startsWith('+') && !line.startsWith('+++')
-                    ? 'bg-[#3fb950]/10 text-[#7ee787]'
+                    ? 'bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)]'
                     : line.startsWith('-') && !line.startsWith('---')
-                    ? 'bg-[#f85149]/10 text-[#ff7b72]'
+                    ? 'bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)]'
                     : line.startsWith('@@')
-                    ? 'text-[#79c0ff]'
-                    : 'text-[#8b949e]'
-                  : 'text-[#c9d1d9]';
+                    ? 'text-[var(--ui-accent)]'
+                    : 'text-[var(--ui-text-tertiary)]'
+                  : 'text-[var(--ui-text-secondary)]';
               return (
                 <div
                   key={virtualLine.key}
@@ -312,7 +317,7 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
                   className={`absolute left-0 top-0 flex min-h-5 w-full whitespace-pre-wrap break-words ${diffClass}`}
                   style={{ transform: `translateY(${virtualLine.start}px)` }}
                 >
-                  <span className="w-11 shrink-0 select-none pr-2 text-right text-[#484f58]">{virtualLine.index + 1}</span>
+                  <span className="w-11 shrink-0 select-none pr-2 text-right text-[var(--ui-text-quaternary)]">{virtualLine.index + 1}</span>
                   <span className="min-w-0 flex-1 pr-3">{line || ' '}</span>
                 </div>
               );
@@ -320,16 +325,16 @@ export function ArtifactPane({ artifacts, activeArtifactId, onSelectArtifact, on
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center text-[#8b949e]">
-          <FileCode2 size={32} className="mb-2 text-[#30363d]" />
-          <span className="text-xs font-semibold text-[#e6edf3]">No {tab} artifacts yet</span>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center text-[var(--ui-text-tertiary)]">
+          <FileCode2 size={32} className="mb-2 text-[var(--ui-text-quaternary)]" />
+          <span className="text-xs font-semibold text-[var(--ui-text-primary)]">No {tab} artifacts yet</span>
           <span className="mt-1 max-w-xs text-[11px] leading-relaxed">
             Tool executions, file edits, and diffs generated by AetherAgent will appear here.
           </span>
           <button
             type="button"
             onClick={() => setTab('shell')}
-            className="mt-4 flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-1.5 text-xs font-medium text-[#58a6ff] hover:bg-[#21262d]"
+            className="mt-4 flex items-center gap-1.5 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-3 py-1.5 text-xs font-medium text-[var(--ui-accent)] hover:bg-[var(--ui-control-hover)]"
           >
             <Terminal size={13} />
             <span>Open Live Shell</span>

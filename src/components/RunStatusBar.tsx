@@ -26,11 +26,13 @@ export const RunStatusBar = memo(function RunStatusBar({
   onCancelPreparation,
   contextUsage,
   onCompact,
+  docked = false,
 }: {
   status?: RunStatus | null;
   onCancelPreparation?: () => void;
   contextUsage?: ContextUsageInfo | null;
   onCompact?: () => void | Promise<void>;
+  docked?: boolean;
 }) {
   const [now, setNow] = useState(Date.now);
   const active = Boolean(status && !status.endedAt);
@@ -70,21 +72,23 @@ export const RunStatusBar = memo(function RunStatusBar({
 
   return (
     <div
-      className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 py-1.5 text-xs text-[#8b949e]"
+      className={docked
+        ? 'flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-1.5 text-xs text-[var(--ui-text-tertiary)]'
+        : 'mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 py-1.5 text-xs text-[var(--ui-text-tertiary)]'}
       data-run-id={status?.runId ?? undefined}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {status && (
           <>
             <span role="status" aria-live="polite" className="flex items-center gap-2">
-              {active && <LoaderCircle size={13} aria-hidden="true" className="motion-safe:animate-spin" />}
+              {active && <LoaderCircle size={13} aria-hidden="true" className="motion-safe:animate-spin text-[var(--ui-accent)]" />}
               {label}
             </span>
             {status.phase === 'preparing_attachments' && onCancelPreparation && (
               <button
                 type="button"
                 onClick={onCancelPreparation}
-                className="rounded px-2 py-1 text-[#e6edf3] hover:bg-[#30363d] focus-visible:outline focus-visible:outline-2"
+                className="rounded px-2 py-1 text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)] focus-visible:outline focus-visible:outline-2"
               >
                 Cancel preparation
               </button>
@@ -103,19 +107,19 @@ export const RunStatusBar = memo(function RunStatusBar({
           if (n >= 1000) return n % 1000 === 0 ? `${n / 1000}k` : `${(n / 1000).toFixed(1)}k`;
           return `${n}`;
         };
-        const color = rawPct >= 80 ? 'text-[#f85149] font-medium' : rawPct >= 60 ? 'text-[#d29922]' : 'text-[#8b949e]';
-        const barColor = rawPct >= 80 ? 'bg-[#f85149]' : rawPct >= 60 ? 'bg-[#d29922]' : 'bg-[#58a6ff]';
+        const color = rawPct >= 80 ? 'text-[var(--ui-red)] font-medium' : rawPct >= 60 ? 'text-[var(--ui-yellow)]' : 'text-[var(--ui-text-tertiary)]';
+        const barColor = rawPct >= 80 ? 'bg-[var(--ui-red)]' : rawPct >= 60 ? 'bg-[var(--ui-yellow)]' : 'bg-[var(--ui-accent)]';
         const remainingTokens = Math.max(0, maxTokens - usedTokens);
         const isPartial = contextUsage.isPartial;
         const meterText = `${isPartial ? '~' : ''}${formatK(usedTokens)} / ${formatK(maxTokens)} tokens (${rawPct}%)`;
 
         return (
           <div
-            className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-[#8b949e]"
+            className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-[var(--ui-text-tertiary)]"
             title={`Context usage: ${usedTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens (${rawPct}% · ${remainingTokens.toLocaleString()} remaining${isPartial ? ' · loaded slice of session' : ''})${rawPct >= 80 ? ' - High context usage, consider /compact or starting a new chat' : ''}`}
             data-testid="context-meter"
           >
-            <span className="w-12 h-1.5 rounded-full bg-[#21262d] overflow-hidden inline-flex border border-[#30363d]/50">
+            <span className="w-12 h-1.5 rounded-full bg-[var(--ui-control-fill)] overflow-hidden inline-flex">
               <span className={`h-full ${barColor}`} style={{ width: `${barPct}%` }} />
             </span>
             <span className={color}>{meterText}</span>
@@ -123,7 +127,7 @@ export const RunStatusBar = memo(function RunStatusBar({
               <button
                 type="button"
                 onClick={onCompact}
-                className="ml-0.5 text-[10px] px-1.5 py-0.5 rounded border border-[#f85149]/40 bg-[#f85149]/10 text-[#f85149] hover:bg-[#f85149]/20 transition-colors"
+                className="ml-0.5 text-[10px] px-1.5 py-0.5 rounded bg-[color-mix(in_srgb,var(--ui-red)_12%,transparent)] text-[var(--ui-red)] hover:bg-[color-mix(in_srgb,var(--ui-red)_22%,transparent)] transition-colors duration-100 hover:transition-none"
                 title="Compact session context"
               >
                 Compact

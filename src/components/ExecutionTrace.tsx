@@ -281,8 +281,8 @@ const ActiveToolDuration: React.FC<{ startedAt?: number }> = ({ startedAt }) => 
   const elapsedSec = Math.max(1, Math.floor((now - (startedAt || now)) / 1000));
 
   return (
-    <span className="flex items-center gap-1.5 rounded bg-[#f0883e]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
-      <Loader2 size={10} className="animate-spin text-[#f0883e]" />
+    <span className="flex items-center gap-1.5 rounded bg-[var(--ui-orange)]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[var(--ui-orange)] border border-[var(--ui-orange)]/30 animate-pulse">
+      <Loader2 size={10} className="animate-spin text-[var(--ui-orange)]" />
       <span>{elapsedSec}s</span>
     </span>
   );
@@ -367,33 +367,33 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                 toggleDetails(tool.id, isDetailsOpen);
               }
             }}
-            className="flex min-w-0 flex-1 items-center justify-between px-3.5 py-1.5 text-left text-[11px] font-mono transition-colors cursor-pointer hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]"
+            className="flex min-w-0 flex-1 items-center justify-between rounded-md px-2 py-1 text-left text-[11px] font-mono transition-colors duration-100 hover:transition-none cursor-pointer hover:bg-[var(--ui-row-hover)] focus-visible:outline focus-visible:outline-[var(--ui-accent)]"
           >
             <span className="flex items-center gap-2 min-w-0 flex-1 mr-3">
               {info.icon}
-              <span className="truncate text-[#c9d1d9]">{failed || cancelled ? tool.name : info.label}</span>
+              <span className="truncate text-[var(--ui-text-secondary)]">{failed || cancelled ? tool.name : info.label}</span>
             </span>{' '}
             <span className="flex items-center gap-2 shrink-0">
               {isToolRunning && <ActiveToolDuration startedAt={tool.startedAt} />}
 
               {failed && (
-                <span className="rounded bg-[#da3633]/20 px-1.5 py-0.5 text-[9px] font-medium text-[#f85149]">
+                <span className="rounded bg-[var(--ui-diff-remove-bg)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--ui-red)]">
                   Failed
                 </span>
               )}
 
               {cancelled && (
-                <span className="rounded bg-[#30363d]/50 px-1.5 py-0.5 text-[9px] font-medium text-[#8b949e]">
+                <span className="rounded bg-[var(--ui-control-fill)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--conversation-scaffold-meta)]">
                   Cancelled
                 </span>
               )}
 
               {!isToolRunning && duration && (
-                <span className="text-[10px] text-[#6e7681]">{duration}</span>
+                <span className="text-[10px] text-[var(--conversation-scaffold-meta)]">{duration}</span>
               )}
 
               {!selectsArtifact && (
-                <span className="text-[#6e7681] group-hover:text-[#c9d1d9]">
+                <span className="text-[var(--conversation-scaffold-meta)] group-hover:text-[var(--ui-text-primary)]">
                   {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
               )}
@@ -406,7 +406,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
               aria-expanded={isDetailsOpen}
               aria-controls={detailsId}
               onClick={() => toggleDetails(tool.id, isDetailsOpen)}
-              className="shrink-0 px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9] focus-visible:outline focus-visible:outline-[#58a6ff]"
+              className="shrink-0 rounded px-2 py-1 text-[var(--conversation-scaffold-meta)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)] focus-visible:outline focus-visible:outline-[var(--ui-accent)]"
             >
               {isDetailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             </button>
@@ -414,9 +414,9 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
         </div>
 
         {isDetailsOpen && (
-          <div id={detailsId} className="px-3 pb-2 pt-0.5">
-            <div className="text-[10px] text-[#8b949e]">Arguments</div>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+          <div id={detailsId} className="mx-1 mb-1.5 mt-0.5 rounded-lg bg-[var(--ui-widget-bg)] px-2.5 py-2">
+            <div className="text-[10px] text-[var(--conversation-scaffold-meta)]">Arguments</div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[var(--ui-text-secondary)]" data-selectable-text="true">
               {tool.argumentsRaw || JSON.stringify(tool.args, null, 2)}
             </pre>
             {info.isTerminal ? (
@@ -433,7 +433,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                   if (links.length === 0) return null;
                   return (
                     <div className="mt-2 mb-2">
-                      <div className="text-[10px] font-semibold text-[#8b949e] mb-1.5 flex items-center gap-1">
+                      <div className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold text-[var(--conversation-scaffold-meta)]">
                         <Globe size={11} /> Discovered Web Sources ({links.length})
                       </div>
                       <div className="flex flex-wrap gap-1.5">
@@ -446,11 +446,11 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                               href={link.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 rounded border border-[#30363d] bg-[#161b22] px-2 py-1 text-[10px] text-[#58a6ff] hover:bg-[#1f242c] hover:border-[#58a6ff]/50 transition-colors"
+                              className="inline-flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)] px-2 py-1 text-[10px] text-[var(--ui-accent)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:border-[var(--ui-accent)]/50"
                               title={`${link.title}\n${link.url}`}
                             >
-                              <ExternalLink size={10} className="shrink-0 text-[#8b949e]" />
-                              <span className="font-semibold text-[#c9d1d9]">{host}:</span>
+                              <ExternalLink size={10} className="shrink-0 text-[var(--conversation-scaffold-meta)]" />
+                              <span className="font-semibold text-[var(--ui-text-secondary)]">{host}:</span>
                               <span className="max-w-[160px] truncate">{link.title}</span>
                             </a>
                           );
@@ -459,8 +459,8 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                     </div>
                   );
                 })()}
-                <div className="mt-2 text-[10px] text-[#8b949e]">Result</div>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[#c9d1d9]" data-selectable-text="true">
+                <div className="mt-2 text-[10px] text-[var(--conversation-scaffold-meta)]">Result</div>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words select-text text-[11px] text-[var(--ui-text-secondary)]" data-selectable-text="true">
                   {tool.result || tool.terminalOutput || (info.isRunning ? 'Waiting for result...' : '(no result)')}
                 </pre>
               </>
@@ -475,25 +475,30 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
   return (
     <div
-      className="my-2.5 w-full rounded-lg border border-[#30363d]/70 bg-[#0d1117]/60 overflow-hidden text-xs"
+      className="my-2 w-full text-xs text-[var(--conversation-scaffold-text)]"
       data-testid="execution-trace"
     >
       {/* Summary Accordion Bar */}
       <button
         type="button"
         onClick={() => setManualCollapsed(!isCollapsed)}
-        className="flex w-full items-center justify-between px-3 py-2 text-left text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#161b22]/70 transition-colors select-none"
+        className="flex w-full items-center justify-between rounded-md px-1.5 py-1 text-left text-[var(--conversation-scaffold-text)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)] select-none"
         aria-expanded={!isCollapsed}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
           {hasRunning ? (
-            <Loader2 size={13} className="text-[#f0883e] animate-spin shrink-0" />
-          ) : isCollapsed ? (
-            <ChevronRight size={13} className="text-[#6e7681] shrink-0" />
+            <Loader2 size={13} className="text-[var(--ui-orange)] animate-spin shrink-0" />
           ) : (
-            <ChevronDown size={13} className="text-[#6e7681] shrink-0" />
+            <>
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--ui-tool-dot)]" aria-hidden="true" />
+              {isCollapsed ? (
+                <ChevronRight size={12} className="text-[var(--conversation-scaffold-meta)] shrink-0" />
+              ) : (
+                <ChevronDown size={12} className="text-[var(--conversation-scaffold-meta)] shrink-0" />
+              )}
+            </>
           )}
-          <span className="truncate text-[11px] font-mono text-[#8b949e]">
+          <span className="truncate text-[11.5px] font-medium text-[var(--conversation-scaffold-text)]">
             {summary}
           </span>
         </div>
@@ -501,13 +506,13 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
         <div className="flex shrink-0 items-center gap-2">
         {failureCount > 0 && <span className="text-[10px] font-mono text-[#f85149]">{failureCount} failed</span>}
         {hasRunning ? (
-          <span className="flex items-center gap-1.5 shrink-0 text-[10px] text-[#f0883e] font-mono animate-pulse">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#f0883e]" />
+          <span className="flex items-center gap-1.5 shrink-0 text-[10px] text-[var(--ui-orange)] font-mono animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--ui-orange)]" />
             in progress
           </span>
         ) : hasCancelled ? (
-          <span className="flex items-center gap-1 shrink-0 text-[10px] text-[#8b949e] font-mono">
-            <Ban size={10} className="text-[#8b949e]" />
+          <span className="flex items-center gap-1 shrink-0 text-[10px] text-[var(--conversation-scaffold-meta)] font-mono">
+            <Ban size={10} className="text-[var(--conversation-scaffold-meta)]" />
             cancelled
           </span>
         ) : null}
@@ -516,7 +521,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
 
       {/* Expanded Detailed Status Rows */}
       {!isCollapsed && (
-        <div className="max-h-80 overflow-y-auto overscroll-contain border-t border-[#21262d] divide-y divide-[#21262d]/50 bg-[#0d1117]">
+        <div className="mt-1 ml-2 max-h-80 overflow-y-auto overscroll-contain border-l border-[var(--ui-stroke-tertiary)] pl-2 space-y-0.5">
           {mainTools.map(renderTool)}
           {Array.from(subagents, ([scope, tools]) => {
             const open = expandedSubagents[scope] ?? false;
@@ -526,13 +531,13 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
             return <div key={scope}>
               <button type="button" aria-expanded={open} aria-controls={groupId}
                 onClick={() => setExpandedSubagents((previous) => ({ ...previous, [scope]: !open }))}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-[#8b949e] hover:bg-[#161b22]/60 focus-visible:outline focus-visible:outline-[#58a6ff]">
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-[var(--conversation-scaffold-text)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)] focus-visible:outline focus-visible:outline-[var(--ui-accent)]">
                 {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
                 <span className="min-w-0 flex-1 truncate">Subagent {scope} · {tools.length} action{tools.length === 1 ? '' : 's'}</span>{' '}
-                {failed > 0 && <span className="shrink-0 text-[#f85149]">{failed} failed</span>}
-                {running && <Loader2 size={12} className="shrink-0 animate-spin text-[#f0883e]" aria-label="in progress" />}
+                {failed > 0 && <span className="shrink-0 text-[var(--ui-red)]">{failed} failed</span>}
+                {running && <Loader2 size={12} className="shrink-0 animate-spin text-[var(--ui-orange)]" aria-label="in progress" />}
               </button>
-              {open && <div id={groupId} className="border-l border-[#30363d] ml-3">{tools.map(renderTool)}</div>}
+              {open && <div id={groupId} className="ml-3 border-l border-[var(--ui-stroke-tertiary)] pl-1">{tools.map(renderTool)}</div>}
             </div>;
           })}
 

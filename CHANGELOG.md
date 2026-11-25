@@ -4,6 +4,16 @@ Notable changes to AetherAgent are listed here.
 
 ## [Unreleased]
 
+## [0.3.0-beta.2] - 2026-11-25
+
+### Changed & Added
+
+- Added five built-in themes (`Nous Dark`, `Antigravity Graphite`, `Nous Light`, `Catppuccin Mocha`, and `Hermes Ember`) backed by semantic CSS variables, switchable from Settings, the sidebar palette button, or the bottom workspace bar.
+- Replaced hardcoded modal and drawer dark styles with theme-aware tokens across chat messages, Markdown output, diff cards, plan cards, Spotlight search, and modals.
+- Changed the right artifact pane into a docked, resizable desktop side pane (`280px` to `720px` via pointer drag or `ArrowLeft`/`ArrowRight` on the splitter) while keeping narrow viewports in overlay mode.
+- Grouped recent sidebar chats by workspace folder with collapsible headers, simplified header controls, moved live activity, queued prompts, and context status into a collapsible stack above the composer, and added a bottom bar showing workspace, MCP count, skill count, and theme skin.
+- Removed the bordered card box around assistant responses so prose renders directly on the canvas surface and tool traces stay quiet by default.
+
 ## [0.3.0-beta.1] - 2026-11-23
 
 Unsigned Windows and Linux pre-release focusing on security hardening, persistence reliability, and UI polish.

@@ -65,35 +65,35 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
   const displayText = safeOutput.trim() ? safeOutput : isRunning ? 'Executing command in PowerShell...' : '(no output / silent exit)';
 
   return (
-    <div className={`my-2 rounded-lg border border-[#30363d] bg-[#0a0d12] overflow-hidden shadow-md ${className}`}>
+    <div className={`my-2 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-code-bg)] overflow-hidden ${className}`}>
       {/* Terminal Header Bar */}
-      <div className="flex items-center justify-between border-b border-[#21262d] bg-[#161b22] px-3 py-1.5 text-xs">
+      <div className="flex items-center justify-between border-b border-[var(--ui-stroke-quaternary)] bg-[var(--ui-widget-bg)] px-3 py-1.5 text-xs">
         <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
-          <Terminal size={13} className="text-[#f0883e] shrink-0" />
+          <Terminal size={13} className="text-[var(--ui-orange)] shrink-0" />
           {command ? (
-            <span className="font-mono text-[11px] truncate text-[#c9d1d9]" title={command}>
-              <span className="text-[#f0883e] font-semibold mr-1">$</span>
+            <span className="font-mono text-[11px] truncate text-[var(--ui-text-secondary)]" title={command}>
+              <span className="text-[var(--ui-orange)] font-semibold mr-1">$</span>
               {command}
             </span>
           ) : (
-            <span className="font-mono text-[11px] text-[#8b949e]">Terminal Output</span>
+            <span className="font-mono text-[11px] text-[var(--ui-text-tertiary)]">Terminal Output</span>
           )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           {/* Status Badge */}
           {isRunning ? (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#382618] text-[#f0883e] border border-[#f0883e]/30 animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#f0883e]" />
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--ui-orange)]/15 text-[var(--ui-orange)] border border-[var(--ui-orange)]/30 animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--ui-orange)]" />
               running
             </span>
           ) : exitCode != null ? (
             exitCode === 0 ? (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[#238636]/20 text-[#3fb950] border border-[#238636]/40">
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] border border-[var(--ui-green)]/35">
                 exit 0
               </span>
             ) : (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[#da3633]/20 text-[#f85149] border border-[#da3633]/40">
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] border border-[var(--ui-red)]/35">
                 exit {exitCode}
               </span>
             )
@@ -103,13 +103,13 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#30363d] transition-colors"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[var(--ui-text-tertiary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]"
             title="Copy command and output"
           >
             {copied ? (
               <>
-                <Check size={11} className="text-[#3fb950]" />
-                <span className="text-[#3fb950]">Copied</span>
+                <Check size={11} className="text-[var(--ui-green)]" />
+                <span className="text-[var(--ui-green)]">Copied</span>
               </>
             ) : (
               <>
@@ -128,10 +128,10 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
           const element = event.currentTarget;
           stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < NEAR_BOTTOM_PX;
         }}
-        className="max-h-72 overflow-x-auto overflow-y-auto select-text p-3 font-mono text-[11px] leading-5 text-[#8b949e] bg-[#0a0d12]"
+        className="max-h-72 overflow-x-auto overflow-y-auto select-text p-3 font-mono text-[11px] leading-5 text-[var(--ui-text-tertiary)] bg-[var(--ui-code-bg)]"
         data-selectable-text="true"
       >
-        <pre className="w-max min-w-full font-mono text-[11px] whitespace-pre text-[#c9d1d9]">
+        <pre className="w-max min-w-full font-mono text-[11px] whitespace-pre text-[var(--ui-text-secondary)]">
           {displayText}
         </pre>
       </div>

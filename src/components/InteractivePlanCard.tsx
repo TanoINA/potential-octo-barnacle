@@ -53,19 +53,19 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
 
   return (
     <div
-      className="my-3 overflow-hidden rounded-lg border border-[#30363d] bg-[#161b22] shadow-sm"
+      className="my-3 overflow-hidden rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] shadow-sm"
       data-testid="interactive-plan-card"
     >
-      <div className="border-b border-[#30363d]/60 bg-[#161b22] px-3.5 py-2.5">
+      <div className="border-b border-[var(--ui-stroke-quaternary)] bg-[var(--ui-widget-bg)] px-3.5 py-2.5">
         <div className="flex items-center justify-between text-xs">
           <div className="flex items-center gap-2">
-            <ListTodo size={14} className="text-[#58a6ff]" />
-            <span className="font-semibold text-[#f0f6fc]">Execution Plan</span>
-            <span className="rounded-full bg-[#30363d] px-2 py-0.5 font-mono text-[10px] text-[#8b949e]">
+            <ListTodo size={14} className="text-[var(--ui-accent)]" />
+            <span className="font-semibold text-[var(--ui-text-primary)]">Execution Plan</span>
+            <span className="rounded-full bg-[var(--ui-control-fill)] px-2 py-0.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
               {doneCount}/{items.length} completed
             </span>
           </div>
-          <span className="font-mono text-[11px] font-medium text-[#58a6ff]">{progressPercent}%</span>
+          <span className="font-mono text-[11px] font-medium text-[var(--ui-accent)]">{progressPercent}%</span>
         </div>
         {/* Progress bar */}
         <div
@@ -74,7 +74,7 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progressPercent}
-          className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#21262d]"
+          className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--ui-control-fill)]"
         >
           <div
             className="h-full rounded-full bg-[#58a6ff] transition-[width] duration-[160ms] ease-out"
@@ -83,7 +83,7 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
         </div>
       </div>
 
-      <div className="divide-y divide-[#21262d]/50 p-1.5 bg-[#0d1117]">
+      <div className="divide-y divide-[var(--ui-stroke-quaternary)] bg-[var(--ui-bg-chrome)] p-1.5">
         {items.map((item) => (
           <button
             key={item.id}
@@ -92,24 +92,24 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
             aria-checked={item.status === 'done'}
             aria-label={item.text}
             onClick={() => toggleItem(item.id)}
-            className="flex w-full items-start gap-2.5 px-2.5 py-1.5 text-left text-xs cursor-pointer hover:bg-[#161b22]/60 rounded-lg transition-colors group select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58a6ff]"
+            className="group flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ui-accent)]"
           >
             <span className="mt-0.5 shrink-0" aria-hidden="true">
               {item.status === 'done' ? (
-                <CheckCircle2 size={13} className="text-[#3fb950]" />
+                <CheckCircle2 size={13} className="text-[var(--ui-green)]" />
               ) : item.status === 'in_progress' ? (
-                <Clock size={13} className="text-[#f0883e]" />
+                <Clock size={13} className="text-[var(--ui-orange)]" />
               ) : (
-                <Circle size={13} className="text-[#6e7681] group-hover:text-[#c9d1d9]" />
+                <Circle size={13} className="text-[var(--ui-text-quaternary)] group-hover:text-[var(--ui-text-secondary)]" />
               )}
             </span>
             <span
               className={`leading-relaxed text-[11px] font-sans ${
                 item.status === 'done'
-                  ? 'text-[#8b949e] line-through decoration-[#8b949e]/50'
+                  ? 'text-[var(--ui-text-tertiary)] line-through decoration-[var(--ui-text-tertiary)]/50'
                   : item.status === 'in_progress'
                   ? 'text-[#f0883e] font-medium'
-                  : 'text-[#e6edf3]'
+                  : 'text-[var(--ui-text-primary)]'
               }`}
             >
               {item.text}

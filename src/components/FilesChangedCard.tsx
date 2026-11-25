@@ -134,12 +134,12 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
   if (files.length === 0) return null;
 
   return (
-    <div className="mt-3 w-full rounded-xl border border-[#30363d] bg-[#0d1117] overflow-hidden shadow-sm">
+    <div className="mt-3 w-full rounded-xl border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] overflow-hidden">
       {/* Header Bar */}
       <div
         onClick={() => setIsMinimized((prev) => !prev)}
-        className={`flex items-center justify-between bg-[#161b22] px-3.5 py-2 text-xs select-none cursor-pointer hover:bg-[#1c2128] transition-colors ${
-          isMinimized ? '' : 'border-b border-[#21262d]'
+        className={`flex items-center justify-between bg-[var(--ui-widget-bg)] px-3.5 py-2 text-xs select-none cursor-pointer transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] ${
+          isMinimized ? '' : 'border-b border-[var(--ui-stroke-quaternary)]'
         }`}
         title={isMinimized ? 'Click to expand changed files' : 'Click to minimize'}
       >
@@ -150,23 +150,23 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               e.stopPropagation();
               setIsMinimized((prev) => !prev);
             }}
-            className="text-[#8b949e] hover:text-[#e6edf3] p-0.5 rounded transition-colors"
+            className="text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)] p-0.5 rounded transition-colors duration-100 hover:transition-none"
             aria-label={isMinimized ? 'Expand changed files' : 'Minimize changed files'}
           >
             <ChevronDown size={14} className={`transition-transform duration-200 ${isMinimized ? '-rotate-90' : ''}`} />
           </button>
-          <GitCompare size={14} className="text-[#58a6ff]" />
-          <span className="font-medium text-[#e6edf3]">
+          <GitCompare size={14} className="text-[var(--ui-accent)]" />
+          <span className="font-medium text-[var(--ui-text-primary)]">
             {files.length} file{files.length > 1 ? 's' : ''} changed
           </span>
           {gitStatus?.isRepo && (
-            <span className="inline-flex items-center gap-1 rounded bg-[#21262d] px-2 py-0.5 font-mono text-[10px] text-[#8b949e]">
-              <GitBranch size={10} className="text-[#58a6ff]" />
+            <span className="inline-flex items-center gap-1 rounded bg-[var(--ui-control-fill)] px-2 py-0.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
+              <GitBranch size={10} className="text-[var(--ui-accent)]" />
               {gitStatus.branch}
             </span>
           )}
           {isMinimized && (
-            <span className="text-[10px] text-[#6e7681] italic">
+            <span className="text-[10px] text-[var(--ui-text-quaternary)] italic">
               (minimized)
             </span>
           )}
@@ -175,10 +175,10 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center gap-1.5 font-mono text-[11px]">
             {totalAdditions > 0 && (
-              <span className="text-[#3fb950] font-medium">+{totalAdditions}</span>
+              <span className="text-[var(--ui-diff-add-fg)] font-medium">+{totalAdditions}</span>
             )}
             {totalDeletions > 0 && (
-              <span className="text-[#f85149] font-medium">-{totalDeletions}</span>
+              <span className="text-[var(--ui-diff-remove-fg)] font-medium">-{totalDeletions}</span>
             )}
           </div>
           {gitStatus?.isRepo && (
@@ -190,10 +190,10 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                 if (isMinimized) setIsMinimized(false);
                 setShowCommitBar((prev) => !prev);
               }}
-              className="flex items-center gap-1 rounded border border-[#30363d] bg-[#21262d] px-2 py-0.5 text-[10px] font-medium text-[#e6edf3] hover:border-[#58a6ff] hover:text-[#58a6ff] transition-colors"
+              className="flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-2 py-0.5 text-[10px] font-medium text-[var(--ui-text-primary)] hover:border-[var(--ui-accent)] hover:text-[var(--ui-accent)] transition-colors duration-100 hover:transition-none"
               title="Toggle Git Commit Bar"
             >
-              <GitCommit size={11} className="text-[#58a6ff]" />
+              <GitCommit size={11} className="text-[var(--ui-accent)]" />
               <span>Commit</span>
               {showCommitBar ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
@@ -201,7 +201,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
           <button
             type="button"
             onClick={() => setIsMinimized((prev) => !prev)}
-            className="flex items-center gap-1 rounded border border-[#30363d] bg-[#21262d] px-1.5 py-0.5 text-[10px] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#8b949e] transition-colors"
+            className="flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-1.5 py-0.5 text-[10px] text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)] hover:border-[var(--ui-stroke-secondary)] transition-colors duration-100 hover:transition-none"
             title={isMinimized ? 'Expand' : 'Minimize'}
           >
             {isMinimized ? 'Expand' : 'Minimize'}
@@ -209,10 +209,10 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         </div>
       </div>
 
-      {!isMinimized && <p role="note" className="border-b border-[#30363d] px-3.5 py-2 text-[11px] text-[#8b949e]">{UNSCOPED_RECEIPT_REASON}</p>}
+      {!isMinimized && <p role="note" className="border-b border-[var(--ui-stroke-quaternary)] px-3.5 py-2 text-[11px] text-[var(--ui-text-tertiary)]">{UNSCOPED_RECEIPT_REASON}</p>}
       {/* File List */}
       {!isMinimized && (
-        <div className="divide-y divide-[#21262d]/60 bg-[#0d1117] p-1">
+        <div className="divide-y divide-[var(--ui-stroke-quaternary)] bg-[var(--ui-bg-chrome)] p-1">
           {files.map(({ stat, artifactId }) => {
           const filename = stat.path.replace(/.*[/\\]/, '');
           const dir = stat.path.includes('/') || stat.path.includes('\\')
@@ -224,13 +224,13 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               key={stat.path}
               data-file-link="true"
               data-file-path={stat.path}
-              className="flex items-center justify-between px-3 py-2 text-xs hover:bg-[#161b22]/40 rounded-lg transition-colors group"
+              className="group flex items-center justify-between rounded-lg px-3 py-2 text-xs transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)]"
             >
               <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
-                <FileCode2 size={14} className="text-[#8b949e] shrink-0" />
-                <span className="truncate font-mono text-[11px] text-[#c9d1d9]" title={stat.path}>
-                  {dir ? <span className="text-[#6e7681] mr-1">{dir}/</span> : null}
-                  <span className="text-white font-medium">{filename}</span>
+                <FileCode2 size={14} className="text-[var(--ui-text-tertiary)] shrink-0" />
+                <span className="truncate font-mono text-[11px] text-[var(--ui-text-secondary)]" title={stat.path}>
+                  {dir ? <span className="text-[var(--ui-text-quaternary)] mr-1">{dir}/</span> : null}
+                  <span className="text-[var(--ui-text-primary)] font-medium">{filename}</span>
                 </span>
               </div>
 
@@ -238,12 +238,12 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                 {/* Diff stats badge */}
                 <div className="flex items-center gap-1 font-mono text-[10px]">
                   {stat.additions > 0 && (
-                    <span className="px-1.5 py-0.2 rounded bg-[#238636]/20 text-[#3fb950] font-medium border border-[#238636]/30">
+                    <span className="px-1.5 py-0.2 rounded bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] font-medium border border-[var(--ui-green)]/30">
                       +{stat.additions}
                     </span>
                   )}
                   {stat.deletions > 0 && (
-                    <span className="px-1.5 py-0.2 rounded bg-[#da3633]/20 text-[#f85149] font-medium border border-[#da3633]/30">
+                    <span className="px-1.5 py-0.2 rounded bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] font-medium border border-[var(--ui-red)]/30">
                       -{stat.deletions}
                     </span>
                   )}
@@ -254,7 +254,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                   <button
                     type="button"
                     onClick={() => onSelectArtifact(artifactId)}
-                    className="flex items-center gap-1 rounded border border-[#30363d] bg-[#21262d] px-2 py-0.5 text-[10px] text-[#58a6ff] hover:bg-[#30363d] hover:text-white transition-colors"
+                    className="flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-2 py-0.5 text-[10px] text-[var(--ui-accent)] hover:bg-[var(--ui-control-hover)] hover:text-[var(--ui-text-primary)] transition-colors duration-100 hover:transition-none"
                     title="Review unified diff"
                   >
                     <span>Review</span>
@@ -264,9 +264,9 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
 
                 {/* Accept & Revert buttons */}
                 {fileActions[stat.path] === 'reverted' ? (
-                  <span className="text-[10px] text-[#8b949e] font-mono italic">Reverted</span>
+                  <span className="text-[10px] text-[var(--ui-text-tertiary)] font-mono italic">Reverted</span>
                 ) : fileActions[stat.path] === 'accepted' ? (
-                  <span className="flex items-center gap-1 text-[10px] text-[#3fb950] font-mono">
+                  <span className="flex items-center gap-1 text-[10px] text-[var(--ui-green)] font-mono">
                     <Check size={11} /> Staged
                   </span>
                 ) : (
@@ -275,7 +275,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                       type="button"
                       disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleStageFile(stat.path)}
-                      className="flex items-center gap-0.5 rounded border border-[#238636]/40 bg-[#238636]/10 px-1.5 py-0.5 text-[10px] text-[#3fb950] hover:bg-[#238636]/20 transition-colors"
+                      className="flex items-center gap-0.5 rounded border border-[var(--ui-green)]/35 bg-[var(--ui-diff-add-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-add-fg)] hover:opacity-90 transition-colors"
                       title="Accept / stage this file change"
                     >
                       <Check size={10} />
@@ -285,7 +285,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                       type="button"
                       disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleRevertFile(stat.path)}
-                      className="flex items-center gap-0.5 rounded border border-[#da3633]/40 bg-[#da3633]/10 px-1.5 py-0.5 text-[10px] text-[#f85149] hover:bg-[#da3633]/20 transition-colors"
+                      className="flex items-center gap-0.5 rounded border border-[var(--ui-red)]/35 bg-[var(--ui-diff-remove-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-remove-fg)] hover:opacity-90 transition-colors"
                       title="Revert / discard changes to this file"
                     >
                       <Undo2 size={10} />
@@ -302,7 +302,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
 
       {/* One-Click Git Commit & Push Bar */}
       {!isMinimized && showCommitBar && gitStatus?.isRepo && (
-        <div className="border-t border-[#30363d] bg-[#161b22] p-3 space-y-2">
+        <div className="border-t border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] p-3 space-y-2">
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -310,7 +310,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               onChange={(e) => setCommitMessage(e.target.value)}
               placeholder="Commit message (e.g. feat: add terminal support)..."
               disabled={isCommitting}
-              className="flex-1 rounded border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5 font-mono text-xs text-[#e6edf3] placeholder:text-[#6e7681] outline-none focus:border-[#58a6ff]"
+              className="flex-1 rounded border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg-chrome)] px-2.5 py-1.5 font-mono text-xs text-[var(--ui-text-primary)] placeholder:text-[var(--ui-text-quaternary)] outline-none focus:border-[var(--ui-accent)]"
             />
             <button
               type="button"
@@ -326,7 +326,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
               type="button"
               onClick={() => handleCommit(true)}
               disabled={isCommitting || !(commitMessage || '').trim()}
-              className="flex items-center gap-1.5 rounded bg-[#1f6feb] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#388bfd] disabled:opacity-50 transition-colors shrink-0"
+              className="flex items-center gap-1.5 rounded bg-[var(--ui-accent)] px-3 py-1.5 text-xs font-medium text-[var(--ui-accent-fg)] hover:opacity-90 disabled:opacity-50 transition-opacity shrink-0"
               title="Commit and push to remote origin"
             >
               {isCommitting ? <Loader2 size={12} className="animate-spin" /> : <GitPullRequest size={12} />}
@@ -341,8 +341,8 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         <div
           className={`flex items-center justify-between border-t px-3 py-1.5 text-xs ${
             commitResult.success
-              ? 'border-[#238636]/40 bg-[#238636]/10 text-[#3fb950]'
-              : 'border-[#da3633]/40 bg-[#da3633]/10 text-[#f85149]'
+              ? 'border-[var(--ui-green)]/35 bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)]'
+              : 'border-[var(--ui-red)]/35 bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)]'
           }`}
         >
           <div className="flex items-center gap-2 truncate">

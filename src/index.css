@@ -2,61 +2,249 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --ui-canvas: #0d1117;
-  --ui-surface: #161b22;
-  --ui-border: #30363d;
-  --ui-text: #e6edf3;
-  --ui-muted: #8b949e;
-  --ui-focus: #58a6ff;
-  --ui-ease: cubic-bezier(0.2, 0, 0, 1);
+:root,
+:root[data-theme="nous-dark"] {
   color-scheme: dark;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--ui-canvas);
-  color: var(--ui-text);
+  --ui-base: #e6edf3;
+  --ui-bg-chrome: #0d1117;
+  --ui-bg-sidebar: #010409;
+  --ui-bg-editor: #12171f;
+  --ui-bg-elevated: #161b22;
+  --ui-widget-bg: #12171f;
+  --ui-user-bubble: #111d30;
+  --ui-accent: #4a84fe;
+  --ui-accent-hover: #6b9cff;
+  --ui-accent-fg: #ffffff;
+  --ui-tool-dot: #4a84fe;
+  --ui-green: #3fb950;
+  --ui-yellow: #d29922;
+  --ui-orange: #f0883e;
+  --ui-red: #f85149;
+  --ui-purple: #a371f7;
+  --ui-cyan: #39c5cf;
+  --ui-code-bg: #0a0e14;
+}
+
+:root[data-theme="antigravity"] {
+  color-scheme: dark;
+  --ui-base: #eceef2;
+  --ui-bg-chrome: #131417;
+  --ui-bg-sidebar: #0e0f12;
+  --ui-bg-editor: #1a1c21;
+  --ui-bg-elevated: #1e2026;
+  --ui-widget-bg: #181a1f;
+  --ui-user-bubble: #1d2230;
+  --ui-accent: #7aa2ff;
+  --ui-accent-hover: #96b6ff;
+  --ui-accent-fg: #0b0d12;
+  --ui-tool-dot: #7aa2ff;
+  --ui-green: #4ade80;
+  --ui-yellow: #fbbf24;
+  --ui-orange: #fb923c;
+  --ui-red: #f87171;
+  --ui-purple: #c084fc;
+  --ui-cyan: #38bdf8;
+  --ui-code-bg: #0f1014;
+}
+
+:root[data-theme="nous-light"] {
+  color-scheme: light;
+  --ui-base: #1f2328;
+  --ui-bg-chrome: #ffffff;
+  --ui-bg-sidebar: #f6f8fa;
+  --ui-bg-editor: #ffffff;
+  --ui-bg-elevated: #ffffff;
+  --ui-widget-bg: #f6f8fa;
+  --ui-user-bubble: #e8f0fe;
+  --ui-accent: #0053fd;
+  --ui-accent-hover: #1a66ff;
+  --ui-accent-fg: #ffffff;
+  --ui-tool-dot: #0053fd;
+  --ui-green: #1a7f37;
+  --ui-yellow: #9a6700;
+  --ui-orange: #bc4c00;
+  --ui-red: #cf222e;
+  --ui-purple: #8250df;
+  --ui-cyan: #0e7490;
+  --ui-code-bg: #f6f8fa;
+  --shadow-nous:
+    0 2px 6px -2px rgba(0, 0, 0, 0.08),
+    0 10px 22px -8px rgba(0, 0, 0, 0.10),
+    0 24px 44px -16px rgba(0, 0, 0, 0.12);
+  --shadow-composer:
+    0 1px 2px rgba(0, 0, 0, 0.05),
+    0 6px 18px -8px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-theme="catppuccin"] {
+  color-scheme: dark;
+  --ui-base: #cdd6f4;
+  --ui-bg-chrome: #1e1e2e;
+  --ui-bg-sidebar: #181825;
+  --ui-bg-editor: #242437;
+  --ui-bg-elevated: #28283d;
+  --ui-widget-bg: #232336;
+  --ui-user-bubble: #2a2b44;
+  --ui-accent: #89b4fa;
+  --ui-accent-hover: #a6c8ff;
+  --ui-accent-fg: #11111b;
+  --ui-tool-dot: #cba6f7;
+  --ui-green: #a6e3a1;
+  --ui-yellow: #f9e2af;
+  --ui-orange: #fab387;
+  --ui-red: #f38ba8;
+  --ui-purple: #cba6f7;
+  --ui-cyan: #89dceb;
+  --ui-code-bg: #161622;
+}
+
+:root[data-theme="ember"] {
+  color-scheme: dark;
+  --ui-base: #f2e8dc;
+  --ui-bg-chrome: #141110;
+  --ui-bg-sidebar: #0d0a09;
+  --ui-bg-editor: #1c1715;
+  --ui-bg-elevated: #221c19;
+  --ui-widget-bg: #1b1614;
+  --ui-user-bubble: #261d17;
+  --ui-accent: #f0a43b;
+  --ui-accent-hover: #f7b85e;
+  --ui-accent-fg: #171009;
+  --ui-tool-dot: #f5b942;
+  --ui-green: #58b87a;
+  --ui-yellow: #f5b942;
+  --ui-orange: #ec7a44;
+  --ui-red: #e55b5b;
+  --ui-purple: #c68ce8;
+  --ui-cyan: #59b7c4;
+  --ui-code-bg: #0f0c0b;
+}
+
+:root {
+  --ui-text-primary: color-mix(in srgb, var(--ui-base) 94%, transparent);
+  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+  --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 64%, transparent);
+  --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 44%, transparent);
+
+  --ui-stroke-primary: color-mix(in srgb, var(--ui-accent) 20%, color-mix(in srgb, var(--ui-base) 13%, transparent));
+  --ui-stroke-secondary: color-mix(in srgb, var(--ui-accent) 10%, color-mix(in srgb, var(--ui-base) 9%, transparent));
+  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-accent) 5%, color-mix(in srgb, var(--ui-base) 6.5%, transparent));
+  --ui-stroke-quaternary: color-mix(in srgb, var(--ui-base) 4%, transparent);
+
+  --ui-row-hover: color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-base) 4.5%, transparent));
+  --ui-row-active: color-mix(in srgb, var(--ui-accent) 13%, color-mix(in srgb, var(--ui-base) 6%, transparent));
+  --ui-control-fill: color-mix(in srgb, var(--ui-base) 5.5%, transparent);
+  --ui-control-hover: color-mix(in srgb, var(--ui-accent) 8%, color-mix(in srgb, var(--ui-base) 8%, transparent));
+
+  --stroke-nous: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  --shadow-nous:
+    0 2px 6px -2px color-mix(in srgb, #000 30%, transparent),
+    0 10px 20px -8px color-mix(in srgb, #000 32%, transparent),
+    0 24px 48px -18px color-mix(in srgb, #000 40%, transparent);
+  --shadow-composer:
+    0 1px 2px color-mix(in srgb, #000 14%, transparent),
+    0 8px 24px -10px color-mix(in srgb, #000 28%, transparent);
+
+  --ui-diff-add-bg: color-mix(in srgb, var(--ui-green) 13%, transparent);
+  --ui-diff-add-fg: var(--ui-green);
+  --ui-diff-remove-bg: color-mix(in srgb, var(--ui-red) 13%, transparent);
+  --ui-diff-remove-fg: var(--ui-red);
+
+  /* Legacy variable aliases for gradual component migration */
+  --ui-bg-canvas: var(--ui-bg-chrome);
+  --ui-control-fill-hover: var(--ui-control-hover);
+  --ui-text-heading: var(--ui-text-primary);
+  --ui-text-muted: var(--ui-text-quaternary);
+  --ui-canvas: var(--ui-bg-chrome);
+  --ui-surface: var(--ui-bg-elevated);
+  --ui-border: var(--ui-stroke-secondary);
+  --ui-text: var(--ui-text-primary);
+  --ui-muted: var(--ui-text-tertiary);
+  --ui-focus: var(--ui-accent);
+  --ui-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, ui-sans-serif, system-ui, sans-serif;
+  background: var(--ui-bg-chrome);
+  color: var(--ui-text-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { background: var(--ui-canvas); }
+body { background: var(--ui-bg-chrome); color: var(--ui-text-primary); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
-::selection { background: rgb(31 111 235 / 45%); color: #ffffff; }
+::selection { background: color-mix(in srgb, var(--ui-accent) 36%, transparent); color: var(--ui-text-primary); }
 
 @layer components {
   .icon-button {
-    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#8b949e] transition-colors duration-100 hover:bg-[#21262d] hover:text-[#e6edf3] disabled:opacity-40;
+    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ui-text-tertiary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)] disabled:opacity-40;
   }
   .toolbar-button {
-    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#30363d] bg-[#161b22] px-2.5 text-xs text-[#c9d1d9] transition-colors duration-100 hover:bg-[#21262d] disabled:opacity-40;
+    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-control-fill)] px-2.5 text-xs text-[var(--ui-text-secondary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-control-hover)] hover:text-[var(--ui-text-primary)] disabled:opacity-40;
   }
   .primary-button {
-    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-[#1f6feb] px-3 text-xs font-medium text-white transition-colors duration-100 hover:bg-[#388bfd] disabled:opacity-40;
+    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-[var(--ui-accent)] px-3 text-xs font-medium text-[var(--ui-accent-fg)] transition-colors duration-100 hover:transition-none hover:brightness-110 disabled:opacity-40;
   }
   .danger-button {
-    @apply inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-[#f85149] transition-colors duration-100 hover:bg-[#da3633]/15;
+    @apply inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-[var(--ui-red)] transition-colors duration-100 hover:transition-none hover:bg-[color-mix(in_srgb,var(--ui-red)_15%,transparent)];
   }
   .session-action {
-    @apply flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[11px] text-[#c9d1d9] hover:bg-[#21262d];
+    @apply flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[11px] text-[var(--ui-text-secondary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)];
   }
   .settings-label {
-    @apply block text-[11px] font-medium text-[#8b949e];
+    @apply block text-[11px] font-medium text-[var(--ui-text-tertiary)];
   }
   .settings-input {
-    @apply mt-1.5 block w-full rounded-md border border-[#30363d] bg-[#0d1117] px-2.5 py-2 text-xs font-normal text-[#e6edf3] outline-none transition-colors duration-100 placeholder:text-[#484f58] focus:border-[#58a6ff];
+    @apply mt-1.5 block w-full rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg-chrome)] px-2.5 py-2 text-xs font-normal text-[var(--ui-text-primary)] outline-none transition-colors duration-100 placeholder:text-[var(--ui-text-quaternary)] focus:border-[var(--ui-accent)];
   }
 }
+
+/* shortcut: temporary legacy-hex bridge for unmigrated components until Fase 2-3 */
+:root .bg-\[\#0d1117\] { background-color: var(--ui-bg-chrome); }
+:root .bg-\[\#010409\] { background-color: var(--ui-bg-sidebar); }
+:root .bg-\[\#141416\] { background-color: var(--ui-bg-sidebar); }
+:root .bg-\[\#161b22\] { background-color: var(--ui-bg-elevated); }
+:root .bg-\[\#1c1c1f\] { background-color: var(--ui-bg-editor); }
+:root .bg-\[\#21262d\],
+:root .bg-\[\#27272a\] { background-color: var(--ui-control-fill); }
+:root .hover\:bg-\[\#161b22\]:hover,
+:root .hover\:bg-\[\#1c1c1f\]:hover,
+:root .hover\:bg-\[\#21262d\]:hover,
+:root .hover\:bg-\[\#27272a\]:hover { background-color: var(--ui-row-hover); }
+:root .border-\[\#30363d\],
+:root .border-\[\#343438\] { border-color: var(--ui-stroke-secondary); }
+:root .text-\[\#e6edf3\],
+:root .text-\[\#f4f4f5\] { color: var(--ui-text-primary); }
+:root .text-\[\#c9d1d9\],
+:root .text-\[\#d4d4d8\] { color: var(--ui-text-secondary); }
+:root .text-\[\#8b949e\],
+:root .text-\[\#a1a1aa\],
+:root .text-\[\#92929c\],
+:root .text-\[\#6e7681\] { color: var(--ui-text-tertiary); }
+:root .hover\:text-\[\#e6edf3\]:hover,
+:root .hover\:text-\[\#f4f4f5\]:hover { color: var(--ui-text-primary); }
+:root .text-\[\#58a6ff\] { color: var(--ui-accent); }
+:root .bg-\[\#58a6ff\] { background-color: var(--ui-accent); }
+:root .text-\[\#79c0ff\] { color: var(--ui-accent-hover); }
+:root .text-\[\#a5d6ff\] { color: var(--ui-accent); }
+:root .text-\[\#f85149\] { color: var(--ui-red); }
+:root .text-\[\#f0883e\] { color: var(--ui-orange); }
+:root .text-\[\#3fb950\] { color: var(--ui-green); }
+:root .bg-\[\#1f6feb\] { background-color: var(--ui-accent); color: var(--ui-accent-fg); }
+:root .hover\:bg-\[\#388bfd\]:hover { background-color: var(--ui-accent-hover); }
 
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #30363d; border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: #484f58; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ui-base) 18%, transparent); border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--ui-base) 30%, transparent); border: 2px solid transparent; background-clip: padding-box; }
 
 button:focus-visible, select:focus-visible, a:focus-visible {
   outline: 2px solid var(--ui-focus);
@@ -85,6 +273,7 @@ input:focus-visible, textarea:focus-visible {
    Tanpa forwards, transform selesai dilepas agar fixed child tidak terperangkap. */
 .ui-enter { animation: ui-rise 160ms var(--ui-ease); }
 .ui-panel-enter { animation: ui-rise 160ms var(--ui-ease); }
+.ui-panel-enter.shadow-lg { box-shadow: var(--shadow-nous); }
 .ui-menu { animation: ui-rise 140ms var(--ui-ease); }
 .ui-overlay-enter { animation: ui-fade 140ms ease-out; }
 .ui-drawer-enter { animation: ui-drawer 180ms var(--ui-ease); }

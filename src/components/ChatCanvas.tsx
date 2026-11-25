@@ -19,6 +19,7 @@ import {
   Image as ImageIcon,
   Mic,
   MicOff,
+  Palette,
   Paperclip,
   Play,
   Plus,
@@ -45,6 +46,7 @@ import { SelectedSkillChip } from './SelectedSkillChip';
 import { TimelineScrubber } from './TimelineScrubber';
 import { ChatHeader } from './ChatHeader';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
+import { useTheme } from '../themes';
 
 const EXECUTION_MODES: Array<{
   id: ExecutionMode;
@@ -763,6 +765,16 @@ export function ChatCanvas({
     return 'turbo';
   });
   const [executionMenuOpen, setExecutionMenuOpen] = useState(false);
+  const { preset: themePreset, cycleTheme } = useTheme();
+  const [statusStackCollapsedBySession, setStatusStackCollapsedBySession] = useState<Record<string, boolean>>({});
+  const stackSessionKey = currentSessionId ?? 'unsaved-session';
+  const isStackCollapsed = Boolean(statusStackCollapsedBySession[stackSessionKey]);
+  const toggleStatusStack = useCallback(() => {
+    setStatusStackCollapsedBySession((prev) => ({
+      ...prev,
+      [stackSessionKey]: !prev[stackSessionKey],
+    }));
+  }, [stackSessionKey]);
 
   const handleSelectExecutionMode = useCallback((mode: ExecutionMode) => {
     setExecutionMode(mode);
@@ -1973,21 +1985,32 @@ export function ChatCanvas({
     }
   };
 
+  const activeRunStatus = isHistoryPreview ? null : runStatus;
+  const hasActivity = subagents.length > 0 || backgroundTasks.length > 0 || (isStreaming && activeSkills.length > 0);
+  const hasRunStatusBar = Boolean(
+    activeRunStatus || (contextUsage && contextUsage.usedTokens > 0 && contextUsage.maxTokens > 0),
+  );
+  const hasStatusStackContent = hasActivity || queuedPrompts.length > 0 || hasRunStatusBar;
+  const isStatusStackVisible = hasStatusStackContent && !isStackCollapsed;
+  const workspaceLabel = workspaceCwd
+    ? workspaceCwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || workspaceCwd
+    : 'No workspace';
+
   return (
     <div
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative flex h-full min-w-0 flex-1 flex-col bg-[#0d1117]"
+      className="relative flex h-full min-w-0 flex-1 flex-col bg-[var(--ui-bg-canvas)]"
     >
       {/* Drag & Drop Visual Overlay */}
       {isDraggingOver && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0d1117]/90 backdrop-blur-sm border-2 border-dashed border-[#58a6ff] m-2 rounded-xl pointer-events-none ui-enter select-none">
-          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-[#161b22] border border-[#30363d] shadow-lg mb-3">
-            <FileCode2 size={28} className="text-[#58a6ff]" />
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[var(--ui-accent)] bg-[var(--ui-bg-canvas)]/95 m-2 pointer-events-none ui-enter select-none">
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] shadow-nous">
+            <FileCode2 size={28} className="text-[var(--ui-accent)]" />
           </div>
-          <p className="text-sm font-semibold text-[#f0f6fc]">Drop files or folders here</p>
-          <p className="text-xs text-[#8b949e] mt-1">Automatically attach as context to your prompt</p>
+          <p className="text-sm font-semibold text-[var(--ui-text-primary)]">Drop files or folders here</p>
+          <p className="mt-1 text-xs text-[var(--ui-text-tertiary)]">Automatically attach as context to your prompt</p>
         </div>
       )}
       <ChatHeader
@@ -2022,7 +2045,7 @@ export function ChatCanvas({
       <div className={`chat-stage relative flex min-h-0 flex-1 flex-col overflow-hidden ${messages.length === 0 ? 'chat-stage--welcome' : ''}`}>
         {isInChatSearchOpen && (
           <div
-            className="absolute right-6 top-3 z-30 flex items-center gap-1.5 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-2.5 py-1.5 shadow-2xl text-xs backdrop-blur-md"
+            className="absolute right-6 top-3 z-30 flex items-center gap-1.5 rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-2.5 py-1.5 shadow-nous text-xs"
             data-testid="in-chat-search-bar"
           >
             <Search size={13} className="text-[#8b949e] shrink-0" />
@@ -2150,32 +2173,32 @@ export function ChatCanvas({
           }
         }}
       >
-        {messages.length > 0 && <div className="mx-auto mb-4 flex max-w-3xl flex-wrap items-center justify-center gap-3 text-xs text-[#8b949e]">
+        {messages.length > 0 && <div className="mx-auto mb-4 flex max-w-3xl flex-wrap items-center justify-center gap-3 text-xs text-[var(--ui-text-tertiary)]">
           <span>{messages.length} / {totalMessageCount} messages loaded</span>
           {hasOlderMessages && onLoadOlderMessages && (
-            <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} className="flex items-center gap-2 rounded border border-[#30363d] px-3 py-2 disabled:opacity-50">
+            <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} className="flex items-center gap-2 rounded border border-[var(--ui-stroke-secondary)] px-3 py-2 transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)] disabled:opacity-50">
               {loadingOlderMessages && <LoaderCircle size={13} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />}
               {loadingOlderMessages ? 'Loading older messages\u2026' : 'Load older messages'}
             </button>
           )}
-          {historyError && <div role="alert" className="text-[#f85149]">{historyError}{' '}
+          {historyError && <div role="alert" className="text-[var(--ui-red)]">{historyError}{' '}
             {onLoadOlderMessages && <button type="button" disabled={loadingOlderMessages || isSessionLoading} onClick={() => void loadHistory()} aria-label="Retry loading older messages" className="underline">Retry</button>}
           </div>}
         </div>}
         {messages.length === 0 ? (
           <div className="chat-welcome ui-enter mx-auto flex w-full max-w-3xl flex-col justify-center px-4 py-8 text-left">
-            <h2 className="text-[26px] leading-tight font-semibold tracking-tight text-[#e6edf3]">What would you like to work on?</h2>
-            <p className="mt-3 text-sm leading-6 text-[#8b949e]">{workspaceCwd ? 'Describe a task, ask a question, or attach files for context.' : 'Open a project folder, or start with a question.'}</p>
+            <h2 className="text-[26px] leading-tight font-semibold tracking-tight text-[var(--ui-text-primary)]">What would you like to work on?</h2>
+            <p className="mt-3 text-sm leading-6 text-[var(--ui-text-tertiary)]">{workspaceCwd ? 'Describe a task, ask a question, or attach files for context.' : 'Open a project folder, or start with a question.'}</p>
             {!workspaceCwd && (
-              <button type="button" onClick={onOpenFolder} disabled={!onOpenFolder} className="mt-5 inline-flex w-fit items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22] px-4 py-2 text-[13px] font-medium text-[#e6edf3] hover:bg-[#21262d] disabled:opacity-50">
+              <button type="button" onClick={onOpenFolder} disabled={!onOpenFolder} className="mt-5 inline-flex w-fit items-center gap-2 rounded-lg border border-[var(--ui-stroke-secondary)] bg-[var(--ui-control-fill)] px-4 py-2 text-[13px] font-medium text-[var(--ui-text-primary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-control-hover)] disabled:opacity-50">
                 <FolderOpen size={15} aria-hidden="true" /> Open folder
               </button>
             )}
-            <ul className="mt-4 space-y-1 text-xs leading-5 text-[#8b949e]">
+            <ul className="mt-4 space-y-1 text-xs leading-5 text-[var(--ui-text-tertiary)]">
               <li>Find the code responsible for a failing test.</li>
               {workspaceCwd && <li>Explain how this workspace is organized.</li>}
             </ul>
-            <p className="mt-4 font-mono text-[11px] text-[#8b949e]">@ for workspace files &middot; / for commands</p>
+            <p className="mt-4 font-mono text-[11px] text-[var(--ui-text-tertiary)]">@ for workspace files &middot; / for commands</p>
           </div>
         ) : (
           <div ref={listRef} className="relative mx-auto w-full max-w-3xl" style={{ height: virtualizer.getTotalSize() }}>
@@ -2230,7 +2253,7 @@ export function ChatCanvas({
             }
           }}
           aria-label={isStreaming ? 'Jump to bottom' : 'Return to latest'}
-          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-lg backdrop-blur-md hover:border-[#58a6ff]/60 hover:bg-[#21262d] transition-colors ui-enter"
+          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-3 py-1.5 text-xs text-[var(--ui-text-primary)] shadow-nous hover:border-[var(--ui-accent)]/60 hover:bg-[var(--ui-control-fill-hover)] transition-colors duration-100 hover:transition-none ui-enter"
         >
           <ChevronDown size={13} className="text-[#58a6ff]" />
           <span className="font-medium text-[11px]">
@@ -2244,20 +2267,20 @@ export function ChatCanvas({
         </button>
       )}
 
-      <div className="chat-composer relative shrink-0 border-t border-[#30363d] bg-[#0d1117] p-3">
+      <div className="chat-composer relative shrink-0 bg-[var(--ui-bg-canvas)] px-3 pb-2.5 pt-1">
         {/* Council Mode Banner with Candidate A and Candidate B selectors */}
         {councilMode && (
-          <div className="mx-auto mb-2.5 w-full max-w-3xl rounded-lg border border-[#30363d] bg-[#161b22] p-2.5 shadow-sm">
-            <div className="flex items-center justify-between border-b border-[#21262d] pb-2 text-xs">
+          <div className="mx-auto mb-2.5 w-full max-w-3xl rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)] p-2.5">
+            <div className="flex items-center justify-between border-b border-[var(--ui-stroke-quaternary)] pb-2 text-xs">
               <div className="flex items-center gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#f0883e]" />
-                <span className="font-mono text-[11px] font-medium text-[#e6edf3]">Dual Model Comparison</span>
-                <span className="text-[10px] text-[#8b949e]">(A/B)</span>
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--ui-orange)]" />
+                <span className="font-mono text-[11px] font-medium text-[var(--ui-text-primary)]">Dual Model Comparison</span>
+                <span className="text-[10px] text-[var(--ui-text-tertiary)]">(A/B)</span>
               </div>
               <button
                 type="button"
                 onClick={() => setCouncilMode(false)}
-                className="text-[11px] text-[#8b949e] hover:text-[#e6edf3] transition-colors"
+                className="text-[11px] text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-primary)] transition-colors duration-100 hover:transition-none"
                 title="Close comparison mode"
               >
                 Close
@@ -2266,39 +2289,39 @@ export function ChatCanvas({
 
             <div className="mt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               {/* Candidate A Picker */}
-              <div className="flex flex-1 items-center gap-2 rounded border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5">
-                <span className="font-mono text-[10px] font-bold text-[#8b949e]">A</span>
+              <div className="flex flex-1 items-center gap-2 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] px-2.5 py-1.5">
+                <span className="font-mono text-[10px] font-bold text-[var(--ui-text-tertiary)]">A</span>
                 <select
                   value={councilModelA ? `${councilModelA.providerId}::${councilModelA.model}` : ''}
                   onChange={(e) => {
                     const [pId, ...mParts] = e.target.value.split('::');
                     setCouncilModelA({ providerId: pId, model: mParts.join('::') });
                   }}
-                  className="w-full bg-transparent font-mono text-xs text-[#e6edf3] focus:outline-none cursor-pointer"
+                  className="w-full bg-transparent font-mono text-xs text-[var(--ui-text-primary)] focus:outline-none cursor-pointer"
                 >
                   {availableModelsList.map((m) => (
-                    <option key={`a-${m.providerId}-${m.model}`} value={`${m.providerId}::${m.model}`} className="bg-[#161b22] text-[#e6edf3]">
+                    <option key={`a-${m.providerId}-${m.model}`} value={`${m.providerId}::${m.model}`} className="bg-[var(--ui-bg-elevated)] text-[var(--ui-text-primary)]">
                       {m.model} ({m.providerName})
                     </option>
                   ))}
                 </select>
               </div>
 
-              <span className="text-center font-mono text-[11px] text-[#6e7681] px-1 select-none">vs</span>
+              <span className="text-center font-mono text-[11px] text-[var(--ui-text-muted)] px-1 select-none">vs</span>
 
               {/* Candidate B Picker */}
-              <div className="flex flex-1 items-center gap-2 rounded border border-[#30363d] bg-[#0d1117] px-2.5 py-1.5">
-                <span className="font-mono text-[10px] font-bold text-[#8b949e]">B</span>
+              <div className="flex flex-1 items-center gap-2 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] px-2.5 py-1.5">
+                <span className="font-mono text-[10px] font-bold text-[var(--ui-text-tertiary)]">B</span>
                 <select
                   value={councilModelB ? `${councilModelB.providerId}::${councilModelB.model}` : ''}
                   onChange={(e) => {
                     const [pId, ...mParts] = e.target.value.split('::');
                     setCouncilModelB({ providerId: pId, model: mParts.join('::') });
                   }}
-                  className="w-full bg-transparent font-mono text-xs text-[#e6edf3] focus:outline-none cursor-pointer"
+                  className="w-full bg-transparent font-mono text-xs text-[var(--ui-text-primary)] focus:outline-none cursor-pointer"
                 >
                   {availableModelsList.map((m) => (
-                    <option key={`b-${m.providerId}-${m.model}`} value={`${m.providerId}::${m.model}`} className="bg-[#161b22] text-[#e6edf3]">
+                    <option key={`b-${m.providerId}-${m.model}`} value={`${m.providerId}::${m.model}`} className="bg-[var(--ui-bg-elevated)] text-[var(--ui-text-primary)]">
                       {m.model} ({m.providerName})
                     </option>
                   ))}
@@ -2308,25 +2331,15 @@ export function ChatCanvas({
           </div>
         )}
 
-        <ActivityTray
-          key={currentSessionId ?? 'unsaved-session'}
-          subagents={subagents}
-          tasks={backgroundTasks}
-          activeSkills={isStreaming ? activeSkills : undefined}
-          onSelectArtifact={onSelectArtifact}
-          onKillTask={onKillBackgroundTask}
-          onRefreshTasks={onRefreshBackgroundTasks}
-        />
-
         {slashOpen && (
-          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-40 mx-auto max-w-3xl overflow-hidden rounded-xl border border-[#30363d] bg-[#161b22]/98 shadow-lg backdrop-blur-md">
+          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-40 mx-auto max-w-3xl overflow-hidden rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] shadow-nous">
             {/* Active item usage tooltip bubble */}
             {slashMatches[activeIndex] && (slashMatches[activeIndex].usage || slashMatches[activeIndex].description) && (
-              <div className="hidden lg:flex absolute right-3 top-2.5 z-50 max-w-xs flex-col rounded-lg border border-[#30363d] bg-[#0d1117]/95 p-2 text-xs shadow-lg backdrop-blur-md">
-                <span className="font-mono text-[11px] font-bold text-[#8b949e]">
+              <div className="hidden lg:flex absolute right-3 top-2.5 z-50 max-w-xs flex-col rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-canvas)] p-2 text-xs shadow-nous">
+                <span className="font-mono text-[11px] font-bold text-[var(--ui-text-tertiary)]">
                   {slashMatches[activeIndex].command}
                 </span>
-                <span className="mt-0.5 text-[11px] text-[#8b949e] whitespace-pre-line">
+                <span className="mt-0.5 text-[11px] text-[var(--ui-text-tertiary)] whitespace-pre-line">
                   {slashMatches[activeIndex].usage || slashMatches[activeIndex].description}
                 </span>
               </div>
@@ -2335,7 +2348,7 @@ export function ChatCanvas({
             <div className="max-h-80 overflow-y-auto p-1.5 scrollbar-thin">
               {groupedMatches.map((group) => (
                 <div key={group.category} className="mb-1">
-                  <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[#8b949e]">
+                  <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ui-text-tertiary)]">
                     {group.category}
                   </div>
                   {group.items.map((item) => {
@@ -2348,29 +2361,29 @@ export function ChatCanvas({
                         data-slash-item={flatIndex}
                         onClick={() => handleSelectSlashItem(item)}
                         onMouseEnter={() => setActiveIndex(flatIndex)}
-                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors duration-100 hover:transition-none ${
                           isActive
-                            ? 'border border-[#30363d] bg-[#21262d] text-[#e6edf3]'
-                            : 'text-[#c9d1d9] hover:bg-[#21262d]'
+                            ? 'bg-[var(--ui-row-active)] text-[var(--ui-text-primary)]'
+                            : 'text-[var(--ui-text-secondary)] hover:bg-[var(--ui-row-hover)]'
                         }`}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           {item.iconType === 'terminal' ? (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[#30363d] bg-[#0d1117] font-mono text-[9px] font-bold text-[#8b949e]">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] font-mono text-[9px] font-bold text-[var(--ui-text-tertiary)]">
                               &gt;_
                             </span>
                           ) : (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#8b949e]">
-                              <BookOpen size={13} className="text-[#8b949e]" />
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--ui-text-tertiary)]">
+                              <BookOpen size={13} className="text-[var(--ui-text-tertiary)]" />
                             </span>
                           )}
-                          <span className={`truncate font-mono font-semibold ${isActive ? 'text-[#e6edf3]' : 'text-[#f0f6fc]'}`}>
+                          <span className={`truncate font-mono font-semibold ${isActive ? 'text-[var(--ui-text-primary)]' : 'text-[var(--ui-text-heading)]'}`}>
                             {item.command}
                           </span>
                         </div>
-                        <div className="hidden shrink-0 items-center text-right text-xs text-[#8b949e] sm:flex">
+                        <div className="hidden shrink-0 items-center text-right text-xs text-[var(--ui-text-tertiary)] sm:flex">
                           {item.iconType === 'skill' && (
-                            <span className="mr-1 font-mono text-[9px] text-[#8b949e]/80">skill</span>
+                            <span className="mr-1 font-mono text-[9px] opacity-80">skill</span>
                           )}
                           <span className="max-w-[280px] truncate sm:max-w-[400px]">{item.description}</span>
                         </div>
@@ -2383,101 +2396,141 @@ export function ChatCanvas({
           </div>
         )}
         {mentionOpen && (
-          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-20 mx-auto max-h-64 max-w-3xl overflow-y-auto rounded-lg border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg">
-            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-[#8b949e]"><AtSign size={11} /> Workspace files</div>
-            {loadingFiles && <div className="px-3 py-3 text-xs text-[#8b949e]">Searching workspace…</div>}
-            {!loadingFiles && fileOptions.length === 0 && <div className="px-3 py-3 text-xs text-[#8b949e]">No matching files</div>}
+          <div className="ui-menu absolute bottom-[calc(100%-4px)] left-3 right-3 z-20 mx-auto max-h-64 max-w-3xl overflow-y-auto rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] p-1.5 shadow-nous">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--ui-text-tertiary)]"><AtSign size={11} /> Workspace files</div>
+            {loadingFiles && <div className="px-3 py-3 text-xs text-[var(--ui-text-tertiary)]">Searching workspace…</div>}
+            {!loadingFiles && fileOptions.length === 0 && <div className="px-3 py-3 text-xs text-[var(--ui-text-tertiary)]">No matching files</div>}
             {fileOptions.map((path, index) => (
-              <button key={path} type="button" data-mention-item={index} onClick={() => selectMention(path)} onMouseEnter={() => setActiveIndex(index)} className={`flex w-full items-center gap-2 rounded px-3 py-2 text-left font-mono text-[11px] ${index === activeIndex ? 'bg-[#21262d] text-[#e6edf3]' : 'text-[#8b949e]'}`}>
+              <button key={path} type="button" data-mention-item={index} onClick={() => selectMention(path)} onMouseEnter={() => setActiveIndex(index)} className={`flex w-full items-center gap-2 rounded px-3 py-2 text-left font-mono text-[11px] ${index === activeIndex ? 'bg-[var(--ui-row-active)] text-[var(--ui-text-primary)]' : 'text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-row-hover)]'}`}>
                 <File size={12} className="shrink-0" /><span className="truncate">{path}</span>
               </button>
             ))}
           </div>
         )}
-        {/* Queued Prompts Banner */}
-        {queuedPrompts.length > 0 && (
-          <div
-            className="mx-auto mb-2.5 w-full max-w-3xl space-y-1.5 ui-enter"
-            data-testid="queued-prompts-banner"
-          >
-            <div className="flex items-center justify-between px-1 text-[11px] font-medium text-[#8b949e]">
-              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#8b949e]">
-                <Clock size={11} />
-                Queued Instructions ({queuedPrompts.length})
-              </span>
-              {stoppedWithQueue && !isStreaming && (
-                <button
-                  type="button"
-                  onClick={handleResumeQueue}
-                  className="flex items-center gap-1 rounded bg-[#238636] px-2 py-0.5 text-[10px] font-medium text-white hover:bg-[#2ea043] transition-colors"
-                >
-                  <Play size={10} fill="currentColor" /> Resume Queue
-                </button>
-              )}
-            </div>
-            {queuedPrompts.map((item, index) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between gap-2 rounded-xl border border-[#30363d] bg-[#161b22]/95 px-3 py-1.5 text-xs text-[#e6edf3] shadow-md backdrop-blur-sm transition-colors hover:border-[#58a6ff]/40"
-                data-testid={`queued-prompt-${index}`}
-              >
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="shrink-0 rounded bg-[#30363d]/70 px-1.5 py-0.5 font-mono text-[10px] text-[#8b949e]">
-                    #{index + 1}
-                  </span>
-                  <p className="truncate text-xs text-[#e6edf3]" title={item.prompt}>
-                    {item.prompt}
-                  </p>
-                  {item.attachments && item.attachments.length > 0 && (
-                    <span className="shrink-0 flex items-center gap-1 rounded bg-[#21262d] px-1.5 py-0.5 text-[10px] font-mono text-[#8b949e]">
-                      <Paperclip size={10} /> +{item.attachments.length}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleSendQueuedNow(item.id)}
-                    disabled={queueActionsBlocked || queuedPrompts.some((queued) => queued.sendNow)}
-                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] disabled:opacity-40 transition-colors"
-                    aria-label="Send queued prompt now"
-                    title="Send now (stops the current run)"
-                  >
-                    {item.sendNow ? <LoaderCircle size={13} className="animate-spin" /> : <ArrowRight size={13} />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleEditQueued(item.id)}
-                    disabled={dispatchingQueueRef.current.has(currentSessionId)}
-                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#58a6ff] disabled:opacity-40 transition-colors"
-                    aria-label="Edit queued prompt"
-                    title="Edit prompt in composer"
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveQueued(item.id)}
-                    disabled={dispatchingQueueRef.current.has(currentSessionId)}
-                    className="rounded p-1.5 text-[#8b949e] hover:bg-[#21262d] hover:text-[#f85149] disabled:opacity-40 transition-colors"
-                    aria-label="Remove queued prompt"
-                    title="Remove from queue"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-            ))}
+        {/* Composer-docked Hermes Status Stack + Grip Ridge */}
+        {hasStatusStackContent && (
+          <div className="mx-auto flex w-full max-w-3xl justify-center">
+            <button
+              type="button"
+              data-testid="status-stack-grip"
+              onClick={toggleStatusStack}
+              aria-label={isStackCollapsed ? 'Show status stack' : 'Hide status stack'}
+              aria-expanded={!isStackCollapsed}
+              title={isStackCollapsed ? 'Show status stack' : 'Hide status stack'}
+              className="flex h-3.5 w-20 items-center justify-center rounded-t-md text-[var(--ui-stroke-primary)] transition-colors duration-100 hover:transition-none hover:text-[var(--ui-text-secondary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ui-accent)]"
+            >
+              <span className="h-[3px] w-7 rounded-full bg-current" />
+            </button>
           </div>
         )}
 
-        <RunStatusBar
-          status={isHistoryPreview ? null : runStatus}
-          onCancelPreparation={onStop}
-          contextUsage={contextUsage}
-          onCompact={onCompactSession}
-        />
-        <div className="mx-auto max-w-3xl rounded-xl border border-[#30363d] bg-[#161b22] transition-colors focus-within:border-[#58a6ff]">
+        {isStatusStackVisible && (
+          <div
+            data-testid="status-stack-card"
+            className="mx-auto w-full max-w-3xl overflow-hidden rounded-t-[11px] border border-b-0 border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)]"
+          >
+            <ActivityTray
+              key={currentSessionId ?? 'unsaved-session'}
+              docked
+              subagents={subagents}
+              tasks={backgroundTasks}
+              activeSkills={isStreaming ? activeSkills : undefined}
+              onSelectArtifact={onSelectArtifact}
+              onKillTask={onKillBackgroundTask}
+              onRefreshTasks={onRefreshBackgroundTasks}
+            />
+
+            {queuedPrompts.length > 0 && (
+              <div
+                className="w-full space-y-1 border-b border-[var(--ui-stroke-quaternary)] px-3 py-1.5 ui-enter"
+                data-testid="queued-prompts-banner"
+              >
+                <div className="flex items-center justify-between text-[11px] font-medium text-[var(--ui-text-tertiary)]">
+                  <span className="flex items-center gap-1.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
+                    <Clock size={11} />
+                    Queued Instructions ({queuedPrompts.length})
+                  </span>
+                  {stoppedWithQueue && !isStreaming && (
+                    <button
+                      type="button"
+                      onClick={handleResumeQueue}
+                      className="flex items-center gap-1 rounded bg-[#238636] px-2 py-0.5 text-[10px] font-medium text-white hover:bg-[#2ea043] transition-colors"
+                    >
+                      <Play size={10} fill="currentColor" /> Resume Queue
+                    </button>
+                  )}
+                </div>
+                {queuedPrompts.map((item, index) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] px-2.5 py-1 text-xs text-[var(--ui-text-primary)] transition-colors hover:border-[var(--ui-accent)]/40"
+                    data-testid={`queued-prompt-${index}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="shrink-0 rounded bg-[var(--ui-control-fill)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--ui-text-tertiary)]">
+                        #{index + 1}
+                      </span>
+                      <p className="truncate text-xs text-[var(--ui-text-primary)]" title={item.prompt}>
+                        {item.prompt}
+                      </p>
+                      {item.attachments && item.attachments.length > 0 && (
+                        <span className="shrink-0 flex items-center gap-1 rounded bg-[var(--ui-control-fill)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--ui-text-tertiary)]">
+                          <Paperclip size={10} /> +{item.attachments.length}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleSendQueuedNow(item.id)}
+                        disabled={queueActionsBlocked || queuedPrompts.some((queued) => queued.sendNow)}
+                        className="rounded p-1 text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-control-fill-hover)] hover:text-[var(--ui-accent)] disabled:opacity-40 transition-colors"
+                        aria-label="Send queued prompt now"
+                        title="Send now (stops the current run)"
+                      >
+                        {item.sendNow ? <LoaderCircle size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleEditQueued(item.id)}
+                        disabled={dispatchingQueueRef.current.has(currentSessionId)}
+                        className="rounded p-1 text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-control-fill-hover)] hover:text-[var(--ui-accent)] disabled:opacity-40 transition-colors"
+                        aria-label="Edit queued prompt"
+                        title="Edit prompt in composer"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveQueued(item.id)}
+                        disabled={dispatchingQueueRef.current.has(currentSessionId)}
+                        className="rounded p-1 text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-control-fill-hover)] hover:text-[var(--ui-red)] disabled:opacity-40 transition-colors"
+                        aria-label="Remove queued prompt"
+                        title="Remove from queue"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <RunStatusBar
+              docked
+              status={activeRunStatus}
+              onCancelPreparation={onStop}
+              contextUsage={contextUsage}
+              onCompact={onCompactSession}
+            />
+          </div>
+        )}
+
+        <div
+          className={`mx-auto max-w-3xl border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg-editor)] shadow-composer transition-colors focus-within:border-[var(--ui-accent)] ${
+            isStatusStackVisible ? 'rounded-b-xl rounded-t-none' : 'rounded-xl'
+          }`}
+        >
           {selectedSkills.length > 0 && (
             <div aria-label="Selected skills" className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-b border-[#30363d]/50 px-3 py-2">
               {selectedSkills.map((name) => <SelectedSkillChip
@@ -2575,49 +2628,49 @@ export function ChatCanvas({
                     setAddContextOpen((value) => !value);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#30363d] bg-[#21262d] text-[#8b949e] transition-colors hover:bg-[#30363d] hover:text-[#e6edf3] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent bg-[var(--ui-control-fill)] text-[var(--ui-text-tertiary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-control-fill-hover)] hover:text-[var(--ui-text-primary)] disabled:cursor-not-allowed disabled:opacity-40"
                   title="Add Context (Files, Folder, Mentions)"
                   aria-label="Add Context"
                 >
                   <Plus size={14} />
                 </button>
                 {addContextOpen && (
-                  <div className="ui-menu absolute bottom-9 left-0 z-30 w-44 rounded-xl border border-[#30363d] bg-[#161b22] p-1 shadow-lg">
-                    <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#8b949e]">Add Context</div>
+                  <div className="ui-menu absolute bottom-9 left-0 z-30 w-44 rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] p-1 shadow-nous">
+                    <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-tertiary)]">Add Context</div>
                     <button
                       type="button"
                       onClick={handleAddFiles}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)]"
                     >
-                      <Paperclip size={14} className="text-[#8b949e]" /> Files
+                      <Paperclip size={14} className="text-[var(--ui-text-tertiary)]" /> Files
                     </button>
                     <button
                       type="button"
                       onClick={handleAddFolder}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)]"
                     >
-                      <Folder size={14} className="text-[#8b949e]" /> Folder
+                      <Folder size={14} className="text-[var(--ui-text-tertiary)]" /> Folder
                     </button>
                     <button
                       type="button"
                       onClick={handleAddMention}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)]"
                     >
-                      <AtSign size={14} className="text-[#8b949e]" /> Mentions
+                      <AtSign size={14} className="text-[var(--ui-text-tertiary)]" /> Mentions
                     </button>
                     <button
                       type="button"
                       onClick={handleOpenSkillsList}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)]"
                     >
-                      <BookOpen size={14} className="text-[#8b949e]" /> Actions & Skills
+                      <BookOpen size={14} className="text-[var(--ui-text-tertiary)]" /> Actions & Skills
                     </button>
                     <button
                       type="button"
                       onClick={handleAddBrowser}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[#e6edf3] hover:bg-[#21262d]"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-[var(--ui-text-primary)] hover:bg-[var(--ui-row-hover)]"
                     >
-                      <Globe size={14} className="text-[#8b949e]" /> Browser
+                      <Globe size={14} className="text-[var(--ui-text-tertiary)]" /> Browser
                     </button>
                   </div>
                 )}
@@ -2634,29 +2687,29 @@ export function ChatCanvas({
                     setAddContextOpen(false);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-8 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-transparent bg-[var(--ui-control-fill)] px-2 text-xs text-[var(--ui-text-primary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-control-fill-hover)]"
                   title="Model & Thinking controls"
                 >
-                  <SlidersHorizontal size={12} className="shrink-0 text-[#58a6ff]" />
+                  <SlidersHorizontal size={12} className="shrink-0 text-[var(--ui-accent)]" />
                   <span className="max-w-[100px] truncate font-mono text-[11px] font-medium sm:max-w-[180px]">
                     {effectiveConfig?.provider.model || 'Select model'}
                   </span>
                   <span
                     className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
                       effectiveConfig?.thinking
-                        ? 'bg-[#30363d] text-[#e6edf3]'
-                        : 'bg-[#30363d] text-[#8b949e]'
+                        ? 'bg-[var(--ui-row-active)] text-[var(--ui-text-primary)]'
+                        : 'bg-[var(--ui-row-hover)] text-[var(--ui-text-tertiary)]'
                     }`}
                   >
                     {effectiveConfig?.thinking
                       ? (effectiveConfig.reasoningEffort ? ('Reasoning ' + effectiveConfig.reasoningEffort.replace('_', ' ')) : 'Reasoning on')
                       : 'Reasoning off'}
                   </span>
-                  <ChevronUp size={12} className={`text-[#8b949e] transition-transform ${thinkingMenuOpen ? 'rotate-180' : ''}`} />
+                  <ChevronUp size={12} className={`text-[var(--ui-text-tertiary)] transition-transform ${thinkingMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
 
               {thinkingMenuOpen && (
-                <div className="ui-menu fixed bottom-24 left-3 right-3 z-50 w-auto rounded-xl border border-[#30363d] bg-[#161b22] p-2.5 shadow-lg sm:absolute sm:bottom-9 sm:left-0 sm:right-auto sm:w-72">
+                <div className="ui-menu fixed bottom-24 left-3 right-3 z-50 w-auto rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] p-2.5 shadow-nous sm:absolute sm:bottom-9 sm:left-0 sm:right-auto sm:w-72">
                   <div className="mb-2.5 flex items-center justify-between border-b border-[#30363d] pb-2">
                     <div className="flex items-center gap-1.5">
                       <Brain size={14} className="text-[#8b949e]" />
@@ -2772,20 +2825,20 @@ export function ChatCanvas({
                     setAddContextOpen(false);
                     setSkillsMenuOpen(false);
                   }}
-                  className="flex h-8 items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2 text-xs text-[#e6edf3] transition-colors hover:bg-[#30363d]"
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-transparent bg-[var(--ui-control-fill)] px-2 text-xs text-[var(--ui-text-primary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-control-fill-hover)]"
                   title={`${activeExecutionMode.title}: ${activeExecutionMode.description}`}
                   aria-label="Execution mode"
                 >
-                  <ActiveModeIcon size={13} className="shrink-0 text-[#8b949e]" />
+                  <ActiveModeIcon size={13} className="shrink-0 text-[var(--ui-text-tertiary)]" />
                   <span className="font-medium text-[11px]">
                     {activeExecutionMode.title.replace(' (Preview)', '')}
                   </span>
-                  <ChevronUp size={12} className={`text-[#8b949e] transition-transform ${executionMenuOpen ? 'rotate-180' : ''}`} />
+                  <ChevronUp size={12} className={`text-[var(--ui-text-tertiary)] transition-transform ${executionMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
 
                 {executionMenuOpen && (
                   <div
-                    className="ui-menu fixed bottom-24 right-3 z-50 w-72 rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-lg sm:absolute sm:bottom-9 sm:right-0 sm:w-80"
+                    className="ui-menu fixed bottom-24 right-3 z-50 w-72 rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] p-1.5 shadow-nous sm:absolute sm:bottom-9 sm:right-0 sm:w-80"
                     role="menu"
                     aria-label="Execution mode selection"
                   >
@@ -2799,23 +2852,23 @@ export function ChatCanvas({
                             type="button"
                             role="menuitem"
                             onClick={() => handleSelectExecutionMode(mode.id)}
-                            className={`flex w-full items-start gap-3 rounded-xl p-2.5 text-left transition-colors ${
+                            className={`flex w-full items-start gap-3 rounded-xl p-2.5 text-left transition-colors duration-100 hover:transition-none ${
                               isSelected
-                                ? 'bg-[#21262d] text-[#e6edf3]'
-                                : 'text-[#8b949e] hover:bg-[#21262d]/60 hover:text-[#e6edf3]'
+                                ? 'bg-[var(--ui-row-active)] text-[var(--ui-text-primary)]'
+                                : 'text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]'
                             }`}
                           >
                             <div className="mt-0.5 shrink-0">
-                              <Icon size={16} className={isSelected ? 'text-[#e6edf3]' : 'text-[#8b949e]'} />
+                              <Icon size={16} className={isSelected ? 'text-[var(--ui-text-primary)]' : 'text-[var(--ui-text-tertiary)]'} />
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center justify-between">
-                                <span className={`text-xs font-semibold ${isSelected ? 'text-white' : 'text-[#c9d1d9]'}`}>
+                                <span className={`text-xs font-semibold ${isSelected ? 'text-[var(--ui-text-heading)]' : 'text-[var(--ui-text-secondary)]'}`}>
                                   {mode.title}
                                 </span>
-                                {isSelected && <Check size={14} className="text-[#e6edf3] shrink-0 ml-2" />}
+                                {isSelected && <Check size={14} className="text-[var(--ui-accent)] shrink-0 ml-2" />}
                               </div>
-                              <p className="mt-0.5 text-[11px] leading-relaxed text-[#8b949e]">
+                              <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ui-text-tertiary)]">
                                 {mode.description}
                               </p>
                             </div>
@@ -2831,15 +2884,15 @@ export function ChatCanvas({
               <button
                 type="button"
                 onClick={toggleListening}
-                className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+                className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors duration-100 hover:transition-none ${
                   isListening
-                    ? 'border-[#f85149] bg-[#da3633]/25 text-[#f85149]'
-                    : 'border-[#30363d] bg-[#21262d] text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]'
+                    ? 'border-[var(--ui-red)] bg-[#da3633]/25 text-[var(--ui-red)]'
+                    : 'border-transparent bg-[var(--ui-control-fill)] text-[var(--ui-text-tertiary)] hover:bg-[var(--ui-control-fill-hover)] hover:text-[var(--ui-text-primary)]'
                 }`}
                 title={isListening ? 'Listening to voice... Click to stop' : 'Voice Dictation (Speech-to-Text)'}
                 aria-label="Voice Dictation"
               >
-                {isListening ? <MicOff size={13} className="text-[#f85149]" /> : <Mic size={13} />}
+                {isListening ? <MicOff size={13} className="text-[var(--ui-red)]" /> : <Mic size={13} />}
               </button>
 
               <div className="shrink-0">
@@ -2849,12 +2902,12 @@ export function ChatCanvas({
                       <button
                         type="button"
                         onClick={send}
-                        className="flex items-center gap-1.5 rounded-lg border border-[#30363d] bg-[#21262d] px-2.5 py-1.5 text-xs font-medium text-[#58a6ff] hover:bg-[#30363d] hover:border-[#58a6ff]/50 transition-colors"
+                        className="flex h-7 items-center gap-1.5 rounded-md border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-2.5 text-xs font-medium text-[var(--ui-accent)] hover:bg-[var(--ui-control-fill-hover)] hover:border-[var(--ui-accent)]/50 transition-colors duration-100 hover:transition-none"
                         title="Add to queue (executes after current turn)"
                         disabled={isSessionLoading || isHistoryPreview || pendingAttachments > 0}
                         aria-label="Queue message"
                       >
-                        <Clock size={12} className="text-[#8b949e]" />
+                        <Clock size={12} className="text-[var(--ui-text-tertiary)]" />
                         <span>Queue</span>
                       </button>
                     )}
@@ -2862,7 +2915,7 @@ export function ChatCanvas({
                       type="button"
                       onClick={onStop}
                       disabled={stopRequested}
-                      className="flex items-center gap-1.5 rounded-lg bg-[#da3633] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#f85149] disabled:opacity-50"
+                      className="flex h-7 items-center gap-1.5 rounded-md bg-[#da3633] px-3 text-xs font-medium text-white transition-colors hover:bg-[#f85149] disabled:opacity-50"
                     >
                       <Square size={12} fill="currentColor" /> {stopRequested ? 'Stopping…' : 'Stop'}
                     </button>
@@ -2872,10 +2925,10 @@ export function ChatCanvas({
                     type="button"
                     onClick={send}
                     disabled={isSessionLoading || isHistoryPreview || runStatus?.phase === 'saving_results' || runStatus?.phase === 'preparing_attachments' || pendingAttachments > 0 || isReviewing || (!(input || '').trim() && attachedContexts.length === 0)}
-                    className="rounded-lg bg-[#1f6feb] p-2 text-white transition-colors hover:bg-[#388bfd] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--ui-accent)] text-[var(--ui-accent-fg)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send message"
                   >
-                    <Send size={15} />
+                    <Send size={14} />
                   </button>
                 )}
               </div>
@@ -2884,6 +2937,41 @@ export function ChatCanvas({
         </div>
       </div>
       </div>
+      <footer
+        data-testid="workspace-status-bar"
+        className="flex h-[26px] shrink-0 items-center justify-between border-t border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-chrome)] px-3 text-[11px] text-[var(--ui-text-tertiary)] select-none"
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          {onOpenFolder ? (
+            <button
+              type="button"
+              onClick={onOpenFolder}
+              title={workspaceCwd || 'Open workspace folder'}
+              className="flex max-w-[200px] items-center gap-1.5 truncate rounded px-1 py-0.5 text-left transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]"
+            >
+              <Folder size={11} className="shrink-0" />
+              <span className="truncate">{workspaceLabel}</span>
+            </button>
+          ) : (
+            <span className="flex max-w-[200px] items-center gap-1.5 truncate" title={workspaceCwd || 'No workspace'}>
+              <Folder size={11} className="shrink-0" />
+              <span className="truncate">{workspaceLabel}</span>
+            </span>
+          )}
+          <span className="font-mono text-[10px]">{settings?.mcpServers?.length ?? 0} MCP</span>
+          <span className="font-mono text-[10px]">{availableSkills.length} skills</span>
+        </div>
+        <button
+          type="button"
+          onClick={cycleTheme}
+          aria-label="Cycle color skin"
+          title={`Theme: ${themePreset.label} (click to switch)`}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--ui-text-tertiary)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:text-[var(--ui-text-primary)]"
+        >
+          <Palette size={11} />
+          <span>{themePreset.shortLabel}</span>
+        </button>
+      </footer>
       {input && (
         <button type="button" onClick={() => { invalidateAttachments(); setInput(''); setAttachedContexts([]); setMenuDismissed(false); textareaRef.current?.focus(); }} className="sr-only" aria-label="Clear composer"><X /></button>
       )}

@@ -22,6 +22,8 @@ import {
 import { playTaskCompleteChime } from '../utils/audioChime';
 import type { AgentSettings, ExecutionMode, McpServerConfig, ProviderConfig, ReasoningEffort, SkillInfo } from '../types/agent';
 import { useModalAccessibility } from '../hooks/useModalAccessibility';
+import { useTheme } from '../themes';
+import { SegmentedControl } from './ui';
 
 type SettingsTab = 'providers' | 'agent' | 'integrations';
 
@@ -92,6 +94,7 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
   const [testingMcpId, setTestingMcpId] = useState<string | null>(null);
   const [mcpTestResults, setMcpTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
 
+  const { theme, presets, setTheme } = useTheme();
   const dialogRef = useModalAccessibility<HTMLElement>(true, () => { if (!saving) onClose(); });
   const selectedProvider = form.providers.find((provider) => provider.id === selectedProviderId) || form.providers[0];
   const selectedProviderIdRef = useRef(selectedProviderId);
@@ -741,6 +744,24 @@ export function SettingsModal({ settings, onSave, onClose, onAbout }: SettingsMo
 
           {tab === 'agent' && (
             <div className="mx-auto max-w-2xl space-y-4 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ui-stroke-tertiary)] pb-3">
+                <div>
+                  <span className="text-xs font-semibold">Appearance</span>
+                  <p className="text-[10px] text-[var(--ui-text-tertiary)]">Color skin applied instantly across all panes</p>
+                </div>
+                <SegmentedControl
+                  ariaLabel="Color skin"
+                  value={theme}
+                  onChange={setTheme}
+                  options={presets.map((preset) => ({
+                    value: preset.id,
+                    label: preset.shortLabel,
+                    title: `${preset.label} — ${preset.description}`,
+                    swatch: preset.swatches.accent,
+                  }))}
+                />
+              </div>
+
               <div className="flex items-center justify-between border-b border-[#30363d]/60 pb-2">
                 <div>
                   <span className="text-xs font-semibold">Agent Behavior & Limits</span>
