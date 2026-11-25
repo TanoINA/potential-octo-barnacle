@@ -539,8 +539,8 @@ export const Sidebar = memo(function Sidebar({
                     onClick={() => setGitDrawerOpen((v) => !v)}
                     className={`inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 font-medium transition-colors ${
                       gitStatus.hasChanges
-                        ? 'bg-[var(--ui-yellow)]/15 text-[var(--ui-text-secondary)] hover:bg-[var(--ui-yellow)]/25'
-                        : 'bg-[var(--ui-green)]/15 text-[var(--ui-green)] hover:bg-[var(--ui-green)]/25'
+                        ? 'bg-[var(--ui-warn-bg)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-row-hover)]'
+                        : 'bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] hover:bg-[var(--ui-row-hover)]'
                     }`}
                     title={gitStatus.summary}
                     aria-label="Toggle git details"
@@ -571,9 +571,9 @@ export const Sidebar = memo(function Sidebar({
                         {gitStatus.files.map((file) => (
                           <div key={file.path} className="flex items-center gap-1.5 text-[13px]">
                             <span className={`font-mono text-[13px] font-bold px-1 rounded-lg ${
-                              file.status === 'M' ? 'bg-[var(--ui-yellow)]/20 text-[var(--ui-yellow)]' :
-                              file.status === 'D' ? 'bg-[var(--ui-red)]/20 text-[var(--ui-red)]' :
-                              'bg-[var(--ui-green)]/20 text-[var(--ui-green)]'
+                              file.status === 'M' ? 'bg-[var(--ui-warn-bg)] text-[var(--ui-yellow)]' :
+                              file.status === 'D' ? 'bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)]' :
+                              'bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)]'
                             }`}>
                               {file.status}
                             </span>

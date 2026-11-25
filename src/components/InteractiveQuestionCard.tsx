@@ -90,7 +90,7 @@ export const InteractiveQuestionCard: React.FC<InteractiveQuestionCardProps> = (
                       className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors duration-100 hover:transition-none ${
                         isSelected
                           ? 'border-[var(--ui-accent)] bg-[var(--ui-row-active)] text-[var(--ui-accent)]'
-                          : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] text-[var(--ui-text-secondary)] hover:border-[var(--ui-accent)]/60 hover:bg-[var(--ui-control-hover)] hover:text-[var(--ui-text-primary)]'
+                          : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] text-[var(--ui-text-secondary)] hover:border-[var(--ui-accent-border)] hover:bg-[var(--ui-control-hover)] hover:text-[var(--ui-text-primary)]'
                       } ${disabled || submitted ? 'opacity-70 cursor-default' : 'cursor-pointer active:scale-[0.98]'}`}
                     >
                       {isSelected && <Check size={12} className="shrink-0 text-[var(--ui-accent)]" />}

@@ -24,7 +24,7 @@ export const CouncilView: React.FC<CouncilViewProps> = ({
           <span>Comparison</span>
         </div>
         {chosenWinner && (
-          <span className="flex items-center gap-1 rounded bg-[var(--ui-diff-add-bg)] px-2 py-0.5 font-mono text-[10px] font-medium text-[var(--ui-diff-add-fg)] border border-[var(--ui-green)]/30">
+          <span className="flex items-center gap-1 rounded bg-[var(--ui-diff-add-bg)] px-2 py-0.5 font-mono text-[10px] font-medium text-[var(--ui-diff-add-fg)] border border-[var(--ui-diff-add-border)]">
             <Check size={11} /> Model {chosenWinner} selected
           </span>
         )}
@@ -35,8 +35,8 @@ export const CouncilView: React.FC<CouncilViewProps> = ({
         <div
           className={`flex flex-col rounded-xl border p-3 transition-colors ${
             chosenWinner === 'A'
-              ? 'border-[var(--ui-green)]/60 bg-[var(--ui-diff-add-bg)]'
-              : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] hover:border-[var(--ui-accent)]/40'
+              ? 'border-[var(--ui-diff-add-border)] bg-[var(--ui-diff-add-bg)]'
+              : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] hover:border-[var(--ui-accent-border)]'
           }`}
         >
           {/* Candidate A Header */}
@@ -94,14 +94,14 @@ export const CouncilView: React.FC<CouncilViewProps> = ({
         <div
           className={`flex flex-col rounded-xl border p-3 transition-colors ${
             chosenWinner === 'B'
-              ? 'border-[var(--ui-green)]/60 bg-[var(--ui-diff-add-bg)]'
-              : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] hover:border-[var(--ui-yellow)]/40'
+              ? 'border-[var(--ui-diff-add-border)] bg-[var(--ui-diff-add-bg)]'
+              : 'border-[var(--ui-stroke-tertiary)] bg-[var(--ui-widget-bg)] hover:border-[var(--ui-warn-border)]'
           }`}
         >
           {/* Candidate B Header */}
           <div className="mb-2 flex items-center justify-between border-b border-[var(--ui-stroke-quaternary)] pb-2 text-xs">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="flex h-4 w-4 items-center justify-center rounded bg-[var(--ui-yellow)]/15 font-mono text-[10px] font-bold text-[var(--ui-yellow)]">
+              <span className="flex h-4 w-4 items-center justify-center rounded bg-[var(--ui-warn-bg)] font-mono text-[10px] font-bold text-[var(--ui-yellow)]">
                 B
               </span>
               <span className="truncate font-mono text-xs text-[var(--ui-text-primary)]" title={candidateB.model}>

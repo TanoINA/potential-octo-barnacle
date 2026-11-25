@@ -83,17 +83,17 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({
         <div className="flex items-center gap-2 shrink-0">
           {/* Status Badge */}
           {isRunning ? (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--ui-orange)]/15 text-[var(--ui-orange)] border border-[var(--ui-orange)]/30 animate-pulse">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--ui-orange-bg)] text-[var(--ui-orange)] border border-[var(--ui-orange-border)] animate-pulse">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--ui-orange)]" />
               running
             </span>
           ) : exitCode != null ? (
             exitCode === 0 ? (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] border border-[var(--ui-green)]/35">
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] border border-[var(--ui-diff-add-border)]">
                 exit 0
               </span>
             ) : (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] border border-[var(--ui-red)]/35">
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] border border-[var(--ui-diff-remove-border)]">
                 exit {exitCode}
               </span>
             )

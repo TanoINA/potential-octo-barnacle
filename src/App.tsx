@@ -257,7 +257,7 @@ export function App() {
               setRightPaneWidth((w) => Math.max(280, w - 24));
             }
           }}
-          className={`w-1 shrink-0 cursor-col-resize transition-colors ${isResizingRightPane ? 'bg-[var(--ui-accent)]' : 'bg-transparent hover:bg-[var(--ui-accent)]/60'}`}
+          className={`w-1 shrink-0 cursor-col-resize transition-colors ${isResizingRightPane ? 'bg-[var(--ui-accent)]' : 'bg-transparent hover:bg-[var(--ui-accent-border)]'}`}
           title="Drag to resize side pane"
         />
       )}

@@ -238,12 +238,12 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                 {/* Diff stats badge */}
                 <div className="flex items-center gap-1 font-mono text-[10px]">
                   {stat.additions > 0 && (
-                    <span className="px-1.5 py-0.2 rounded bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] font-medium border border-[var(--ui-green)]/30">
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)] font-medium">
                       +{stat.additions}
                     </span>
                   )}
                   {stat.deletions > 0 && (
-                    <span className="px-1.5 py-0.2 rounded bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] font-medium border border-[var(--ui-red)]/30">
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)] font-medium">
                       -{stat.deletions}
                     </span>
                   )}
@@ -275,7 +275,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                       type="button"
                       disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleStageFile(stat.path)}
-                      className="flex items-center gap-0.5 rounded border border-[var(--ui-green)]/35 bg-[var(--ui-diff-add-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-add-fg)] hover:opacity-90 transition-colors"
+                      className="flex items-center gap-0.5 rounded border border-[var(--ui-diff-add-border)] bg-[var(--ui-diff-add-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-add-fg)] hover:opacity-90 transition-colors"
                       title="Accept / stage this file change"
                     >
                       <Check size={10} />
@@ -285,7 +285,7 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
                       type="button"
                       disabled={!canMutate || fileActions[stat.path] === 'loading'}
                       onClick={() => handleRevertFile(stat.path)}
-                      className="flex items-center gap-0.5 rounded border border-[var(--ui-red)]/35 bg-[var(--ui-diff-remove-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-remove-fg)] hover:opacity-90 transition-colors"
+                      className="flex items-center gap-0.5 rounded border border-[var(--ui-diff-remove-border)] bg-[var(--ui-diff-remove-bg)] px-1.5 py-0.5 text-[10px] text-[var(--ui-diff-remove-fg)] hover:opacity-90 transition-colors"
                       title="Revert / discard changes to this file"
                     >
                       <Undo2 size={10} />
@@ -341,8 +341,8 @@ export const FilesChangedCard: React.FC<FilesChangedCardProps> = ({
         <div
           className={`flex items-center justify-between border-t px-3 py-1.5 text-xs ${
             commitResult.success
-              ? 'border-[var(--ui-green)]/35 bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)]'
-              : 'border-[var(--ui-red)]/35 bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)]'
+              ? 'border-[var(--ui-diff-add-border)] bg-[var(--ui-diff-add-bg)] text-[var(--ui-diff-add-fg)]'
+              : 'border-[var(--ui-diff-remove-border)] bg-[var(--ui-diff-remove-bg)] text-[var(--ui-diff-remove-fg)]'
           }`}
         >
           <div className="flex items-center gap-2 truncate">

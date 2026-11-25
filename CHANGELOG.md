@@ -4,6 +4,12 @@ Notable changes to AetherAgent are listed here.
 
 ## [Unreleased]
 
+## [0.3.0-beta.3] - 2026-11-26
+
+### Fixed
+- Replaced all Tailwind CSS-variable opacity modifier classes (`[var(--...)]/NN`, unsupported in Tailwind v3) with explicit `color-mix()` border and surface tokens in `src/index.css` across `FilesChangedCard`, `TerminalOutput`, `ExecutionTrace`, `CouncilView`, `MessageRow`, `Sidebar`, `InteractivePlanCard`, `InteractiveQuestionCard`, `ChatCanvas`, and `App`, eliminating unintended light default borders around diff badges and action buttons.
+- Made `+N` / `-N` diff counter pills in `FilesChangedCard` borderless and added a static regression test in `src/components/Fase3Transcript.test.tsx` to catch any reintroduced `[var(--...)]/opacity` classes.
+
 ## [0.3.0-beta.2] - 2026-11-25
 
 ### Changed & Added

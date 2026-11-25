@@ -106,7 +106,7 @@ export const InteractivePlanCard: React.FC<{ rawPlan: string }> = ({ rawPlan }) 
             <span
               className={`leading-relaxed text-[11px] font-sans ${
                 item.status === 'done'
-                  ? 'text-[var(--ui-text-tertiary)] line-through decoration-[var(--ui-text-tertiary)]/50'
+                  ? 'text-[var(--ui-text-tertiary)] line-through decoration-[var(--ui-text-quaternary)]'
                   : item.status === 'in_progress'
                   ? 'text-[#f0883e] font-medium'
                   : 'text-[var(--ui-text-primary)]'

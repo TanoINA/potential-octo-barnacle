@@ -358,7 +358,7 @@ export const MessageRow = memo(function MessageRow({
       {message.notice && (
         <div
           data-testid="provider-notice"
-          className="mt-2 inline-flex items-center gap-2 rounded-md border border-[var(--ui-yellow)]/35 bg-[var(--ui-yellow)]/10 px-2.5 py-1 text-xs text-[var(--ui-yellow)] animate-fadeIn"
+          className="mt-2 inline-flex items-center gap-2 rounded-md border border-[var(--ui-warn-border)] bg-[var(--ui-warn-bg)] px-2.5 py-1 text-xs text-[var(--ui-yellow)] animate-fadeIn"
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--ui-yellow)] opacity-75" />

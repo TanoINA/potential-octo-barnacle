@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, CouncilTurn, ToolCallItem } from '../types/agent';
@@ -133,5 +135,20 @@ describe('Fase 3 Transcript & Inline Widgets', () => {
       <CouncilView councilTurn={councilTurn} onSelectWinner={vi.fn()} />,
     );
     expect(cContainer.innerHTML).toContain('bg-[var(--ui-widget-bg)]');
+  });
+
+  it('avoids Tailwind v3 arbitrary CSS-variable opacity modifiers that drop colors and expose default borders', () => {
+    const srcRoot = join(process.cwd(), 'src');
+    const offenders: string[] = [];
+    const entries = readdirSync(srcRoot, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.(ts|tsx)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) continue;
+      const filePath = join(entry.parentPath, entry.name);
+      const text = readFileSync(filePath, 'utf8');
+      if (/\[var\(--[^)]+\)\]\//.test(text)) {
+        offenders.push(filePath);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

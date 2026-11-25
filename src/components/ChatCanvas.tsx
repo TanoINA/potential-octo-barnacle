@@ -2005,7 +2005,7 @@ export function ChatCanvas({
     >
       {/* Drag & Drop Visual Overlay */}
       {isDraggingOver && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[var(--ui-accent)] bg-[var(--ui-bg-canvas)]/95 m-2 pointer-events-none ui-enter select-none">
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[var(--ui-accent)] bg-[var(--ui-overlay-bg)] m-2 pointer-events-none ui-enter select-none">
           <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] shadow-nous">
             <FileCode2 size={28} className="text-[var(--ui-accent)]" />
           </div>
@@ -2253,7 +2253,7 @@ export function ChatCanvas({
             }
           }}
           aria-label={isStreaming ? 'Jump to bottom' : 'Return to latest'}
-          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-3 py-1.5 text-xs text-[var(--ui-text-primary)] shadow-nous hover:border-[var(--ui-accent)]/60 hover:bg-[var(--ui-control-fill-hover)] transition-colors duration-100 hover:transition-none ui-enter"
+          className="absolute bottom-20 right-8 z-30 flex items-center gap-1.5 rounded-lg border border-[var(--stroke-nous)] bg-[var(--ui-bg-elevated)] px-3 py-1.5 text-xs text-[var(--ui-text-primary)] shadow-nous hover:border-[var(--ui-accent-border)] hover:bg-[var(--ui-control-fill-hover)] transition-colors duration-100 hover:transition-none ui-enter"
         >
           <ChevronDown size={13} className="text-[#58a6ff]" />
           <span className="font-medium text-[11px]">
@@ -2463,7 +2463,7 @@ export function ChatCanvas({
                 {queuedPrompts.map((item, index) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] px-2.5 py-1 text-xs text-[var(--ui-text-primary)] transition-colors hover:border-[var(--ui-accent)]/40"
+                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-canvas)] px-2.5 py-1 text-xs text-[var(--ui-text-primary)] transition-colors hover:border-[var(--ui-accent-border)]"
                     data-testid={`queued-prompt-${index}`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -2902,7 +2902,7 @@ export function ChatCanvas({
                       <button
                         type="button"
                         onClick={send}
-                        className="flex h-7 items-center gap-1.5 rounded-md border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-2.5 text-xs font-medium text-[var(--ui-accent)] hover:bg-[var(--ui-control-fill-hover)] hover:border-[var(--ui-accent)]/50 transition-colors duration-100 hover:transition-none"
+                        className="flex h-7 items-center gap-1.5 rounded-md border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-fill)] px-2.5 text-xs font-medium text-[var(--ui-accent)] hover:bg-[var(--ui-control-fill-hover)] hover:border-[var(--ui-accent-border)] transition-colors duration-100 hover:transition-none"
                         title="Add to queue (executes after current turn)"
                         disabled={isSessionLoading || isHistoryPreview || pendingAttachments > 0}
                         aria-label="Queue message"

@@ -149,8 +149,16 @@
 
   --ui-diff-add-bg: color-mix(in srgb, var(--ui-green) 13%, transparent);
   --ui-diff-add-fg: var(--ui-green);
+  --ui-diff-add-border: color-mix(in srgb, var(--ui-green) 28%, transparent);
   --ui-diff-remove-bg: color-mix(in srgb, var(--ui-red) 13%, transparent);
   --ui-diff-remove-fg: var(--ui-red);
+  --ui-diff-remove-border: color-mix(in srgb, var(--ui-red) 28%, transparent);
+  --ui-warn-bg: color-mix(in srgb, var(--ui-yellow) 13%, transparent);
+  --ui-warn-border: color-mix(in srgb, var(--ui-yellow) 30%, transparent);
+  --ui-orange-bg: color-mix(in srgb, var(--ui-orange) 13%, transparent);
+  --ui-orange-border: color-mix(in srgb, var(--ui-orange) 28%, transparent);
+  --ui-accent-border: color-mix(in srgb, var(--ui-accent) 48%, transparent);
+  --ui-overlay-bg: color-mix(in srgb, var(--ui-bg-chrome) 92%, transparent);
 
   /* Legacy variable aliases for gradual component migration */
   --ui-bg-canvas: var(--ui-bg-chrome);

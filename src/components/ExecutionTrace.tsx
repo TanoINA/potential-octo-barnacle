@@ -281,7 +281,7 @@ const ActiveToolDuration: React.FC<{ startedAt?: number }> = ({ startedAt }) => 
   const elapsedSec = Math.max(1, Math.floor((now - (startedAt || now)) / 1000));
 
   return (
-    <span className="flex items-center gap-1.5 rounded bg-[var(--ui-orange)]/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[var(--ui-orange)] border border-[var(--ui-orange)]/30 animate-pulse">
+    <span className="flex items-center gap-1.5 rounded bg-[var(--ui-orange-bg)] px-1.5 py-0.5 text-[10px] font-mono font-medium text-[var(--ui-orange)] border border-[var(--ui-orange-border)] animate-pulse">
       <Loader2 size={10} className="animate-spin text-[var(--ui-orange)]" />
       <span>{elapsedSec}s</span>
     </span>
@@ -446,7 +446,7 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({
                               href={link.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)] px-2 py-1 text-[10px] text-[var(--ui-accent)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:border-[var(--ui-accent)]/50"
+                              className="inline-flex items-center gap-1 rounded border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-bg-elevated)] px-2 py-1 text-[10px] text-[var(--ui-accent)] transition-colors duration-100 hover:transition-none hover:bg-[var(--ui-row-hover)] hover:border-[var(--ui-accent-border)]"
                               title={`${link.title}\n${link.url}`}
                             >
                               <ExternalLink size={10} className="shrink-0 text-[var(--conversation-scaffold-meta)]" />
